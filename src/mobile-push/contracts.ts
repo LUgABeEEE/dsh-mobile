@@ -1,3 +1,5 @@
+import type { ZodType } from 'zod'
+
 export type PushCategory = 'question' | 'plan' | 'approval' | 'response' | 'goal' | 'failure' | 'test'
 export type PushPreferences = Readonly<Record<Exclude<PushCategory, 'test'>, boolean>>
 export type PushLocale = 'en' | 'zh-CN' | 'it'
@@ -52,9 +54,11 @@ export interface PushSnapshot {
   readonly references: readonly PushTapReference[]
 }
 export interface PushTarget { readonly sessionId: string; readonly interaction: 'current' | 'resolved' }
+export type PushReconcileResult = 'eligible' | 'stale' | 'unverifiable'
 export interface PushHost {
   readonly available: boolean
   subscribe(onSource: (source: PushSource) => void, onChange: (sessionId: string) => void): () => void
+  reconcile(source: PushSource): Promise<PushReconcileResult>
   eligible(source: PushSource): Promise<boolean>
   resolveTarget(source: PushSource): Promise<PushTarget | undefined>
   close(): Promise<void>
@@ -91,15 +95,44 @@ export const ATTEMPT_TIMEOUT_MS = 10_000
 export const MAX_PUSH_BODY_BYTES = 16_384
 export const MAX_PAYLOAD_BYTES = 3_072
 
+export interface PublicInboxLike {
+  readonly nextTurn?: readonly unknown[]
+  readonly nextStep?: readonly unknown[]
+}
 export interface PublicAgentLike {
   readonly id: string
   readonly session?: { readonly id?: string; readonly header?: { readonly parentSession?: string } }
+  readonly inbox?: PublicInboxLike
+}
+export interface PublicProjectionDefinition<State = unknown, Wire = unknown> {
+  readonly key: string
+  readonly stateSchema: ZodType<State>
+  init(header: unknown, inheritedEventCount: number): State
+  apply(state: State, event: unknown): State
+  readonly wire: { readonly viewSchema: ZodType<Wire>; readonly view: (state: State) => Wire }
+  readonly stateVersion: number
+}
+export interface PublicProjectionSnapshot {
+  readonly asOfSeq: number
+  readonly values: Record<string, unknown>
+}
+export interface PublicSessionObservation {
+  readonly source: 'live' | 'prepared'
+  readonly projections?: PublicProjectionSnapshot
+  [Symbol.dispose](): void
 }
 export interface PublicEventContext {
   on(event: string, listener: (...args: any[]) => unknown, options?: boolean | { readonly prepend?: boolean; readonly global?: boolean }): (() => void) | void
   userQuestions?: Record<string, unknown>
   approval?: Record<string, unknown>
-  sessionProjections?: { stateOf?: (session: unknown, key: string) => unknown }
+  sessionProjections?: {
+    stateOf?: (session: unknown, key: string) => unknown
+    snapshot?: (session: unknown) => PublicProjectionSnapshot
+    register?: <State, Wire>(definition: PublicProjectionDefinition<State, Wire>) => () => void
+  }
+  sessionQuery?: {
+    observeSession?: (id: string, options: { readonly projectionMode: 'all'; readonly signal?: AbortSignal }) => Promise<PublicSessionObservation>
+  }
   agents?: {
     get?: (id: string) => PublicAgentLike | undefined
     list?: () => PublicAgentLike[]

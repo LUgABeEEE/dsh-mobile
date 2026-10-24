@@ -1,10 +1,14 @@
 import { RequestLifetimes } from './requests.js'
 import { OutcomeLifetimes } from './outcomes.js'
-import type { ContextLike, PublicAgentLike, PushHost, PushSource } from './contracts.js'
+import { PushReconciler } from './reconcile.js'
+import type { ContextLike, PublicAgentLike, PushHost, PushReconcileResult, PushSource } from './contracts.js'
 
 function hasContract(ctx: ContextLike): boolean {
   return typeof ctx.on === 'function'
     && typeof ctx.sessionProjections?.stateOf === 'function'
+    && typeof ctx.sessionProjections.snapshot === 'function'
+    && typeof ctx.sessionProjections.register === 'function'
+    && typeof ctx.sessionQuery?.observeSession === 'function'
     && typeof ctx.agents?.get === 'function'
     && typeof ctx.agents.list === 'function'
     && typeof ctx.agents.roots === 'function'
@@ -14,6 +18,8 @@ function hasContract(ctx: ContextLike): boolean {
 
 export function createPushHost(ctx: ContextLike): PushHost {
   let available = hasContract(ctx)
+  const reconciler = new PushReconciler(ctx)
+  let lifecycleProjectionDisposer: (() => void) | undefined
   const subscribers = new Set<(source: PushSource) => void>()
   const changeSubscribers = new Set<(sessionId: string) => void>()
   const disposers: Array<() => void> = []
@@ -28,6 +34,14 @@ export function createPushHost(ctx: ContextLike): PushHost {
   const requests = new RequestLifetimes(ctx, add)
   const outcomes = new OutcomeLifetimes(ctx, add)
   let closed = false
+  if (available) {
+    try { lifecycleProjectionDisposer = reconciler.registerProjection() } catch { available = false }
+  }
+  const disposeLifecycleProjection = (): void => {
+    const dispose = lifecycleProjectionDisposer
+    lifecycleProjectionDisposer = undefined
+    try { dispose?.() } catch { /* A failed projection lease makes reconciliation unavailable. */ }
+  }
 
   const register = (event: string, listener: (...args: any[]) => unknown, prepend = false): (() => void) | undefined => {
     try {
@@ -66,6 +80,7 @@ export function createPushHost(ctx: ContextLike): PushHost {
   }
   const disable = (): void => {
     available = false
+    disposeLifecycleProjection()
     questionDisposer?.()
     approvalDisposer?.()
     questionDisposer = undefined
@@ -80,6 +95,7 @@ export function createPushHost(ctx: ContextLike): PushHost {
       if (!refreshWaterfallObservers()) disable()
     })
     const sessionEvents = listen('session/event', (session: PublicAgentLike, event: any) => {
+      if (event?.type === 'turn/start' || event?.type === 'agent/inbox/inserted' || event?.type === 'agent/inbox/spliced') requests.invalidateSession(session.id)
       outcomes.onSessionEvent(session, event)
       if (event?.type === 'user/message' && event?.data?.source?.kind === 'user-question-reply') {
         requests.queuedReply(session.id, event.data.source.callId)
@@ -102,14 +118,29 @@ export function createPushHost(ctx: ContextLike): PushHost {
       if (agent?.id && message?.source?.kind === 'user-question-reply' && typeof message.source.callId === 'string') {
         requests.queuedReply(agent.id, message.source.callId)
       }
-      if (agent?.id) outcomes.onSessionEvent(agent, { type: 'agent/inbox/inserted' })
+      if (agent?.id) {
+        requests.invalidateSession(agent.id)
+        outcomes.onSessionEvent(agent, { type: 'agent/inbox/inserted' })
+      }
     })
     listen('agent/error', payload => outcomes.onAgentError(payload))
     listen('agent/aborted', (payload: any) => {
       const id = payload?.agent?.id
-      if (id) outcomes.onSessionEvent(payload.agent, { type: 'turn/end', data: { turn: payload.turn, reason: { kind: 'aborted', reason: payload.reason } } })
+      if (id) {
+        requests.invalidateSession(id)
+        outcomes.onSessionEvent(payload.agent, { type: 'turn/end', data: { turn: payload.turn, reason: { kind: 'aborted', reason: payload.reason } } })
+      }
     })
   } else disable()
+
+  const reconcile = async (source: PushSource): Promise<PushReconcileResult> => {
+    if (source.expiresAt <= Date.now()) return 'stale'
+    if (!available || closed) return 'unverifiable'
+    const liveProof = source.category === 'question' || source.category === 'plan' || source.category === 'approval'
+      ? requests.reconcileLive(source)
+      : outcomes.reconcileLive(source)
+    return reconciler.reconcile(source, liveProof)
+  }
 
   return {
     get available() { return available },
@@ -119,11 +150,8 @@ export function createPushHost(ctx: ContextLike): PushHost {
       changeSubscribers.add(onChange)
       return () => { subscribers.delete(onSource); changeSubscribers.delete(onChange) }
     },
-    async eligible(source) {
-      if (!available || closed || source.expiresAt <= Date.now()) return false
-      if (source.category === 'question' || source.category === 'plan' || source.category === 'approval') return requests.eligible(source)
-      return outcomes.eligible(source)
-    },
+    reconcile,
+    async eligible(source) { return await reconcile(source) === 'eligible' },
     async resolveTarget(source) {
       if (!available) return undefined
       const current = ctx.agents?.get?.(source.targetSessionId)
@@ -143,6 +171,7 @@ export function createPushHost(ctx: ContextLike): PushHost {
       for (const dispose of disposers.splice(0)) {
         try { dispose() } catch { /* Detachment must not throw through plugin disposal. */ }
       }
+      disposeLifecycleProjection()
     },
   }
 }

@@ -1,5 +1,5 @@
 import { OUTCOME_COALESCE_MS, OUTCOME_TTL_MS } from './contracts.js'
-import type { ContextLike, PublicAgentLike, PushSource } from './contracts.js'
+import type { ContextLike, PublicAgentLike, PushReconcileResult, PushSource } from './contracts.js'
 
 type Candidate = { source: PushSource; timer?: ReturnType<typeof setTimeout> | undefined; active: boolean }
 type Emit = (source: PushSource) => void
@@ -10,6 +10,7 @@ export class OutcomeLifetimes {
   readonly #emit: Emit
   readonly #pending = new Map<string, Candidate>()
   readonly #goals = new Map<string, { id: string; revision: number; phase: string }>()
+  readonly #blockedTurns = new Map<string, { id: string; revision: number; turn: number }>()
   readonly #sent = new Set<string>()
   #closed = false
 
@@ -33,7 +34,12 @@ export class OutcomeLifetimes {
     this.#goals.set(agent.id, record)
     // `goal/changed` follows its durable goal/change append. Active continuation
     // rounds suppress ordinary responses; completed goals wait for turn/end.
-    if (record.phase === 'blocked' || op === 'block') this.#schedule(agent, 'goal', undefined, { id, revision })
+    if (op === 'block') {
+      const boundary = this.#ctx.sessionProjections?.stateOf?.(agent.session ?? agent, 'turnBoundary') as any
+      const turn = boundary?.openTurnStartSeq != null && Number.isSafeInteger(boundary?.lastTurn) ? boundary.lastTurn as number : undefined
+      if (turn !== undefined) this.#blockedTurns.set(agent.id, { id, revision, turn })
+      this.#schedule(agent, 'goal', turn, { id, revision })
+    }
   }
 
   onSessionEvent(session: PublicAgentLike, event: any): void {
@@ -43,49 +49,53 @@ export class OutcomeLifetimes {
     const id = session.id
     if (type === 'agent/inbox/inserted' || type === 'agent/inbox/spliced' || type === 'turn/start') {
       this.#cancel(id)
-      if (type === 'turn/start') {
-        const goal = this.#goals.get(id) ?? this.#projectedGoal(session)
-        if (goal && isCompletedGoalPhase(goal.phase)) this.#goals.delete(id)
-      }
       return
     }
     if (type !== 'turn/end') return
     const reason = data.reason?.kind
+    const blockedTurn = this.#blockedTurns.get(id)
+    const closesBlockedTurn = blockedTurn?.turn === data.turn
+    if (closesBlockedTurn) this.#blockedTurns.delete(id)
+    if (closesBlockedTurn && ['completed', 'blocked', 'error'].includes(reason)) return
     if (reason === 'completed') {
-      const goal = this.#goals.get(id) ?? this.#projectedGoal(session)
-      if (goal && isCompletedGoalPhase(goal.phase)) {
-        this.#schedule(session, 'goal', data.turn, { id: goal.id, revision: goal.revision })
+      const observedGoal = this.#goals.get(id)
+      const activeGoal = observedGoal?.phase === 'active' ? observedGoal : this.#projectedActiveGoal(session)
+      if (observedGoal && isCompletedGoalPhase(observedGoal.phase)) {
+        this.#schedule(session, 'goal', data.turn, { id: observedGoal.id, revision: observedGoal.revision })
         this.#goals.delete(id)
-      } else if (goal?.phase !== 'active') this.#schedule(session, 'response', data.turn)
-    } else if (reason === 'blocked') {
-      if (this.#goals.get(id)?.phase !== 'blocked') this.#schedule(session, 'failure', data.turn)
-    } else if (reason === 'error') {
+      } else if (!activeGoal) this.#schedule(session, 'response', data.turn)
+    } else if (reason === 'blocked' || reason === 'error') {
       this.#schedule(session, 'failure', data.turn)
     }
     // aborted/user, max-tokens, interrupted, forked are intentionally silent.
   }
 
-  #projectedGoal(session: PublicAgentLike): { id: string; revision: number; phase: string } | undefined {
+  #projectedActiveGoal(session: PublicAgentLike): { id: string; revision: number; phase: 'active' } | undefined {
     const state = this.#ctx.sessionProjections?.stateOf?.(session.session ?? session, 'goal') as any
     const goal = state?.current?.goal
-    if (!goal || typeof goal.id !== 'string' || !Number.isSafeInteger(goal.revision) || typeof goal.phase !== 'string') return undefined
-    return { id: goal.id, revision: goal.revision, phase: goal.phase }
+    if (!goal || typeof goal.id !== 'string' || !Number.isSafeInteger(goal.revision) || goal.phase !== 'active') return undefined
+    return { id: goal.id, revision: goal.revision, phase: 'active' }
   }
 
   onAgentError(_payload: unknown): void {
     // Agent errors are diagnostics. Only a live committed turn/end error is actionable.
   }
 
-  eligible(source: PushSource): boolean {
-    if (this.#closed || source.expiresAt <= Date.now()) return false
+  reconcileLive(source: PushSource): PushReconcileResult {
+    if (source.expiresAt <= Date.now()) return 'stale'
+    if (this.#closed) return 'stale'
     const candidate = this.#pending.get(source.sourceId)
-    return candidate?.active ?? false
+    if (!candidate) return 'unverifiable'
+    return candidate.active ? 'eligible' : 'stale'
   }
+
+  eligible(source: PushSource): boolean { return this.reconcileLive(source) === 'eligible' }
 
   close(): void {
     this.#closed = true
     for (const item of this.#pending.values()) if (item.timer) clearTimeout(item.timer)
     this.#pending.clear()
+    this.#blockedTurns.clear()
   }
 
   #schedule(agent: PublicAgentLike, category: PushSource['category'], turn?: number, goal?: { id: string; revision: number }): void {
@@ -111,6 +121,7 @@ export class OutcomeLifetimes {
   }
 
   #cancel(sessionId: string): void {
+    this.#blockedTurns.delete(sessionId)
     for (const [id, candidate] of this.#pending) {
       if (candidate.source.sessionId !== sessionId) continue
       clearTimeout(candidate.timer)

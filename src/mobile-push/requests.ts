@@ -1,5 +1,5 @@
 import { ATTENTION_TTL_MS, REQUEST_SETTLE_MS } from './contracts.js'
-import type { ContextLike, PublicAgentLike, PushCategory, PushSource } from './contracts.js'
+import type { ContextLike, PublicAgentLike, PushCategory, PushReconcileResult, PushSource } from './contracts.js'
 
 type RequestRecord = { source: PushSource; settled: boolean; queuedReply: boolean; timed: boolean; timer?: ReturnType<typeof setTimeout> | undefined; live: boolean }
 type Emit = (source: PushSource) => void
@@ -57,25 +57,34 @@ export class RequestLifetimes {
 
   queuedReply(sessionId: string, callId: string): void {
     const rec = this.#byCall.get(`${sessionId}\u0000${callId}`)
-    if (rec) rec.queuedReply = true
+    if (rec) this.#invalidate(rec, true)
   }
 
-  eligible(source: PushSource): boolean {
-    if (this.#closed) return false
+  invalidateSession(sessionId: string): void {
+    for (const rec of this.#records.values()) {
+      if (rec.source.sessionId === sessionId) this.#invalidate(rec, false)
+    }
+  }
+
+  reconcileLive(source: PushSource): PushReconcileResult {
+    if (source.expiresAt <= this.#clock()) return 'stale'
     const rec = this.#records.get(source.sourceId)
-    if (!rec || rec.settled || rec.queuedReply || source.expiresAt <= this.#clock()) return false
+    if (!rec) return 'unverifiable'
+    if (this.#closed || rec.settled || rec.queuedReply || !rec.live) return 'stale'
     const timed = this.#callForSource(source)
-    if (!timed) return true // legacy blocking requests are absent from timed projections
+    if (!timed) return 'eligible' // legacy waits are verifiable only while their live request exists
     const state = this.#projection(source.sessionId)
     const view = state?.questions ?? state
     const active = Array.isArray(view?.active) ? view.active : []
-    if (active.some((item: any) => item.callId === timed && (item.state === 'open' || item.state === 'continued'))) return true
-    if (rec.timed) return false
+    if (active.some((item: any) => item.callId === timed && (item.state === 'open' || item.state === 'continued'))) return 'eligible'
+    if (rec.timed) return 'stale'
     const settled = Array.isArray(view?.settled) ? view.settled : []
-    if (settled.some((item: any) => item.callId === timed)) return false
+    if (settled.some((item: any) => item.callId === timed)) return 'stale'
     // Legacy blocking waits are not reconstructed by the timed projection.
-    return rec.live
+    return 'eligible'
   }
+
+  eligible(source: PushSource): boolean { return this.reconcileLive(source) === 'eligible' }
 
   close(): void {
     this.#closed = true
@@ -88,14 +97,26 @@ export class RequestLifetimes {
     const session = this.#ctx.agents?.get?.(sessionId)?.session ?? { id: sessionId }
     return this.#ctx.sessionProjections?.stateOf?.(session, 'userQuestions')
   }
+  #invalidate(rec: RequestRecord, queuedReply: boolean): void {
+    rec.settled = true
+    rec.live = false
+    if (queuedReply) rec.queuedReply = true
+    if (rec.timer) clearTimeout(rec.timer)
+    rec.timer = undefined
+  }
   #callForSource(source: PushSource): string | undefined { return source.callId }
   #record(agent: PublicAgentLike, sessionId: string, category: PushCategory, callId: unknown, signal: AbortSignal | undefined, ttl: number, timed = false): RequestRecord {
     const createdAt = this.#clock()
     const opaque = typeof callId === 'string' && callId ? callId : `dispatch-${crypto.randomUUID()}`
     const sourceId = `request:${sessionId}:${category}:${opaque}`
+    let turn: number | undefined
+    try {
+      const boundary = this.#ctx.sessionProjections?.stateOf?.(agent.session ?? agent, 'turnBoundary') as any
+      if (boundary?.openTurnStartSeq != null && Number.isSafeInteger(boundary?.lastTurn)) turn = boundary.lastTurn
+    } catch { /* Missing projection evidence leaves the request source unscoped. */ }
     const source: PushSource = {
       sourceId, sessionId, targetSessionId: this.#root(agent).id, category: category as Exclude<PushCategory, 'test'>,
-      createdAt, expiresAt: createdAt + ttl, lifetime: 'live', ...(typeof callId === 'string' ? { callId } : {}),
+      createdAt, expiresAt: createdAt + ttl, lifetime: 'live', ...(turn === undefined ? {} : { turn }), ...(typeof callId === 'string' ? { callId } : {}),
     }
     const rec: RequestRecord = { source, settled: false, queuedReply: false, timed, live: true }
     this.#records.set(sourceId, rec)

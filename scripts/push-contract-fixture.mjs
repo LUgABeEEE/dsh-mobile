@@ -29,7 +29,7 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
 export const name = 'dsh-mobile-push-contract-fixture'
-export const inject = ['agents', 'sessions', 'sessionProjections', 'userQuestions', 'approval', 'goals']
+export const inject = ['agents', 'sessions', 'sessionProjections', 'sessionQuery', 'userQuestions', 'approval', 'goals']
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms))
 const waitFor = async (predicate, label, timeoutMs = 6000) => {
   const deadline = Date.now() + timeoutMs
@@ -40,7 +40,7 @@ const waitFor = async (predicate, label, timeoutMs = 6000) => {
   }
   throw new Error('Timed out waiting for ' + label)
 }
-const sourceSummary = source => ({ sourceId: source.sourceId, sessionId: source.sessionId, targetSessionId: source.targetSessionId, category: source.category, createdAt: source.createdAt, expiresAt: source.expiresAt, lifetime: source.lifetime, ...(source.callId ? { callId: source.callId } : {}), ...(source.goal ? { goal: source.goal } : {}) })
+const sourceSummary = source => ({ sourceId: source.sourceId, sessionId: source.sessionId, targetSessionId: source.targetSessionId, category: source.category, createdAt: source.createdAt, expiresAt: source.expiresAt, lifetime: source.lifetime, ...(Number.isSafeInteger(source.turn) ? { turn: source.turn } : {}), ...(source.callId ? { callId: source.callId } : {}), ...(source.goal ? { goal: source.goal } : {}) })
 const withinTimeout = async (operation, timeoutMs, label) => {
   let timer
   try {
@@ -93,9 +93,10 @@ async function runFixtureJob(ctx, controls) {
     userQuestions: ctx.userQuestions,
     approval: ctx.approval,
     sessionProjections: ctx.sessionProjections,
+    sessionQuery: ctx.sessionQuery,
     agents: ctx.agents,
   }
-  const host = createPushHost(instrumentedHostContext)
+  let host = createPushHost(instrumentedHostContext)
   const seen = []
   host.subscribe(source => seen.push(source), () => {})
   result.available = host.available
@@ -225,6 +226,9 @@ async function runFixtureJob(ctx, controls) {
     await root.session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
     rootTurnOpen = false
     await stage('root-turn-closed')
+    const rootResponse = await waitForOwned(() => seen.find(source => source.sessionId === root.id && source.category === 'response' && source.turn === 1), 'completed root turn response')
+    result.sources.push(sourceSummary(rootResponse))
+    check('completed root turn response is recorded as an expected source', rootResponse.turn === 1)
     const childHandle = await ctx.agents.create({ sessionId: 'push-contract-child-' + randomUUID(), parentAgent: root, agentOptions: { provider: 'push-contract-no-provider', model: 'no-network-fixture' } })
     handles.push(childHandle)
     const forkHandle = await ctx.agents.create({ sessionId: 'push-contract-fork-' + randomUUID(), meta: { parentSession: root.session.id }, agentOptions: { provider: 'push-contract-no-provider', model: 'no-network-fixture' } })
@@ -297,7 +301,8 @@ async function runFixtureJob(ctx, controls) {
     handles.push(goalHandle)
     await stage('goal-agent-created')
     const goal = ctx.goals.create(goalHandle.agent, { objective: 'Complete a fixture goal', maxGoalRounds: 2 })
-    await stage('goal-created')
+    ctx.goals.disarm(goalHandle.agent)
+    await stage('goal-created-and-disarmed')
     await goalHandle.agent.session.append('turn/start', { turn: 1 })
     await stage('goal-first-turn-started')
     await goalHandle.agent.session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
@@ -317,18 +322,34 @@ async function runFixtureJob(ctx, controls) {
     result.sources.push(sourceSummary(goalSource))
     await stage('final-goal-source-observed')
     check('goal completion waits for final turn and coalesces to one goal outcome', seen.filter(source => source.sessionId === goalHandle.agent.id && source.category === 'goal').length === 1 && !seen.some(source => source.sessionId === goalHandle.agent.id && source.category === 'response'))
+    await goalHandle.agent.session.append('turn/start', { turn: 3 })
+    await stage('post-goal-ordinary-turn-started')
+    await goalHandle.agent.session.append('turn/end', { turn: 3, reason: { kind: 'completed' } })
+    await stage('post-goal-ordinary-turn-ended')
+    const laterOutcome = await waitForOwned(() => seen.find(source => source.sessionId === goalHandle.agent.id && source.turn === 3), 'ordinary outcome after completed goal')
+    result.sources.push(sourceSummary(laterOutcome))
+    await stage('post-goal-ordinary-outcome-observed')
+    check('an ordinary turn after goal completion emits response instead of replaying the goal', laterOutcome.category === 'response' && seen.filter(source => source.sessionId === goalHandle.agent.id && source.category === 'goal').length === 1)
 
     await stage('blocked-goal-agent-create-started')
     const blockedHandle = await ctx.agents.create({ sessionId: 'push-contract-blocked-' + randomUUID(), agentOptions: { provider: 'push-contract-no-provider', model: 'no-network-fixture' } })
     handles.push(blockedHandle)
     await stage('blocked-goal-agent-created')
     const blockedGoal = ctx.goals.create(blockedHandle.agent, { objective: 'Blocked fixture goal', maxGoalRounds: 1 })
-    await stage('blocked-goal-created')
+    ctx.goals.disarm(blockedHandle.agent)
+    await stage('blocked-goal-created-and-disarmed')
+    await blockedHandle.agent.session.append('turn/start', { turn: 1 })
+    await stage('blocked-enclosing-turn-started')
     const blocked = ctx.goals.block(blockedHandle.agent, { id: blockedGoal.id, revision: blockedGoal.revision }, { code: 'fixture-blocked', message: 'do not expose this detail' })
     await stage('blocked-goal-committed')
+    await blockedHandle.agent.session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
+    await stage('blocked-enclosing-turn-ended')
     const blockSource = await waitForOwned(() => seen.find(source => source.sessionId === blockedHandle.agent.id && source.category === 'goal' && source.goal?.revision === blocked.revision), 'committed blocked goal')
     result.sources.push(sourceSummary(blockSource))
     await stage('blocked-goal-source-observed')
+    await pause(OUTCOME_COALESCE_MS + 50)
+    const blockedOutcomes = seen.filter(source => source.sessionId === blockedHandle.agent.id)
+    check('blocked goal plus enclosing turn produces exactly one generic goal outcome', blockedOutcomes.length === 1 && blockedOutcomes[0]?.category === 'goal')
     check('blocked goal source is generic and has no raw blocked reason', !JSON.stringify(blockSource).includes('do not expose this detail'))
 
     await stage('failure-agent-create-started')
@@ -344,7 +365,123 @@ async function runFixtureJob(ctx, controls) {
     await stage('terminal-failure-source-observed')
     check('terminal failure outcome excludes diagnostic detail', !JSON.stringify(failureSource).includes('fixture diagnostic secret'))
 
+    const createContinuedQuestion = async label => {
+      const handle = await ctx.agents.create({ sessionId: 'push-contract-' + label + '-' + randomUUID(), agentOptions: { provider: 'push-contract-no-provider', model: 'no-network-fixture' } })
+      handles.push(handle)
+      const callId = 'push-contract-' + label + '-call-' + randomUUID()
+      const question = { id: label, question: 'Continue this isolated reconciliation fixture?', header: 'Reconcile' }
+      const argumentsText = JSON.stringify({ questions: [question], timeout: 25 })
+      await handle.agent.session.append('turn/start', { turn: 1 })
+      await handle.agent.session.append('step/start', { turn: 1, step: 1 })
+      await handle.agent.session.append('user/message', { id: randomUUID(), role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: 'Fixture input for a public pending-question call.' }] }, { surfaceOp: 'append' })
+      await handle.agent.session.append('request/header', {
+        header: {
+          config: { provider: 'push-contract-no-provider', model: 'no-network-fixture' },
+          tools: [{ name: 'ask_user_question', description: 'fixture only', parameters: { type: 'object', properties: { timeout: { type: 'integer' } } } }],
+        },
+        reason: 'initial',
+      })
+      const streamTime = Date.now()
+      await handle.agent.session.append('assistant/message', {
+        turn: 1,
+        step: 1,
+        message: {
+          id: randomUUID(),
+          role: 'assistant',
+          source: { kind: 'model', provider: 'push-contract-no-provider', model: 'no-network-fixture' },
+          content: [{ type: 'tool-call', id: callId, name: 'ask_user_question', arguments: argumentsText }],
+        },
+        stream: [
+          { type: 'tool-call-chunks', time0: streamTime, index: 0, dt: [0], id: callId, name: 'ask_user_question', args: [argumentsText] },
+          { type: 'chunk', time: streamTime + 1, chunk: { type: 'finish', reason: { kind: 'tool-calls' } } },
+        ],
+      }, { surfaceOp: 'append' })
+      await handle.agent.session.append('tool/call', { turn: 1, step: 1, callId, name: 'ask_user_question', arguments: argumentsText })
+      const timed = await ctx.userQuestions.askTimed({ agent: handle.agent, questions: [question], signal: trackedController().signal }, callId, 25)
+      await handle.agent.session.append('tool/result', {
+        turn: 1,
+        step: 1,
+        message: { id: randomUUID(), role: 'tool', source: { kind: 'tool', callId }, toolCallId: callId, content: [{ type: 'text', text: JSON.stringify(timed) }] },
+      }, { surfaceOp: 'append' })
+      await handle.agent.session.append('step/end', { turn: 1, step: 1 })
+      await handle.agent.session.append('turn/end', { turn: 1, reason: { kind: 'aborted', reason: { kind: 'disposed' } } })
+      const active = ctx.sessionProjections.stateOf(handle.agent.session, 'userQuestions')?.questions?.active?.find(item => item.callId === callId)
+      const liveProjectionValues = ctx.sessionProjections.snapshot(handle.agent.session)?.values
+      const flushed = await ctx.sessions.flush(handle.agent.session)
+      check(label + ' fixture records a continued timed question in public projection', timed?.pending === true && active?.state === 'continued' && flushed === true, { liveProjectionKeys: Object.keys(liveProjectionValues ?? {}), liveInboxKeys: Object.keys(liveProjectionValues?.inbox ?? {}), flushed })
+      const source = await waitForOwned(() => seen.find(item => item.sessionId === handle.agent.id && item.callId === callId), label + ' persisted question source')
+      result.sources.push(sourceSummary(source))
+      return { handle, callId, question, source }
+    }
+    const coldContinued = await createContinuedQuestion('cold-continued')
+    const coldQueued = await createContinuedQuestion('cold-queued')
+    const hostA = host
+    await hostA.close()
+    await stage('reconcile-host-a-closed')
+    const disposeForColdRead = async (handle, label) => {
+      const index = handles.indexOf(handle)
+      if (index >= 0) handles.splice(index, 1)
+      await withinTimeout(handle.dispose(), 5_000, 'disposing ' + label + ' before cold reconciliation')
+    }
+    for (const [handle, label] of [
+      [coldContinued.handle, 'continued question Agent'],
+      [blockedHandle, 'blocked goal Agent'],
+      [goalHandle, 'completed goal Agent'],
+      [forkHandle, 'completed response Agent'],
+      [failedHandle, 'terminal failure Agent'],
+    ]) await disposeForColdRead(handle, label)
+    await stage('reconcile-agents-unpublished')
+    const hostB = createPushHost(instrumentedHostContext)
+    host = hostB
+    const sourcesAfterRestart = []
+    hostB.subscribe(source => sourcesAfterRestart.push(source), () => {})
+    check('Host B requires the complete public reconciliation contract', hostB.available && typeof hostB.reconcile === 'function')
+    const reconcile = async source => typeof hostB.reconcile === 'function' ? hostB.reconcile(source) : 'missing'
+    const queryCold = async sessionId => {
+      let observation
+      try {
+        observation = await ctx.sessionQuery.observeSession(sessionId, { projectionMode: 'all' })
+        return { source: observation.source, values: structuredClone(observation.projections?.values), asOfSeq: observation.projections?.asOfSeq, cursor: observation.cursor }
+      } catch (error) {
+        return { errorCode: error?.code, errorName: error?.name }
+      } finally { observation?.[Symbol.dispose]() }
+    }
+    const coldContinuedView = await queryCold(coldContinued.handle.agent.id)
+    const continuedCallActive = coldContinuedView.values?.userQuestions?.active?.some(item => item.callId === coldContinued.callId && item.state === 'continued')
+    const continuedCallQueued = ['next-turn', 'next-step'].some(key => (coldContinuedView.values?.inbox?.[key] ?? []).some(message => message?.source?.kind === 'user-question-reply' && message.source.callId === coldContinued.callId && message.source.outcome === 'answered'))
+    const continuedResult = await reconcile(coldContinued.source)
+    check('Host B cold-reconciles a continued question without a live Agent', coldContinuedView.source === 'prepared' && continuedCallActive && !continuedCallQueued && ctx.agents.get(coldContinued.handle.agent.id) === undefined && continuedResult === 'eligible', { observation: coldContinuedView.source, queryErrorCode: coldContinuedView.errorCode, queryErrorName: coldContinuedView.errorName, cursor: coldContinuedView.cursor, asOfSeq: coldContinuedView.asOfSeq, valuesPresent: Boolean(coldContinuedView.values), result: continuedResult, active: continuedCallActive, activeQuestionProjected: continuedCallActive, matchingReplyQueued: continuedCallQueued, sourceTurn: coldContinued.source.turn, projectionKeys: Object.keys(coldContinuedView.values ?? {}), userQuestionKeys: Object.keys(coldContinuedView.values?.userQuestions ?? {}), inboxKeys: Object.keys(coldContinuedView.values?.inbox ?? {}), lifecycle: coldContinuedView.values?.mobilePushLifecycle })
+    const queuedBeforeReplyResult = await reconcile(coldQueued.source)
+    check('Host B keeps the continued question eligible after restart before a reply', queuedBeforeReplyResult === 'eligible' && ctx.agents.get(coldQueued.handle.agent.id) === coldQueued.handle.agent, { result: queuedBeforeReplyResult, liveAgentRetained: ctx.agents.get(coldQueued.handle.agent.id) === coldQueued.handle.agent })
+    coldQueued.handle.agent.inbox.append('next-turn', {
+      id: randomUUID(), role: 'user', source: { kind: 'user-question-reply', callId: coldQueued.callId, outcome: 'answered' },
+      content: [{ type: 'text', text: JSON.stringify({ callId: coldQueued.callId, answers: [{ id: coldQueued.question.id, selected: ['Yes'] }] }) }],
+    })
+    const queuedInboxFlushed = await ctx.sessions.flush(coldQueued.handle.agent.session)
+    const liveQueuedValues = ctx.sessionProjections.snapshot(coldQueued.handle.agent.session)?.values
+    const queuedCallPresent = ['next-turn', 'next-step'].some(key => (liveQueuedValues?.inbox?.[key] ?? []).some(message => message?.source?.kind === 'user-question-reply' && message.source.callId === coldQueued.callId && message.source.outcome === 'answered'))
+    const queuedResult = await reconcile(coldQueued.source)
+    check('Host B post-restart reconciliation marks a queued inbox reply stale', queuedInboxFlushed === true && queuedCallPresent && ctx.agents.get(coldQueued.handle.agent.id) === coldQueued.handle.agent && queuedResult === 'stale', { result: queuedResult, matchingReplyQueued: queuedCallPresent, liveAgentRetained: ctx.agents.get(coldQueued.handle.agent.id) === coldQueued.handle.agent, inboxQueueSizes: Object.fromEntries(['next-turn', 'next-step'].map(key => [key, Array.isArray(liveQueuedValues?.inbox?.[key]) ? liveQueuedValues.inbox[key].length : null])) })
+    const coldBlockedView = await queryCold(blockedHandle.agent.id)
+    const coldGoalView = await queryCold(goalHandle.agent.id)
+    const coldBlockResult = await reconcile(blockSource)
+    const oldGoalResult = await reconcile(goalSource)
+    check('Host B verifies current goal and rejects an outcome superseded by a later turn', coldBlockedView.source === 'prepared' && coldBlockedView.values?.goal?.goal?.id === blockSource.goal?.id && coldBlockResult === 'eligible' && coldGoalView.source === 'prepared' && coldGoalView.values?.goal?.goal?.id === goalSource.goal?.id && oldGoalResult === 'stale', { blockedObservation: coldBlockedView.source, blockedResult: coldBlockResult, completedObservation: coldGoalView.source, completedResult: oldGoalResult })
+    const coldResponseView = await queryCold(forkHandle.agent.id)
+    const coldFailureView = await queryCold(failedHandle.agent.id)
+    const responseResult = await reconcile(forkSource)
+    const failureResult = await reconcile(failureSource)
+    check('Host B cold-verifies a committed ordinary response from public turn metadata', coldResponseView.source === 'prepared' && coldResponseView.values?.mobilePushLifecycle?.lastTurnEnd?.reason === 'completed' && responseResult === 'eligible', { observation: coldResponseView.source, sourceTurn: forkSource.turn, latestTurn: coldResponseView.values?.mobilePushLifecycle?.latestTurn, turnEndReason: coldResponseView.values?.mobilePushLifecycle?.lastTurnEnd?.reason, result: responseResult })
+    check('Host B cold-verifies a terminal failure without retaining diagnostic detail', coldFailureView.source === 'prepared' && coldFailureView.values?.mobilePushLifecycle?.lastTurnEnd?.reason === 'error' && failureResult === 'eligible', { observation: coldFailureView.source, sourceTurn: failureSource.turn, latestTurn: coldFailureView.values?.mobilePushLifecycle?.latestTurn, turnEndReason: coldFailureView.values?.mobilePushLifecycle?.lastTurnEnd?.reason, result: failureResult })
+    const persistedPlanResult = await reconcile(planSource)
+    const persistedApprovalResult = await reconcile(approvalSource)
+    check('Host B drops legacy plan and approval without live proof as unverifiable', persistedPlanResult === 'unverifiable' && persistedApprovalResult === 'unverifiable', { plan: persistedPlanResult, approval: persistedApprovalResult })
+    check('reconciliation does not emit or replay historical sources', sourcesAfterRestart.length === 0)
+
     check('all candidate source identities are unique', new Set(result.sources.map(source => source.sourceId)).size === result.sources.length)
+    const recordedSourceIds = new Set(result.sources.map(source => source.sourceId))
+    const unrecordedSources = seen.filter(source => !recordedSourceIds.has(source.sourceId)).map(sourceSummary)
+    check('no unexpected extra sources', unrecordedSources.length === 0, { seen: seen.length, recorded: result.sources.length, unrecorded: unrecordedSources })
     result.observerEntries = { ...observerEntries }
     result.ok = result.checks.every(check => check.ok)
   } catch (error) {
@@ -464,13 +601,14 @@ export async function createPushContractFixture({ root, repository, tsdown }) {
     type: 'module',
     main: './lib/index.js',
     exports: { '.': './lib/index.js', './package.json': './package.json' },
+    dependencies: { zod: '4.6.7' },
     dsh: { bundle: { patch: './cordis.patch.yml' } },
   }, null, 2) + '\n')
   await writeFile(join(packageRoot, 'cordis.patch.yml'), [
     '- insert:',
     '    - id: dsh-mobile-push-contract-fixture',
     '      name: dsh-mobile-push-contract-fixture',
-    '      inject: [agents, sessions, sessionProjections, userQuestions, approval, goals]',
+    '      inject: [agents, sessions, sessionProjections, sessionQuery, userQuestions, approval, goals]',
     '',
   ].join('\n'))
   await run(tsdown, [join(sourceRoot, 'index.ts'), '--no-config', '--format', 'esm', '--platform', 'node', '--target', 'node22', '--out-dir', outputRoot, '--clean'], packageRoot)

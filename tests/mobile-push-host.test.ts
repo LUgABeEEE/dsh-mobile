@@ -11,8 +11,13 @@ function context(overrides: Partial<ContextLike> = {}) {
   const emitted: PushSource[] = []
   const changed: string[] = []
   let host: PushHost | undefined
+  const defaultProjections = {
+    stateOf: () => undefined,
+    snapshot: () => ({ asOfSeq: 0, values: { userQuestions: { active: [], settled: [] }, inbox: { 'next-turn': [], 'next-step': [] }, goal: null, mobilePushLifecycle: { latestTurn: 0, openTurn: null, lastTurnEnd: null, latestGoalChange: null } } }),
+    register: () => () => undefined,
+  }
   const ctx: ContextLike = {
-    on(event, listener, options) {
+    on(event, listener, options){
       const current = listeners.get(event) ?? []
       if (typeof options === 'object' && options.prepend) current.unshift(listener)
       else current.push(listener)
@@ -21,9 +26,10 @@ function context(overrides: Partial<ContextLike> = {}) {
     },
     userQuestions: { pending: () => [] },
     approval: {},
-    sessionProjections: { stateOf: () => undefined },
     agents: { get: () => undefined, list: () => [], roots: () => [], isOwnedBy: () => false },
     ...overrides,
+    sessionProjections: { ...defaultProjections, ...overrides.sessionProjections },
+    sessionQuery: { observeSession: async () => ({ source: 'prepared', projections: { asOfSeq: 0, values: defaultProjections.snapshot().values }, [Symbol.dispose]: () => undefined }), ...overrides.sessionQuery },
   }
   return {
     ctx,
@@ -172,6 +178,21 @@ describe('public host lifecycle', () => {
     expect(source.expiresAt - source.createdAt).toBe(300_000)
   })
 
+  it('invalidates a continued question when a newer turn starts', async () => {
+    const active = [{ callId: 'call-newer-turn', questions: [{ id: 'q1', question: '?' }], state: 'continued' as const }]
+    const boundary = { openTurnStartSeq: 1, lastTurn: 1 }
+    const h = context({ sessionProjections: { stateOf: (_session, key) => key === 'turnBoundary' ? boundary : key === 'userQuestions' ? { questions: { active, settled: [] } } : undefined } })
+    const host = h.start()
+    await h.emit('user-questions/request', questionRequest('newer-turn', { wait: { callId: 'call-newer-turn', timed: true } }), async () => ({ pending: true }))
+    await vi.waitFor(() => expect(h.emitted).toHaveLength(1), { timeout: 3_000 })
+    const source = h.emitted[0]!
+    expect(await host.eligible(source)).toBe(true)
+    boundary.openTurnStartSeq = 2
+    boundary.lastTurn = 2
+    h.emit('session/event', agent('newer-turn'), { type: 'turn/start', data: { turn: 2 } })
+    expect(await host.eligible(source)).toBe(false)
+  })
+
   it('retains timed continuation when the real waterfall rejects with ASK_TIMED_OUT', async () => {
     const active = [{ callId: 'call-timeout-result', questions: [{ id: 'q1', question: '?' }], state: 'continued' as const }]
     const h = context({ sessionProjections: { stateOf: () => ({ questions: { active, settled: [] } }) } })
@@ -250,6 +271,52 @@ describe('public host lifecycle', () => {
     await vi.waitFor(() => expect(h.emitted.filter(item => item.category === 'goal')).toHaveLength(1), { timeout: 3_000 })
     expect(h.emitted.some(item => item.category === 'response')).toBe(false)
     expect(await h.start().eligible(h.emitted[0]!)).toBe(true)
+  })
+
+  it('coalesces a blocked goal with its enclosing completed turn', async () => {
+    const h = context({ sessionProjections: { stateOf: (_session, key) => key === 'turnBoundary' ? { openTurnStartSeq: 0, lastTurn: 1 } : undefined } }); h.start()
+    const session = agent('blocked-completed')
+    h.emit('session/event', session, { type: 'turn/start', data: { turn: 1 } })
+    h.emit('goal/changed', { agent: session, change: { operation: 'block', ref: { id: 'blocked-completed-goal', revision: 1 }, goal: { id: 'blocked-completed-goal', revision: 1, objective: 'needs input', phase: 'blocked', maxGoalRounds: 1 } } })
+    h.emit('session/event', session, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
+    await new Promise(resolve => setTimeout(resolve, 1_050))
+    expect(h.emitted.map(source => source.category)).toEqual(['goal'])
+  })
+
+  it('coalesces a blocked goal with its enclosing error turn', async () => {
+    const h = context({ sessionProjections: { stateOf: (_session, key) => key === 'turnBoundary' ? { openTurnStartSeq: 0, lastTurn: 1 } : undefined } }); h.start()
+    const session = agent('blocked-error')
+    h.emit('session/event', session, { type: 'turn/start', data: { turn: 1 } })
+    h.emit('goal/changed', { agent: session, change: { operation: 'block', ref: { id: 'blocked-error-goal', revision: 1 }, goal: { id: 'blocked-error-goal', revision: 1, objective: 'needs input', phase: 'blocked', maxGoalRounds: 1 } } })
+    h.emit('session/event', session, { type: 'turn/end', data: { turn: 1, reason: { kind: 'error', error: { code: 'FIXTURE', message: 'hidden diagnostic' } } } })
+    await new Promise(resolve => setTimeout(resolve, 1_050))
+    expect(h.emitted.map(source => source.category)).toEqual(['goal'])
+  })
+
+  it('reports an ordinary later turn instead of replaying an observed completed goal', async () => {
+    const goal = { id: 'completed-on-prior-turn', revision: 3, phase: 'complete' }
+    const h = context({ sessionProjections: { stateOf: (_session, key) => key === 'goal' ? { current: { goal } } : undefined } })
+    h.start()
+    const session = agent('completed-then-ordinary')
+    h.emit('session/event', session, { type: 'turn/start', data: { turn: 1 } })
+    h.emit('goal/changed', { agent: session, change: { operation: 'complete', ref: { id: goal.id, revision: goal.revision }, goal: { ...goal, objective: 'done' } } })
+    h.emit('session/event', session, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
+    await vi.waitFor(() => expect(h.emitted.filter(source => source.category === 'goal')).toHaveLength(1), { timeout: 3_000 })
+    h.emit('session/event', session, { type: 'turn/start', data: { turn: 2 } })
+    h.emit('session/event', session, { type: 'turn/end', data: { turn: 2, reason: { kind: 'completed' } } })
+    await new Promise(resolve => setTimeout(resolve, 1_050))
+    expect(h.emitted.map(source => source.category).sort()).toEqual(['goal', 'response'])
+  })
+
+  it('does not manufacture a goal outcome from a terminal projection when attached late', async () => {
+    const goal = { id: 'already-complete', revision: 2, phase: 'complete' }
+    const h = context({ sessionProjections: { stateOf: (_session, key) => key === 'goal' ? { current: { goal } } : undefined } })
+    h.start()
+    const session = agent('late-complete')
+    h.emit('session/event', session, { type: 'turn/start', data: { turn: 4 } })
+    h.emit('session/event', session, { type: 'turn/end', data: { turn: 4, reason: { kind: 'completed' } } })
+    await new Promise(resolve => setTimeout(resolve, 1_050))
+    expect(h.emitted.map(source => source.category)).toEqual(['response'])
   })
 
   it('notifies once for committed actionable block and unrecovered live failure, never diagnostic detail', async () => {
