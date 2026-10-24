@@ -30,6 +30,7 @@ export default defineConfig([{
       '@deepseek-ai/cordis',
       '@deepseek-ai/dsh-host-webserver',
       'web-push',
+      'zod',
     ],
   },
 }, {
