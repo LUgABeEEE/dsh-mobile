@@ -99,6 +99,7 @@
     "check:mobile-release": "node ./scripts/check-mobile-release.mjs",
     "check:dsh-compatibility": "node ./scripts/check-dsh-compatibility.mjs",
     "smoke:dsh-boot": "node ./scripts/smoke-dsh-mobile-boot.mjs",
+    "smoke:push-contract": "node ./scripts/smoke-mobile-push-contract.mjs",
     "smoke:transport-recovery": "node ./scripts/smoke-mobile-transport-recovery.mjs",
     "smoke:prompt-failure": "node ./scripts/smoke-prompt-failure.mjs",
     "smoke:plugin-installation": "node ./scripts/smoke-plugin-installation.mjs",
@@ -210,6 +211,7 @@
     "eventsource-parser": "3.1.0",
     "qrcode": "^1.5.4",
     "selfsigned": "^5.5.0",
+    "web-push": "3.6.7",
     "ws": "8.22.0"
   },
   "devDependencies": {
@@ -232,6 +234,7 @@
     "@types/node": "^26.5.1",
     "@types/qrcode": "^1.5.5",
     "@types/react": "~18.3.1",
+    "@types/web-push": "3.6.4",
     "@types/ws": "8.18.2",
     "core-js": "^3.50.0",
     "js-yaml": "^4.3.2",

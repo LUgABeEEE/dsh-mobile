@@ -29,6 +29,7 @@ export default defineConfig([{
     neverBundle: [
       '@deepseek-ai/cordis',
       '@deepseek-ai/dsh-host-webserver',
+      'web-push',
     ],
   },
 }, {
