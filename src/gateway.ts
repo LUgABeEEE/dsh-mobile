@@ -36,6 +36,8 @@ import { AuthFailureRecorder, type AuthFailureEntry } from './auth-failure-log.j
 export type { AuthFailureEntry } from './auth-failure-log.js'
 import { HttpFailureRecorder, type HttpFailureEntry } from './http-failure-log.js'
 export type { HttpFailureEntry } from './http-failure-log.js'
+import { ApiLatencyRecorder, boundedApiPath, type ApiLatencyEntry } from './api-latency-log.js'
+export type { ApiLatencyEntry } from './api-latency-log.js'
 import { UpstreamAuthRecorder, type UpstreamAuthEntry, type UpstreamAuthOutcome } from './upstream-auth-log.js'
 export type { UpstreamAuthEntry } from './upstream-auth-log.js'
 import { ClientModulePreferenceStore, parseExcludedClientModules, type ClientModuleEntry, type ClientModulePreferenceView } from './client-module-preferences.js'
@@ -937,12 +939,38 @@ function isCompressibleContentType(value: string | string[] | undefined): boolea
     || /^(?:application\/(?:javascript|json|xml|x-javascript)|image\/svg\+xml)$/u.test(mediaType)
 }
 
+/** Media types the client must receive frame by frame, without gzip blocking. */
+const INCREMENTAL_MEDIA_TYPES = new Set(['text/event-stream'])
+
+/** Bodies below this size cost more to gzip than they save on the wire. */
+const MIN_COMPRESSIBLE_BYTES = 1024
+
+function responseMediaType(value: string | string[] | undefined): string {
+  const contentType = Array.isArray(value) ? value[0] : value
+  return contentType?.split(';', 1)[0]?.trim().toLowerCase() ?? ''
+}
+
+function isStaticAssetPath(url: string | undefined): boolean {
+  const pathname = url?.split('?', 1)[0] ?? ''
+  return pathname.startsWith('/plugins/') || pathname.startsWith('/assets/')
+}
+
 function canCompressResponse(request: IncomingMessage, response: IncomingMessage): boolean {
-  const pathname = request.url?.split('?', 1)[0] ?? ''
-  const compressibleRequest = (request.method === 'GET' || request.method === 'HEAD')
-    && (pathname.startsWith('/plugins/') || pathname.startsWith('/assets/'))
-  return compressibleRequest
-    && response.statusCode === 200
+  // Every compressible text response is a candidate: documents, API JSON and
+  // asset bundles all stream through the same gzip pipeline. Event streams are
+  // the exception — their frames must reach the client as they are produced.
+  if (request.method !== 'GET' && request.method !== 'HEAD') return false
+  if (INCREMENTAL_MEDIA_TYPES.has(responseMediaType(response.headers['content-type']))) return false
+  // A declared length marks a complete representation, and a tiny one costs more
+  // to compress than it saves. Static assets keep their earlier coverage even when
+  // upstream streams them; any other unknown-length response may be consumed
+  // incrementally, so it keeps its bytes instead of waiting for a gzip block.
+  const declaredLength = Number(response.headers['content-length'])
+  const compressibleSize = Number.isFinite(declaredLength)
+    ? declaredLength >= MIN_COMPRESSIBLE_BYTES
+    : isStaticAssetPath(request.url)
+  if (!compressibleSize) return false
+  return response.statusCode === 200
     && request.headers.range === undefined
     && response.headers['content-range'] === undefined
     && response.headers['content-encoding'] === undefined
@@ -1220,6 +1248,7 @@ export class MobileAccessGateway {
   private readonly clientModuleRevocations = new Set<Promise<void>>()
   private readonly authFailures: AuthFailureRecorder
   private readonly httpFailures: HttpFailureRecorder
+  private readonly apiLatency: ApiLatencyRecorder
   private readonly upstreamAuthDiagnostics: UpstreamAuthRecorder
 
   constructor(
@@ -1234,9 +1263,11 @@ export class MobileAccessGateway {
     authFailureLog?: (entry: AuthFailureEntry) => void,
     httpFailureLog?: (entry: HttpFailureEntry) => void,
     upstreamAuthLog?: (entry: UpstreamAuthEntry) => void,
+    apiLatencyLog?: (entry: ApiLatencyEntry) => void,
   ) {
     this.authFailures = new AuthFailureRecorder(authFailureLog)
     this.httpFailures = new HttpFailureRecorder(httpFailureLog)
+    this.apiLatency = new ApiLatencyRecorder(apiLatencyLog)
     this.upstreamAuthDiagnostics = new UpstreamAuthRecorder(upstreamAuthLog)
     this.clientModulePreferences = clientModulePreferences ?? new ClientModulePreferenceStore(
       join(dirname(config.stateFile), `${basename(config.stateFile)}.client-modules.json`), config.excludedClientModules,
@@ -3000,6 +3031,21 @@ export class MobileAccessGateway {
       operation.abort()
     }
     response.once('close', onClose)
+    const startedAt = performance.now()
+    const latencyPath = boundedApiPath(request.url)
+    // The client's wait ends when the response closes: a completed body or an
+    // aborted read. Sampling only completed streams would hide the timeouts this
+    // diagnostic exists to explain, so the close listener records both.
+    if (latencyPath !== undefined) {
+      response.once('close', () => {
+        this.apiLatency.record({
+          method: request.method,
+          path: latencyPath,
+          status: response.headersSent ? response.statusCode : 0,
+          durationMs: performance.now() - startedAt,
+        })
+      })
+    }
     // The HTTP parser accepts no payload without Content-Length or Transfer-Encoding.
     // Draining a bodyless GET once keeps its IncomingMessage out of retry pipelines.
     if (replayable) request.resume()
