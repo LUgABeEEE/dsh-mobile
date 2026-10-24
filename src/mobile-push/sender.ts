@@ -2,7 +2,8 @@ import https, { type RequestOptions as HttpsRequestOptions } from 'node:https'
 import { lookup as dnsLookup } from 'node:dns/promises'
 import type { ClientRequest, IncomingMessage } from 'node:http'
 import type { LookupFunction } from 'node:net'
-import { generateRequestDetails, generateVAPIDKeys, type RequestOptions as WebPushOptions } from 'web-push'
+import webPush from 'web-push'
+import type { RequestOptions as WebPushOptions } from 'web-push'
 import { ATTEMPT_TIMEOUT_MS, MAX_PAYLOAD_BYTES, type PushRegistration, type VapidKeys } from './contracts.js'
 import { isLoopbackAddress } from '../network.js'
 import { resolveAppleEndpoint, validatePushSubscription, type AppleEndpointResolver } from './endpoint.js'
@@ -12,7 +13,7 @@ const MAX_TTL_SECONDS = 1800
 const CONTENT_ENCODING = 'aes128gcm'
 
 export type PushSendResult =
-  | { readonly kind: 'accepted' | 'gone' | 'suspended' | 'permanent' }
+  | { readonly kind: 'accepted' | 'gone' | 'suspended' | 'permanent' | 'cancelled' }
   | { readonly kind: 'retry'; readonly retryAfterMs?: number }
 
 interface PushResponse { readonly statusCode: number; readonly headers: IncomingMessage['headers'] }
@@ -181,7 +182,7 @@ function makePinnedLookup(hostname: string, address: { readonly address: string;
 
 function requestOptions(
   url: URL,
-  details: ReturnType<typeof generateRequestDetails>,
+  details: ReturnType<typeof webPush.generateRequestDetails>,
   address: { readonly address: string; readonly family: 4 | 6 },
 ): HttpsRequestOptions {
   return {
@@ -197,7 +198,7 @@ function requestOptions(
 
 /** Generate one persistent installation VAPID key pair via the maintained library. */
 export function createVapidKeys(): VapidKeys {
-  const { publicKey, privateKey } = generateVAPIDKeys()
+  const { publicKey, privateKey } = webPush.generateVAPIDKeys()
   return Object.freeze({ publicKey, privateKey })
 }
 
@@ -223,6 +224,7 @@ export class PushSender {
     subject: string
     keys: VapidKeys
     signal: AbortSignal
+    beforeRequest?: (signal: AbortSignal) => Promise<boolean>
   }): Promise<PushSendResult> {
     const started = performance.now()
     const controller = new AbortController()
@@ -251,10 +253,23 @@ export class PushSender {
         TTL: input.ttlSeconds,
         timeout: ATTEMPT_TIMEOUT_MS,
       }
-      let details: ReturnType<typeof generateRequestDetails>
-      try { details = generateRequestDetails(subscription, input.payload, options) } catch { return { kind: 'permanent' } }
+      let details: ReturnType<typeof webPush.generateRequestDetails>
+      try { details = webPush.generateRequestDetails(subscription, input.payload, options) } catch { return { kind: 'permanent' } }
       if (controller.signal.aborted || performance.now() - started >= this.budgetMs) return { kind: 'retry' }
       const requestConfig = requestOptions(resolved.url, details, resolved.addresses[0]!)
+      const beforeRequest = input.beforeRequest
+      if (beforeRequest !== undefined) {
+        if (typeof beforeRequest !== 'function') return { kind: 'cancelled' }
+        let permitted: boolean
+        try {
+          permitted = await abortable(Promise.resolve().then(() => beforeRequest(controller.signal)), controller.signal)
+        } catch {
+          return { kind: 'cancelled' }
+        }
+        if (permitted !== true || controller.signal.aborted || performance.now() - started >= this.budgetMs) {
+          return { kind: 'cancelled' }
+        }
+      }
       const response = await abortable(
         responseFromRequest(this.requestFactory, resolved.url, requestConfig, details.body ?? Buffer.alloc(0), controller.signal),
         controller.signal,

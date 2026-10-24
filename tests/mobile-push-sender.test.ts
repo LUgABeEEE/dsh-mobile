@@ -1,4 +1,8 @@
+import { execFileSync, spawnSync } from 'node:child_process'
 import { EventEmitter } from 'node:events'
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
+import { basename, dirname, join, resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { Readable } from 'node:stream'
 import type { RequestOptions as HttpsRequestOptions } from 'node:https'
 import type { ClientRequest, IncomingMessage } from 'node:http'
@@ -33,6 +37,12 @@ function response(statusCode: number, headers: IncomingMessage['headers'] = {}, 
   queueMicrotask(() => { for (const chunk of chunks) result.push(chunk); result.push(null) })
   return result
 }
+
+const failedAdmissionCases: readonly (readonly [string, (signal: AbortSignal) => Promise<boolean>])[] = [
+  ['denied', async () => false],
+  ['unavailable', async () => undefined as unknown as boolean],
+  ['throws', async () => { throw new Error('private authorization detail') }],
+]
 
 const registration = {
   scopeId: 'scope', deviceId: 'device', installationId: 'install', origin: 'https://100.64.0.5',
@@ -73,6 +83,65 @@ function senderFor(status: number, headers: IncomingMessage['headers'] = {}, bod
   })
   return { sender, requestCount: () => requestCount, get url() { return lastUrl }, get options() { return lastOptions }, get request() { return lastRequest } }
 }
+
+function respondingRequest(status: number, onRequest: () => void = () => {}): (url: URL, options: HttpsRequestOptions) => ClientRequest {
+  return () => {
+    onRequest()
+    const request = new FakeRequest(current => {
+      current.response = response(status)
+      queueMicrotask(() => current.emit('response', current.response))
+    })
+    return request as unknown as ClientRequest
+  }
+}
+
+function findExternalizedSenderModule(directory: string): string | undefined {
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    const path = join(directory, entry.name)
+    if (entry.isDirectory()) {
+      const nested = findExternalizedSenderModule(path)
+      if (nested) return nested
+    } else if ((entry.name.endsWith('.mjs') || entry.name.endsWith('.js'))
+      && readFileSync(path, 'utf8').includes('web-push')) {
+      return path
+    }
+  }
+  return undefined
+}
+
+describe('native Node ESM sender packaging', () => {
+  it('loads the compiled sender with web-push externalized in a native Node ESM loader', () => {
+    const root = resolve(process.cwd())
+    const temporary = mkdtempSync(join(root, '.tmp-push-sender-esm-'))
+    try {
+      execFileSync(process.execPath, [
+        resolve(root, 'node_modules/tsdown/dist/run.mjs'),
+        'src/mobile-push/sender.ts',
+        '--no-config',
+        '--format', 'esm',
+        '--deps.never-bundle', 'web-push',
+        '--out-dir', temporary,
+        '--root', root,
+        '--target', 'node22',
+        '--logLevel', 'error',
+      ], { cwd: root, stdio: 'pipe' })
+      const output = findExternalizedSenderModule(temporary)
+      expect(output).toBeDefined()
+      const imported = spawnSync(process.execPath, [
+        '--input-type=module',
+        '-e',
+        `await import(${JSON.stringify(pathToFileURL(output!).href)})`,
+      ], { cwd: root, encoding: 'utf8' })
+      expect(imported.status, imported.stderr).toBe(0)
+    } finally {
+      const target = resolve(temporary)
+      if (dirname(target) !== root || !basename(target).startsWith('.tmp-push-sender-esm-')) {
+        throw new Error('refusing to remove unexpected temporary sender build path')
+      }
+      rmSync(target, { recursive: true, force: true })
+    }
+  })
+})
 
 describe('Apple Web Push endpoint validation', () => {
   it('canonicalizes WHATWG URL identity without applying push policy', () => {
@@ -311,6 +380,98 @@ describe('bounded Apple Web Push sender', () => {
     expect(await handshakeSender.send(input())).toEqual({ kind: 'retry' })
     expect(performance.now() - handshakeStarted).toBeLessThan(500)
     expect(stalledRequest?.destroyed).toBe(true)
+  })
+
+  it('re-runs per-call admission after held DNS and cancels before creating a request', async () => {
+    let finishLookup!: (addresses: readonly { address: string; family: 4 }[]) => void
+    let lookupEntered!: () => void
+    const entered = new Promise<void>(resolve => { lookupEntered = resolve })
+    const calls = vi.fn()
+    const sender = new PushSender({
+      resolve: () => new Promise(resolve => { finishLookup = resolve; lookupEntered() }),
+      request: respondingRequest(201, calls),
+    })
+    let stillAuthorized = true
+    const sending = sender.send({ ...input(), beforeRequest: async () => stillAuthorized })
+    await entered
+    stillAuthorized = false
+    finishLookup([{ address: '8.8.8.8', family: 4 }])
+    expect(await sending).toEqual({ kind: 'cancelled' })
+    expect(calls).not.toHaveBeenCalled()
+  })
+
+  it.each(failedAdmissionCases)('fails closed when per-call admission %s', async (_case, beforeRequest) => {
+    const calls = vi.fn()
+    const sender = new PushSender({
+      resolve: async () => [{ address: '8.8.8.8', family: 4 }],
+      request: respondingRequest(201, calls),
+    })
+    expect(await sender.send({ ...input(), beforeRequest })).toEqual({ kind: 'cancelled' })
+    expect(calls).not.toHaveBeenCalled()
+  })
+
+  it('cancels a guard that remains pending through the absolute deadline and ignores a late allow', async () => {
+    let allowLate!: (allowed: boolean) => void
+    let guardSignal!: AbortSignal
+    let guardEntered!: () => void
+    const entered = new Promise<void>(resolve => { guardEntered = resolve })
+    const calls = vi.fn()
+    const sender = new PushSender({
+      attemptTimeoutMs: 45,
+      resolve: async () => [{ address: '8.8.8.8', family: 4 }],
+      request: respondingRequest(201, calls),
+    })
+    const started = Date.now()
+    const sending = sender.send({
+      ...input(),
+      beforeRequest: (signal: AbortSignal) => {
+        guardSignal = signal
+        return new Promise<boolean>(resolve => { allowLate = resolve; guardEntered() })
+      },
+    })
+    const phase = await Promise.race([entered.then(() => 'guard'), sending.then(() => 'finished')])
+    expect(phase).toBe('guard')
+    expect(await sending).toEqual({ kind: 'cancelled' })
+    expect(Date.now() - started).toBeLessThan(500)
+    expect(guardSignal.aborted).toBe(true)
+    allowLate(true)
+    await new Promise<void>(resolve => setImmediate(resolve))
+    expect(calls).not.toHaveBeenCalled()
+  })
+
+  it('cancels a pending guard on caller abort and ignores a late allow', async () => {
+    let allowLate!: (allowed: boolean) => void
+    let guardEntered!: () => void
+    const entered = new Promise<void>(resolve => { guardEntered = resolve })
+    const calls = vi.fn()
+    const controller = new AbortController()
+    const sender = new PushSender({
+      resolve: async () => [{ address: '8.8.8.8', family: 4 }],
+      request: respondingRequest(201, calls),
+    })
+    const sending = sender.send({
+      ...input(controller.signal),
+      beforeRequest: (_signal: AbortSignal) => new Promise<boolean>(resolve => { allowLate = resolve; guardEntered() }),
+    })
+    const phase = await Promise.race([entered.then(() => 'guard'), sending.then(() => 'finished')])
+    expect(phase).toBe('guard')
+    controller.abort()
+    expect(await sending).toEqual({ kind: 'cancelled' })
+    allowLate(true)
+    await new Promise<void>(resolve => setImmediate(resolve))
+    expect(calls).not.toHaveBeenCalled()
+  })
+
+  it('preserves provider status after an allowed per-call admission check', async () => {
+    const calls = vi.fn()
+    const allowed = vi.fn(async () => true)
+    const sender = new PushSender({
+      resolve: async () => [{ address: '8.8.8.8', family: 4 }],
+      request: respondingRequest(410, calls),
+    })
+    expect(await sender.send({ ...input(), beforeRequest: allowed })).toEqual({ kind: 'gone' })
+    expect(allowed).toHaveBeenCalledOnce()
+    expect(calls).toHaveBeenCalledOnce()
   })
 
   it('uses a canonical HTTPS app-origin subject by default and rejects localhost subjects', async () => {
