@@ -178,7 +178,7 @@ describe('public host lifecycle', () => {
     expect(source.expiresAt - source.createdAt).toBe(300_000)
   })
 
-  it('invalidates a continued question when a newer turn starts', async () => {
+  it('keeps a continued question eligible across later turns and unrelated inbox activity, then stales its exact reply', async () => {
     const active = [{ callId: 'call-newer-turn', questions: [{ id: 'q1', question: '?' }], state: 'continued' as const }]
     const boundary = { openTurnStartSeq: 1, lastTurn: 1 }
     const h = context({ sessionProjections: { stateOf: (_session, key) => key === 'turnBoundary' ? boundary : key === 'userQuestions' ? { questions: { active, settled: [] } } : undefined } })
@@ -186,11 +186,51 @@ describe('public host lifecycle', () => {
     await h.emit('user-questions/request', questionRequest('newer-turn', { wait: { callId: 'call-newer-turn', timed: true } }), async () => ({ pending: true }))
     await vi.waitFor(() => expect(h.emitted).toHaveLength(1), { timeout: 3_000 })
     const source = h.emitted[0]!
-    expect(await host.eligible(source)).toBe(true)
+    expect(await host.reconcile(source)).toBe('eligible')
     boundary.openTurnStartSeq = 2
     boundary.lastTurn = 2
     h.emit('session/event', agent('newer-turn'), { type: 'turn/start', data: { turn: 2 } })
-    expect(await host.eligible(source)).toBe(false)
+    expect(await host.reconcile(source)).toBe('eligible')
+    h.emit('agent/inbox/inserted', { agent: agent('newer-turn'), message: { id: 'unrelated', role: 'user', source: { kind: 'user' }, content: [] } })
+    expect(await host.reconcile(source)).toBe('eligible')
+    h.emit('agent/inbox/inserted', { agent: agent('newer-turn'), message: { id: 'reply', role: 'user', source: { kind: 'user-question-reply', callId: 'call-newer-turn', outcome: 'answered' }, content: [] } })
+    expect(await host.reconcile(source)).toBe('stale')
+  })
+
+  it('keeps a callId-less timed question unverifiable even while its live request remains', async () => {
+    const h = context(); const host = h.start()
+    await h.emit('user-questions/request', questionRequest('opaque-timed', { wait: { timed: true } }), async () => ({ pending: true }))
+    await vi.waitFor(() => expect(h.emitted).toHaveLength(1), { timeout: 3_000 })
+    const source = h.emitted[0]!
+    expect(source.callId).toBeUndefined()
+    expect(await host.reconcile(source)).toBe('unverifiable')
+  })
+
+  it('keeps an actually aborted timed request stale after newer-turn preservation', async () => {
+    const active = [{ callId: 'call-aborted', questions: [{ id: 'q1', question: '?' }], state: 'continued' as const }]
+    const h = context({ sessionProjections: { stateOf: () => ({ questions: { active, settled: [] } }) } })
+    const host = h.start()
+    const controller = new AbortController()
+    await h.emit('user-questions/request', questionRequest('aborted-timed', { wait: { callId: 'call-aborted', timed: true }, signal: controller.signal }), async () => ({ pending: true }))
+    await vi.waitFor(() => expect(h.emitted).toHaveLength(1), { timeout: 3_000 })
+    const source = h.emitted[0]!
+    expect(await host.reconcile(source)).toBe('eligible')
+    controller.abort(new Error('the foreground request was cancelled'))
+    expect(await host.reconcile(source)).toBe('stale')
+  })
+
+  it('still invalidates a live legacy plan wait on unrelated inbox activity', async () => {
+    const h = context(); const host = h.start()
+    let settle!: (value: unknown) => void
+    const request = questionRequest('legacy-inbox', { questions: [{ id: 'review', question: 'Review?', intent: { kind: 'plan-review', approve: 'Approve', callId: 'legacy-plan' } }] })
+    const pending = h.emit('user-questions/request', request, () => new Promise(resolve => { settle = resolve }))
+    await vi.waitFor(() => expect(h.emitted).toHaveLength(1), { timeout: 3_000 })
+    const source = h.emitted[0]!
+    expect(await host.reconcile(source)).toBe('eligible')
+    h.emit('agent/inbox/inserted', { agent: agent('legacy-inbox'), message: { id: 'unrelated', role: 'user', source: { kind: 'user' }, content: [] } })
+    expect(await host.reconcile(source)).toBe('stale')
+    settle({ answers: [] })
+    await expect(pending).resolves.toEqual({ answers: [] })
   })
 
   it('retains timed continuation when the real waterfall rejects with ASK_TIMED_OUT', async () => {

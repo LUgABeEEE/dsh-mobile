@@ -154,7 +154,6 @@ function verifyQuestion(source: PushSource, values: Record<string, unknown>, age
     const state = lifecycle(values)
     const turn = safeNumber(source.turn)
     if (turn === undefined || !state) return 'unverifiable'
-    if (state.latestTurn > turn) return 'stale'
     if (state.latestTurn < turn) return 'unverifiable'
     return 'eligible'
   }

@@ -95,7 +95,7 @@ export function createPushHost(ctx: ContextLike): PushHost {
       if (!refreshWaterfallObservers()) disable()
     })
     const sessionEvents = listen('session/event', (session: PublicAgentLike, event: any) => {
-      if (event?.type === 'turn/start' || event?.type === 'agent/inbox/inserted' || event?.type === 'agent/inbox/spliced') requests.invalidateSession(session.id)
+      if (event?.type === 'turn/start' || event?.type === 'agent/inbox/inserted' || event?.type === 'agent/inbox/spliced') requests.invalidateSession(session.id, { preserveTimed: true })
       outcomes.onSessionEvent(session, event)
       if (event?.type === 'user/message' && event?.data?.source?.kind === 'user-question-reply') {
         requests.queuedReply(session.id, event.data.source.callId)
@@ -119,7 +119,7 @@ export function createPushHost(ctx: ContextLike): PushHost {
         requests.queuedReply(agent.id, message.source.callId)
       }
       if (agent?.id) {
-        requests.invalidateSession(agent.id)
+        requests.invalidateSession(agent.id, { preserveTimed: true })
         outcomes.onSessionEvent(agent, { type: 'agent/inbox/inserted' })
       }
     })

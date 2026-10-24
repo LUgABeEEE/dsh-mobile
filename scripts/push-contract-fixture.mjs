@@ -369,7 +369,7 @@ async function runFixtureJob(ctx, controls) {
       const handle = await ctx.agents.create({ sessionId: 'push-contract-' + label + '-' + randomUUID(), agentOptions: { provider: 'push-contract-no-provider', model: 'no-network-fixture' } })
       handles.push(handle)
       const callId = 'push-contract-' + label + '-call-' + randomUUID()
-      const question = { id: label, question: 'Continue this isolated reconciliation fixture?', header: 'Reconcile' }
+      const question = { id: label, question: 'Continue this isolated reconciliation fixture?', header: 'Reconcile', options: [{ label: 'Yes' }] }
       const argumentsText = JSON.stringify({ questions: [question], timeout: 25 })
       await handle.agent.session.append('turn/start', { turn: 1 })
       await handle.agent.session.append('step/start', { turn: 1, step: 1 })
@@ -414,7 +414,21 @@ async function runFixtureJob(ctx, controls) {
       return { handle, callId, question, source }
     }
     const coldContinued = await createContinuedQuestion('cold-continued')
+    await coldContinued.handle.agent.session.append('turn/start', { turn: 2 })
+    await coldContinued.handle.agent.session.append('turn/end', { turn: 2, reason: { kind: 'completed' } })
+    const laterTurnFlushed = await ctx.sessions.flush(coldContinued.handle.agent.session)
+    const liveAfterLaterTurn = await host.reconcile(coldContinued.source)
+    check('Host A keeps a continued timed question eligible after a later completed turn', laterTurnFlushed === true && liveAfterLaterTurn === 'eligible', { flushed: laterTurnFlushed, sourceTurn: coldContinued.source.turn, liveResult: liveAfterLaterTurn })
+    const laterResponse = await waitForOwned(() => seen.find(item => item.sessionId === coldContinued.handle.agent.id && item.category === 'response' && item.turn === 2), 'later ordinary turn response')
+    result.sources.push(sourceSummary(laterResponse))
     const coldQueued = await createContinuedQuestion('cold-queued')
+    await coldQueued.handle.agent.session.append('turn/start', { turn: 2 })
+    await coldQueued.handle.agent.session.append('turn/end', { turn: 2, reason: { kind: 'completed' } })
+    const coldQueuedLaterTurnFlushed = await ctx.sessions.flush(coldQueued.handle.agent.session)
+    const coldQueuedLiveAfterLaterTurn = await host.reconcile(coldQueued.source)
+    check('Host A keeps a queued-reply question eligible after a later completed turn', coldQueuedLaterTurnFlushed === true && coldQueuedLiveAfterLaterTurn === 'eligible', { flushed: coldQueuedLaterTurnFlushed, sourceTurn: coldQueued.source.turn, liveResult: coldQueuedLiveAfterLaterTurn })
+    const coldQueuedLaterResponse = await waitForOwned(() => seen.find(item => item.sessionId === coldQueued.handle.agent.id && item.category === 'response' && item.turn === 2), 'queued-reply later ordinary turn response')
+    result.sources.push(sourceSummary(coldQueuedLaterResponse))
     const hostA = host
     await hostA.close()
     await stage('reconcile-host-a-closed')
@@ -447,10 +461,11 @@ async function runFixtureJob(ctx, controls) {
       } finally { observation?.[Symbol.dispose]() }
     }
     const coldContinuedView = await queryCold(coldContinued.handle.agent.id)
+    const coldContinuedLatestTurn = coldContinuedView.values?.mobilePushLifecycle?.latestTurn
     const continuedCallActive = coldContinuedView.values?.userQuestions?.active?.some(item => item.callId === coldContinued.callId && item.state === 'continued')
     const continuedCallQueued = ['next-turn', 'next-step'].some(key => (coldContinuedView.values?.inbox?.[key] ?? []).some(message => message?.source?.kind === 'user-question-reply' && message.source.callId === coldContinued.callId && message.source.outcome === 'answered'))
     const continuedResult = await reconcile(coldContinued.source)
-    check('Host B cold-reconciles a continued question without a live Agent', coldContinuedView.source === 'prepared' && continuedCallActive && !continuedCallQueued && ctx.agents.get(coldContinued.handle.agent.id) === undefined && continuedResult === 'eligible', { observation: coldContinuedView.source, queryErrorCode: coldContinuedView.errorCode, queryErrorName: coldContinuedView.errorName, cursor: coldContinuedView.cursor, asOfSeq: coldContinuedView.asOfSeq, valuesPresent: Boolean(coldContinuedView.values), result: continuedResult, active: continuedCallActive, activeQuestionProjected: continuedCallActive, matchingReplyQueued: continuedCallQueued, sourceTurn: coldContinued.source.turn, projectionKeys: Object.keys(coldContinuedView.values ?? {}), userQuestionKeys: Object.keys(coldContinuedView.values?.userQuestions ?? {}), inboxKeys: Object.keys(coldContinuedView.values?.inbox ?? {}), lifecycle: coldContinuedView.values?.mobilePushLifecycle })
+    check('Host B cold-reconciles a continued question without a live Agent', coldContinuedView.source === 'prepared' && continuedCallActive && !continuedCallQueued && ctx.agents.get(coldContinued.handle.agent.id) === undefined && coldContinued.source.turn === 1 && coldContinuedLatestTurn === 2 && continuedResult === 'eligible', { observation: coldContinuedView.source, queryErrorCode: coldContinuedView.errorCode, queryErrorName: coldContinuedView.errorName, cursor: coldContinuedView.cursor, asOfSeq: coldContinuedView.asOfSeq, valuesPresent: Boolean(coldContinuedView.values), result: continuedResult, active: continuedCallActive, activeQuestionProjected: continuedCallActive, matchingReplyQueued: continuedCallQueued, sourceTurn: coldContinued.source.turn, latestTurn: coldContinuedLatestTurn, projectionKeys: Object.keys(coldContinuedView.values ?? {}), userQuestionKeys: Object.keys(coldContinuedView.values?.userQuestions ?? {}), inboxKeys: Object.keys(coldContinuedView.values?.inbox ?? {}), lifecycle: coldContinuedView.values?.mobilePushLifecycle })
     const queuedBeforeReplyResult = await reconcile(coldQueued.source)
     check('Host B keeps the continued question eligible after restart before a reply', queuedBeforeReplyResult === 'eligible' && ctx.agents.get(coldQueued.handle.agent.id) === coldQueued.handle.agent, { result: queuedBeforeReplyResult, liveAgentRetained: ctx.agents.get(coldQueued.handle.agent.id) === coldQueued.handle.agent })
     coldQueued.handle.agent.inbox.append('next-turn', {

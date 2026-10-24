@@ -153,6 +153,8 @@ try {
     'blocked goal source is generic and has no raw blocked reason',
     'terminal failure outcome excludes diagnostic detail',
     'Host B requires the complete public reconciliation contract',
+    'Host A keeps a continued timed question eligible after a later completed turn',
+    'Host A keeps a queued-reply question eligible after a later completed turn',
     'Host B cold-reconciles a continued question without a live Agent',
     'Host B keeps the continued question eligible after restart before a reply',
     'Host B post-restart reconciliation marks a queued inbox reply stale',

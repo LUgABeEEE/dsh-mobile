@@ -60,9 +60,9 @@ export class RequestLifetimes {
     if (rec) this.#invalidate(rec, true)
   }
 
-  invalidateSession(sessionId: string): void {
+  invalidateSession(sessionId: string, options: { readonly preserveTimed?: boolean } = {}): void {
     for (const rec of this.#records.values()) {
-      if (rec.source.sessionId === sessionId) this.#invalidate(rec, false)
+      if (rec.source.sessionId === sessionId && !(options.preserveTimed && rec.timed)) this.#invalidate(rec, false)
     }
   }
 
@@ -72,6 +72,7 @@ export class RequestLifetimes {
     if (!rec) return 'unverifiable'
     if (this.#closed || rec.settled || rec.queuedReply || !rec.live) return 'stale'
     const timed = this.#callForSource(source)
+    if (rec.timed && !timed) return 'unverifiable'
     if (!timed) return 'eligible' // legacy waits are verifiable only while their live request exists
     const state = this.#projection(source.sessionId)
     const view = state?.questions ?? state
