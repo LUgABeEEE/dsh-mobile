@@ -1,0 +1,332 @@
+import { createHash, generateKeyPairSync } from 'node:crypto'
+import { describe, expect, it, vi } from 'vitest'
+import { MemoryPushStore } from '../src/mobile-push/store.js'
+import { PushRegistry } from '../src/mobile-push/registry.js'
+import { createMobilePushController, type MobilePushApiAdapter, type MobilePushEnvironment } from '../src/mobile-push/client.js'
+import type { PushConfig, PushEnrollment, PushEnrollmentResult, PushOwner, PushPreferences, PushSubscriptionData, VapidKeys } from '../src/mobile-push/contracts.js'
+import { MOBILE_PUSH_SETTINGS_COPY } from '../src/mobile-push/settings.js'
+
+const preferences: PushPreferences = { question: true, plan: true, approval: true, response: true, goal: true, failure: true }
+const subscriptionData: PushSubscriptionData = { endpoint: 'https://push.example/sub', keys: { p256dh: 'p256dh', auth: 'auth' } }
+const config: PushConfig = {
+  available: true, publicKey: 'AQID', keyFingerprint: 'fingerprint', installationId: 'install-id',
+  ownerGeneration: 1, registrationGeneration: 0, status: 'disabled', preferences,
+}
+function enrollment(mutationGeneration?: number): PushEnrollmentResult {
+  return { registration: {
+    scopeId: 'scope', deviceId: 'device', origin: 'https://example.test', installationId: 'install-id',
+    subscription: subscriptionData, locale: 'en', preferences, generation: 1, keyFingerprint: 'fingerprint',
+    enabled: true, health: 'ready',
+  }, ...(mutationGeneration === undefined ? {} : { mutationGeneration }) }
+}
+function setup(overrides: Partial<MobilePushEnvironment> = {}, apiOverrides: Partial<MobilePushApiAdapter> = {}) {
+  const subscription = { endpoint: subscriptionData.endpoint, options: { applicationServerKey: new Uint8Array([1, 2, 3]) }, unsubscribe: vi.fn(async () => true), toJSON: () => subscriptionData }
+  const pushManager = {
+    getSubscription: vi.fn(async () => null),
+    subscribe: vi.fn(async () => subscription),
+  }
+  const api: MobilePushApiAdapter = {
+    getConfig: vi.fn(async () => config),
+    enroll: vi.fn(async () => enrollment(7)),
+    disable: vi.fn(async () => undefined),
+    updatePreferences: vi.fn(async () => undefined),
+    sendTest: vi.fn(async () => undefined),
+    ...apiOverrides,
+  }
+  const environment: MobilePushEnvironment = {
+    secureContext: true, isTopLevel: true, standalone: true, permission: 'default',
+    pushManager, storage: { getItem: vi.fn(() => null), setItem: vi.fn() },
+    origin: 'https://example.test', randomUUID: () => 'fresh-install-id',
+    ...overrides,
+  }
+  return { controller: createMobilePushController(api, environment), api, environment, pushManager, subscription }
+}
+async function flush() { for (let i = 0; i < 8; i++) await Promise.resolve() }
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>(accept => { resolve = accept })
+  return { promise, resolve }
+}
+function registryKeys(): VapidKeys {
+  const jwk = generateKeyPairSync('ec', { namedCurve: 'prime256v1' }).privateKey.export({ format: 'jwk' })
+  return { publicKey: Buffer.concat([Buffer.from([4]), Buffer.from(jwk.x!, 'base64url'), Buffer.from(jwk.y!, 'base64url')]).toString('base64url'), privateKey: jwk.d! }
+}
+function registryApi(
+  service: PushRegistry, owner: PushOwner, calls: Array<{ installationId: string; ifGeneration?: number }>,
+  enroll: (value: PushEnrollment) => Promise<PushEnrollmentResult> = value => service.upsert(owner, value),
+): MobilePushApiAdapter {
+  return {
+    getConfig: installationId => service.config(owner, installationId),
+    enroll,
+    disable: async value => {
+      calls.push(value)
+      const ifGeneration = Reflect.get(value, 'ifGeneration') as number | undefined
+      await service.disable({ ...owner, installationId: value.installationId }, ifGeneration)
+    },
+    updatePreferences: async () => undefined,
+    sendTest: async () => undefined,
+  }
+}
+function createRegistryBrowserEnvironment(installationId: string, publicKey: string): { environment: MobilePushEnvironment } {
+  const subscription = {
+    endpoint: 'https://push.apple.com/topic/token-a',
+    options: { applicationServerKey: new Uint8Array(Buffer.from(publicKey, 'base64url')) },
+    toJSON: () => ({ endpoint: 'https://push.apple.com/topic/token-a', keys: { p256dh: 'p256dh-a', auth: 'auth-a' } }),
+    unsubscribe: async () => true,
+  }
+  return { environment: {
+    secureContext: true, isTopLevel: true, standalone: true, permission: 'default', origin: 'https://example.test',
+    randomUUID: () => installationId,
+    storage: { getItem: () => null, setItem: () => undefined },
+    pushManager: { getSubscription: async () => null, subscribe: async () => subscription },
+  } }
+}
+describe('mobile push browser controller', () => {
+  it('provides localized action copy in English, Chinese and Italian', () => {
+    expect(MOBILE_PUSH_SETTINGS_COPY.en.enable).toBe('Enable')
+    expect(MOBILE_PUSH_SETTINGS_COPY.zh.enable).toBe('启用')
+    expect(MOBILE_PUSH_SETTINGS_COPY.it.enable).toBe('Attiva')
+    expect(MOBILE_PUSH_SETTINGS_COPY.en.test).toBe('Send test')
+    expect(MOBILE_PUSH_SETTINGS_COPY.zh.test).toBe('发送测试')
+    expect(MOBILE_PUSH_SETTINGS_COPY.it.test).toBe('Invia test')
+  })
+  it('passes its generated installation id to the public config adapter', async () => {
+    const { controller, api } = setup()
+    controller.start()
+    await flush()
+    expect(api.getConfig).toHaveBeenCalledWith('fresh-install-id')
+    controller.stop()
+  })
+
+  it('refreshes from config without prompting or creating a subscription', async () => {
+    const { controller, pushManager } = setup()
+    controller.start()
+    await flush()
+    controller.refresh()
+    await flush()
+    expect(pushManager.subscribe).not.toHaveBeenCalled()
+    expect(controller.getSnapshot().state).toBe('ready')
+    controller.stop()
+  })
+
+  it('uses a memory installation id when local storage is inaccessible', async () => {
+    const storage = { getItem: vi.fn(() => { throw new Error('denied') }), setItem: vi.fn(() => { throw new Error('denied') }) }
+    const { controller, api } = setup({ storage })
+    controller.start()
+    await flush()
+    expect(controller.getSnapshot().state).toBe('ready')
+    expect(api.getConfig).toHaveBeenCalledWith('fresh-install-id')
+    controller.stop()
+  })
+
+  it('keeps insecure, unsupported, tab and denied states distinct', async () => {
+    const cases: Array<[Partial<MobilePushEnvironment>, string]> = [
+      [{ secureContext: false }, 'unsupported'], [{ pushManager: undefined }, 'unsupported'],
+      [{ standalone: false }, 'install'], [{ permission: 'denied' }, 'denied'],
+    ]
+    for (const [environment, state] of cases) {
+      const { controller, pushManager } = setup(environment)
+      controller.start()
+      await flush()
+      expect(controller.getSnapshot().state).toBe(state)
+      expect(pushManager.subscribe).not.toHaveBeenCalled()
+      controller.stop()
+    }
+  })
+
+  it('creates a subscription synchronously in the explicit gesture before unrelated awaits', async () => {
+    const { controller, pushManager } = setup()
+    controller.start()
+    await flush()
+    const pending = controller.enableFromGesture()
+    expect(pushManager.subscribe).toHaveBeenCalledExactlyOnceWith({ userVisibleOnly: true, applicationServerKey: new Uint8Array([1, 2, 3]) })
+    await pending
+    expect(controller.getSnapshot().state).toBe('enabled')
+    controller.stop()
+  })
+
+  it('sends category preference updates as one guarded host mutation', async () => {
+    const nextPreferences = { ...preferences, approval: false, failure: false }
+    const getConfig = vi.fn().mockResolvedValueOnce(config).mockResolvedValue({ ...config, preferences: nextPreferences })
+    const { controller, api } = setup({}, { getConfig })
+    controller.start()
+    await flush()
+    await controller.updatePreferences(nextPreferences)
+    expect(api.updatePreferences).toHaveBeenCalledExactlyOnceWith({
+      installationId: 'install-id', ownerGeneration: 1, registrationGeneration: 0, preferences: nextPreferences,
+    })
+    expect(controller.getSnapshot().preferences).toEqual(nextPreferences)
+    controller.stop()
+  })
+
+  it('does not retry a host rate-limited Send test and hides raw provider errors', async () => {
+    const throttled = Object.assign(new Error('private upstream detail'), { code: 'rate_limited' })
+    const enabledConfig = { ...config, status: 'enabled' as const }
+    const sendTest = vi.fn(async () => { throw throttled })
+    const { controller, api } = setup({}, { getConfig: vi.fn(async () => enabledConfig), sendTest })
+    controller.start()
+    await flush()
+    await controller.sendTest()
+    expect(sendTest).toHaveBeenCalledTimes(1)
+    expect(controller.getSnapshot()).toMatchObject({ state: 'failed', error: 'push.error.generic' })
+    expect(controller.getSnapshot().error).not.toContain('private upstream detail')
+    controller.stop()
+  })
+
+  it('persists host opt-out before unsubscribe and leaves consent disabled on cleanup failure', async () => {
+    const order: string[] = []
+    const { controller, api, pushManager, subscription } = setup({}, {
+      disable: vi.fn(async () => { order.push('disable') }),
+    })
+    subscription.unsubscribe.mockImplementation(async () => { order.push('unsubscribe'); throw Error('cleanup') })
+    controller.start()
+    await flush()
+    await controller.enableFromGesture()
+    await controller.disable()
+    expect(order).toEqual(['disable', 'unsubscribe'])
+    expect(api.disable).toHaveBeenCalledTimes(1)
+    expect(controller.getSnapshot().state).toBe('disabled')
+    controller.stop()
+  })
+
+  it('unsubscribes a subscription created by an attempt whose save fails', async () => {
+    const { controller, subscription } = setup({}, { enroll: vi.fn(async () => { throw new Error('host failure') }) })
+    controller.start()
+    await flush()
+    await controller.enableFromGesture()
+    expect(subscription.unsubscribe).toHaveBeenCalledTimes(1)
+    expect(controller.getSnapshot().state).toBe('failed')
+    controller.stop()
+  })
+
+  it('rejects foreign application-server keys without unsubscribing them', async () => {
+    const foreign = { endpoint: 'https://push.example/foreign', options: { applicationServerKey: new Uint8Array([9, 9, 9]) }, unsubscribe: vi.fn(async () => true), toJSON: () => subscriptionData }
+    const { controller, pushManager, api } = setup()
+    pushManager.getSubscription.mockResolvedValue(foreign as never)
+    controller.start()
+    await flush()
+    await controller.enableFromGesture()
+    expect(foreign.unsubscribe).not.toHaveBeenCalled()
+    expect(pushManager.subscribe).not.toHaveBeenCalled()
+    expect(api.enroll).not.toHaveBeenCalled()
+    controller.stop()
+  })
+
+  it('allows explicit disable to invalidate a held enrollment and conditionally clean its late success', async () => {
+    let finish!: (value: PushEnrollmentResult) => void
+    const enroll = vi.fn(() => new Promise<PushEnrollmentResult>(resolve => { finish = resolve }))
+    const { controller, api } = setup({}, { enroll })
+    controller.start()
+    await flush()
+    const enabling = controller.enableFromGesture()
+    await flush()
+    await controller.disable()
+    finish(enrollment(19))
+    await enabling
+    await flush()
+    expect(api.disable).toHaveBeenNthCalledWith(1, { installationId: 'install-id' })
+    expect(api.disable).toHaveBeenNthCalledWith(2, { installationId: 'install-id', ifGeneration: 19 })
+    expect(controller.getSnapshot().state).toBe('disabled')
+    controller.stop()
+  })
+
+  it('keeps committed enrollment disabled when explicit opt-out precedes its held acknowledgement', async () => {
+    const keys = registryKeys()
+    const installationId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    const owner = { scopeId: 'scope-test', deviceId: 'device-test', origin: 'https://example.test' }
+    const service = new PushRegistry(new MemoryPushStore(), () => keys)
+    await service.initialize()
+    const committed = deferred<PushEnrollmentResult>()
+    const ack = deferred<void>()
+    const calls: Array<{ installationId: string; ifGeneration?: number }> = []
+    const api = registryApi(service, owner, calls, async enrollment => {
+      const result = await service.upsert(owner, enrollment)
+      committed.resolve(result)
+      await ack.promise
+      return result
+    })
+    const browser = createRegistryBrowserEnvironment(installationId, keys.publicKey)
+    const controller = createMobilePushController(api, browser.environment)
+    controller.start()
+    await flush()
+    const enabling = controller.enableFromGesture()
+    const saved = await committed.promise
+    await controller.disable()
+    const disabled = await service.config(owner, installationId)
+    expect(disabled.status).toBe('disabled')
+    ack.resolve()
+    await enabling
+    const afterLateCleanup = await service.config(owner, installationId)
+    expect(afterLateCleanup.status).toBe('disabled')
+    expect(afterLateCleanup.ownerGeneration).toBe(disabled.ownerGeneration)
+    expect(calls).toEqual([{ installationId }, { installationId, ifGeneration: saved.mutationGeneration }])
+    controller.stop()
+    await service.close()
+  })
+
+  it('advances the owner barrier on explicit disable even before a held enrollment reaches commit', async () => {
+    const keys = registryKeys()
+    const installationId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    const owner = { scopeId: 'scope-test', deviceId: 'device-test', origin: 'https://example.test' }
+    const service = new PushRegistry(new MemoryPushStore(), () => keys)
+    await service.initialize()
+    const entered = deferred<void>()
+    const release = deferred<void>()
+    const calls: Array<{ installationId: string; ifGeneration?: number }> = []
+    let rejectedByAdvancedBarrier = false
+    const api = registryApi(service, owner, calls, async enrollment => {
+      entered.resolve()
+      await release.promise
+      try { return await service.upsert(owner, enrollment) }
+      catch (error) { rejectedByAdvancedBarrier = error instanceof Error && /generation/u.test(error.message); throw error }
+    })
+    const browser = createRegistryBrowserEnvironment(installationId, keys.publicKey)
+    const controller = createMobilePushController(api, browser.environment)
+    controller.start()
+    await flush()
+    const enabling = controller.enableFromGesture()
+    await entered.promise
+    await controller.disable()
+    expect((await service.config(owner, installationId)).status).toBe('disabled')
+    release.resolve()
+    await enabling
+    expect(rejectedByAdvancedBarrier).toBe(true)
+    expect(calls).toEqual([{ installationId }])
+    expect((await service.config(owner, installationId)).status).toBe('disabled')
+    controller.stop()
+    await service.close()
+  })
+
+  it('refreshes config after stale-generation rejection without replaying the mutation', async () => {
+    const stale = Object.assign(new Error('stale'), { code: 'stale_generation' })
+    const { controller, api } = setup({}, { updatePreferences: vi.fn(async () => { throw stale }) })
+    controller.start()
+    await flush()
+    await controller.updatePreferences({ ...preferences, question: false })
+    await flush()
+    expect(api.updatePreferences).toHaveBeenCalledTimes(1)
+    expect(api.getConfig).toHaveBeenCalledTimes(2)
+    expect(controller.getSnapshot().state).toBe('ready')
+    controller.stop()
+  })
+
+  it('does not revoke established host consent when stopped', async () => {
+    const { controller, api } = setup({})
+    controller.start()
+    await flush()
+    controller.stop()
+    expect(api.disable).not.toHaveBeenCalled()
+  })
+
+  it('does not compensate a canonical read-only recovery response', async () => {
+    const { controller, api, subscription, pushManager } = setup({
+      permission: 'granted',
+    }, { enroll: vi.fn(async () => enrollment(undefined)) })
+    pushManager.getSubscription.mockResolvedValue(subscription as never)
+    controller.start()
+    await flush()
+    await controller.enableFromGesture()
+    expect(api.disable).not.toHaveBeenCalled()
+    controller.stop()
+  })
+})
