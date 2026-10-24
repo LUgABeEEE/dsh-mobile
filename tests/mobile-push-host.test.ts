@@ -1,0 +1,280 @@
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { createPushHost } from '../src/mobile-push/host.js'
+import type { ContextLike, PushHost, PushSource } from '../src/mobile-push/contracts.js'
+
+const cleanups: Array<() => Promise<void>> = []
+afterEach(async () => { await Promise.all(cleanups.splice(0).map(close => close())) })
+
+type Listener = (...args: any[]) => unknown
+function context(overrides: Partial<ContextLike> = {}) {
+  const listeners = new Map<string, Listener[]>()
+  const emitted: PushSource[] = []
+  const changed: string[] = []
+  let host: PushHost | undefined
+  const ctx: ContextLike = {
+    on(event, listener, options) {
+      const current = listeners.get(event) ?? []
+      if (typeof options === 'object' && options.prepend) current.unshift(listener)
+      else current.push(listener)
+      listeners.set(event, current)
+      return () => listeners.set(event, current.filter(item => item !== listener))
+    },
+    userQuestions: { pending: () => [] },
+    approval: {},
+    sessionProjections: { stateOf: () => undefined },
+    agents: { get: () => undefined, list: () => [], roots: () => [], isOwnedBy: () => false },
+    ...overrides,
+  }
+  return {
+    ctx,
+    emitted,
+    changed,
+    emit(event: string, ...args: unknown[]) {
+      const chain = [...(listeners.get(event) ?? [])]
+      if (event === 'user-questions/request' || event === 'approval/request') {
+        const next = args.pop() as (...values: unknown[]) => unknown
+        const receiver = args[0] && typeof args[0] === 'object' ? args[0] : undefined
+        const invoke = (index: number): unknown => chain[index]
+          ? chain[index]!.apply(receiver, [...args, () => invoke(index + 1)])
+          : next(...args)
+        return invoke(0)
+      }
+      let result: unknown
+      for (const listener of chain) result = listener.apply(args[0] && typeof args[0] === 'object' ? args[0] : undefined, args)
+      return result
+    },
+    listenerCount(event: string) { return listeners.get(event)?.length ?? 0 },
+    start(hostContext: ContextLike = ctx) {
+      if (!host) {
+        host = createPushHost(hostContext)
+        cleanups.push(() => host!.close())
+        host.subscribe(source => emitted.push(source), id => changed.push(id))
+      }
+      return host
+    },
+  }
+}
+
+const agent = (id: string, parentSession?: string) => ({ id, session: { id, header: parentSession ? { parentSession } : {} } })
+const questionRequest = (id: string, extra: Record<string, unknown> = {}) => ({
+  questions: [{ id: 'q1', question: 'Continue?', ...(extra.intent ? { intent: extra.intent } : {}) }],
+  agent: agent(id), signal: new AbortController().signal, ...extra,
+})
+
+describe('public host lifecycle', () => {
+  it('delegates exactly once and preserves answer/error/abort', async () => {
+    const h = context(); h.start()
+    const answer = { answers: [{ id: 'q1', selected: ['Yes'] }] }
+    const next = vi.fn(async () => answer)
+    const outcome = await h.emit('user-questions/request', questionRequest('s1'), next)
+    expect(next).toHaveBeenCalledTimes(1)
+    expect(outcome).toBe(answer)
+    const error = new Error('source failure')
+    const failing = vi.fn(async () => { throw error })
+    await expect(h.emit('user-questions/request', questionRequest('s2'), failing)).rejects.toBe(error)
+    expect(failing).toHaveBeenCalledTimes(1)
+  })
+
+  it('ignores audit-only never/unavailable decisions', async () => {
+    const h = context(); h.start()
+    h.emit('session/event', agent('s1'), { type: 'approval/asked', data: { id: 'audit' } })
+    h.emit('session/event', agent('s1'), { type: 'approval/decided', data: { id: 'audit', outcome: 'unavailable' } })
+    expect(h.emitted).toHaveLength(0)
+    const outcome = await h.emit('approval/request', { agent: agent('s1'), toolName: 'write', signal: new AbortController().signal }, async () => 'unavailable')
+    expect(outcome).toBe('unavailable')
+    expect(h.emitted).toHaveLength(0)
+  })
+
+  it('re-prepends one global observer after root and child Agent setup answerers', async () => {
+    const root = agent('root-agent')
+    const child = agent('child-agent')
+    const agents: typeof root[] = []
+    const active = [{ callId: 'call-root', questions: [{ id: 'q1', question: '?' }], state: 'continued' as const }]
+    const h = context({
+      agents: {
+        get: id => agents.find(candidate => candidate.id === id),
+        list: () => agents,
+        roots: () => agents.filter(candidate => candidate.id === root.id),
+        isOwnedBy: (id, owner) => id === child.id && owner.id === root.id,
+      },
+      sessionProjections: { stateOf: () => ({ questions: { active, settled: [] } }) },
+    })
+    const hostEntries = new Map<string, number>()
+    const instrumentedContext: ContextLike = {
+      ...h.ctx,
+      on(event, listener, options) {
+        return h.ctx.on(event, function (this: unknown, ...args: any[]) {
+          hostEntries.set(event, (hostEntries.get(event) ?? 0) + 1)
+          return listener.apply(this, args)
+        }, options)
+      },
+    }
+    h.start(instrumentedContext)
+    const noAnswerer = Object.assign(new Error('no composed answerer'), { code: 'NO_PROVIDER' })
+    h.ctx.on('user-questions/request', async (request) => {
+      if (request.agent.id === root.id) throw noAnswerer
+    }, { global: true, prepend: true })
+    agents.push(root)
+    h.emit('agent/created', { agent: root, source: { kind: 'fresh' } })
+    expect(h.listenerCount('user-questions/request')).toBe(2)
+
+    const timedOut = Object.assign(new Error('continued'), { code: 'ASK_TIMED_OUT' })
+    const controller = new AbortController()
+    const pending = h.emit('user-questions/request', questionRequest(root.id, {
+      wait: { callId: 'call-root', timed: true }, signal: controller.signal,
+    }), async () => { throw noAnswerer })
+    await expect(Promise.resolve(pending)).rejects.toBe(noAnswerer)
+    expect(hostEntries.get('user-questions/request')).toBe(1)
+    controller.abort(timedOut)
+    await vi.waitFor(() => expect(h.emitted).toHaveLength(1), { timeout: 3_000 })
+    expect(h.emitted[0]?.category).toBe('question')
+    expect(await h.start().eligible(h.emitted[0]!)).toBe(true)
+
+    let settleChildApproval!: (decision: string) => void
+    h.ctx.on('approval/request', (request, _next) => request.agent.id === child.id
+      ? new Promise<string>(resolve => { settleChildApproval = resolve })
+      : undefined, { global: true, prepend: true })
+    agents.push(child)
+    h.emit('agent/created', { agent: child, source: { kind: 'child' } })
+    expect(h.listenerCount('approval/request')).toBe(2)
+    const childApproval = Promise.resolve(h.emit('approval/request', {
+      agent: child, callId: 'approval-child', toolName: 'fixture-write', reason: 'hold', signal: new AbortController().signal,
+    }, async () => 'unavailable'))
+    expect(hostEntries.get('approval/request')).toBe(1)
+    await vi.waitFor(() => expect(h.emitted).toHaveLength(2), { timeout: 3_000 })
+    const approvalSource = h.emitted[1]!
+    expect(approvalSource.category).toBe('approval')
+    expect(approvalSource.sessionId).toBe(child.id)
+    expect(approvalSource.targetSessionId).toBe(root.id)
+    settleChildApproval('granted')
+    await expect(childApproval).resolves.toBe('granted')
+  })
+
+  it('continued remains eligible once, queued reply suppresses, and retains original expiry', async () => {
+    const active: Array<{ callId: string; questions: unknown[]; state: 'open' | 'continued' }> = [{ callId: 'call-1', questions: [{ id: 'q', question: '?' }], state: 'continued' }]
+    const h = context({
+      sessionProjections: { stateOf: () => ({ questions: { active, settled: [] } }) },
+    })
+    h.start()
+    const timeoutSignal = new AbortController()
+    const timeout = Object.assign(new Error('timed request entered continued state'), { code: 'ASK_TIMED_OUT' })
+    const noAnswerer = Object.assign(new Error('no composed user-question answerer'), { code: 'NO_PROVIDER' })
+    void Promise.resolve(h.emit('user-questions/request', questionRequest('s1', { wait: { callId: 'call-1', timed: true }, signal: timeoutSignal.signal }), async () => {
+      timeoutSignal.abort(timeout)
+      throw noAnswerer
+    })).catch(() => {})
+    await vi.waitFor(() => expect(h.emitted).toHaveLength(1), { timeout: 3_000 })
+    const source = h.emitted[0]!
+    expect(source.category).toBe('question')
+    expect(await h.start().eligible(source)).toBe(true)
+    h.emit('session/event', agent('s1'), { type: 'user/message', data: { source: { kind: 'user-question-reply', callId: 'call-1' } } })
+    expect(await h.start().eligible(source)).toBe(false)
+    expect(source.expiresAt - source.createdAt).toBe(300_000)
+  })
+
+  it('retains timed continuation when the real waterfall rejects with ASK_TIMED_OUT', async () => {
+    const active = [{ callId: 'call-timeout-result', questions: [{ id: 'q1', question: '?' }], state: 'continued' as const }]
+    const h = context({ sessionProjections: { stateOf: () => ({ questions: { active, settled: [] } }) } })
+    h.start()
+    const controller = new AbortController()
+    const timedOut = Object.assign(new Error('timed request expired'), { code: 'ASK_TIMED_OUT' })
+    const result = h.emit('user-questions/request', questionRequest('s-timeout', {
+      wait: { callId: 'call-timeout-result', timed: true }, signal: controller.signal,
+    }), async () => {
+      controller.abort(timedOut)
+      throw timedOut
+    })
+    await expect(Promise.resolve(result)).rejects.toBe(timedOut)
+    await vi.waitFor(() => expect(h.emitted).toHaveLength(1), { timeout: 3_000 })
+    expect(h.emitted[0]?.callId).toBe('call-timeout-result')
+    expect(await h.start().eligible(h.emitted[0]!)).toBe(true)
+  })
+
+  it('legacy plan survives projection absence until its live request settles', async () => {
+    const h = context(); h.start()
+    const request = questionRequest('s1', { questions: [{ id: 'q', question: 'review', intent: { kind: 'plan-review', approve: 'Approve', callId: 'plan-call' } }] })
+    let settle!: (v: unknown) => void
+    h.emit('user-questions/request', request, () => new Promise(resolve => { settle = resolve }))
+    await vi.waitFor(() => expect(h.emitted).toHaveLength(1), { timeout: 3_000 })
+    expect(h.emitted[0]?.category).toBe('plan')
+    expect(h.emitted[0]?.callId).toBe('plan-call')
+    expect(await h.start().eligible(h.emitted[0]!)).toBe(true)
+    settle({ answers: [] })
+    await vi.waitFor(async () => expect(await h.start().eligible(h.emitted[0]!)).toBe(false))
+  })
+
+  it('distinguishes ordinary forks from owned children and resolves approvals to runtime root', async () => {
+    const root = agent('root')
+    const fork = agent('fork', 'root')
+    const child = agent('child', 'root')
+    const nested = agent('nested', 'child')
+    const h = context({ agents: {
+      get: id => ({ root, fork, child, nested } as Record<string, any>)[id],
+      list: () => [root, fork, child, nested], roots: () => [root, fork],
+      isOwnedBy: (id, owner) => (id === 'child' && owner === root) || (id === 'nested' && owner === child),
+    } })
+    h.start()
+    h.emit('session/event', fork, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
+    h.emit('session/event', child, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
+    await vi.waitFor(() => expect(h.emitted).toHaveLength(1), { timeout: 3_000 })
+    expect(h.emitted[0]?.sessionId).toBe('fork')
+    const approval = { agent: nested, toolName: 'write', signal: new AbortController().signal }
+    let settleApproval!: (outcome: string) => void
+    h.emit('approval/request', approval, () => new Promise(resolve => { settleApproval = resolve }))
+    await vi.waitFor(() => expect(h.emitted.some(source => source.category === 'approval')).toBe(true), { timeout: 3_000 })
+    expect((await h.start().resolveTarget(h.emitted.find(source => source.category === 'approval')!))?.sessionId).toBe('root')
+    settleApproval('unavailable')
+  })
+
+  it('does not turn an active goal continuation round into a response notification', async () => {
+    const h = context(); h.start()
+    h.emit('goal/changed', { agent: agent('rounds'), change: { operation: 'create', ref: { id: 'goal-rounds', revision: 1 }, goal: { id: 'goal-rounds', revision: 1, objective: 'continue', phase: 'active', maxGoalRounds: 3 } } })
+    h.emit('session/event', agent('rounds'), { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
+    await new Promise(resolve => setTimeout(resolve, 1_050))
+    expect(h.emitted).toHaveLength(0)
+  })
+
+  it('uses the current public goal projection when attached after goal creation', async () => {
+    const h = context({ sessionProjections: { stateOf: (_session, key) => key === 'goal' ? { current: { goal: { id: 'already-active', revision: 4, phase: 'active' } } } : undefined } })
+    h.start()
+    h.emit('session/event', { id: 'late-attached' }, { type: 'turn/end', data: { turn: 5, reason: { kind: 'completed' } } })
+    await new Promise(resolve => setTimeout(resolve, 1_050))
+    expect(h.emitted).toHaveLength(0)
+  })
+
+  it('waits for a committed final goal outcome and coalesces its turn', async () => {
+    const h = context(); h.start()
+    h.emit('goal/changed', { agent: agent('s1'), change: { operation: 'complete', ref: { id: 'g1', revision: 2 }, goal: { id: 'g1', revision: 2, objective: 'do task', phase: 'complete', maxGoalRounds: 4 } } })
+    expect(h.emitted).toHaveLength(0)
+    h.emit('session/event', agent('s1'), { type: 'turn/end', data: { turn: 4, reason: { kind: 'completed' } } })
+    await vi.waitFor(() => expect(h.emitted.filter(item => item.category === 'goal')).toHaveLength(1), { timeout: 3_000 })
+    expect(h.emitted.some(item => item.category === 'response')).toBe(false)
+    expect(await h.start().eligible(h.emitted[0]!)).toBe(true)
+  })
+
+  it('notifies once for committed actionable block and unrecovered live failure, never diagnostic detail', async () => {
+    const h = context(); h.start()
+    h.emit('goal/changed', { agent: agent('s1'), change: { operation: 'block', ref: { id: 'g1', revision: 2 }, goal: { id: 'g1', revision: 2, objective: 'do task', phase: 'blocked', blockedReason: { code: 'input', message: 'Need input' }, maxGoalRounds: 4 } } })
+    h.emit('session/event', agent('s2'), { type: 'turn/end', data: { turn: 1, reason: { kind: 'error', error: { message: 'secret', code: 'X' } } } })
+    await vi.waitFor(() => expect(h.emitted).toHaveLength(2), { timeout: 3_000 })
+    expect(h.emitted.map(item => item.category).sort()).toEqual(['failure', 'goal'])
+    expect(JSON.stringify(h.emitted)).not.toContain('Need input')
+    expect(JSON.stringify(h.emitted)).not.toContain('secret')
+  })
+
+  it('recovery and intentional stops invalidate outcomes; only genuine terminal failure notifies', async () => {
+    const h = context(); h.start()
+    h.emit('session/event', agent('s1'), { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
+    h.emit('session/event', agent('s1'), { type: 'turn/start', data: { turn: 2 } })
+    await new Promise(resolve => setTimeout(resolve, 275))
+    expect(h.emitted).toHaveLength(0)
+    h.emit('session/event', agent('s2'), { type: 'turn/end', data: { turn: 1, reason: { kind: 'aborted', reason: 'user' } } })
+    h.emit('session/event', agent('s3'), { type: 'turn/end', data: { turn: 1, reason: { kind: 'aborted', reason: 'parent' } } })
+    h.emit('session/event', agent('s4'), { type: 'turn/end', data: { turn: 1, reason: { kind: 'max-tokens' } } })
+    h.emit('session/event', agent('s5'), { type: 'turn/end', data: { turn: 1, reason: { kind: 'interrupted' } } })
+    expect(h.emitted).toHaveLength(0)
+    h.emit('session/event', agent('s6'), { type: 'turn/end', data: { turn: 3, reason: { kind: 'error', error: { message: 'x', code: 'X' } } } })
+    await vi.waitFor(() => expect(h.emitted).toHaveLength(1), { timeout: 3_000 })
+    expect(h.emitted[0]?.category).toBe('failure')
+  })
+})
