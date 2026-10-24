@@ -2,6 +2,7 @@ import { lstat, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { basename, dirname, join, resolve } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { restrictPrivateFile } from '../private-file.js'
+import { canonicalPushEndpoint } from './endpoint.js'
 import type { PushSnapshot } from './contracts.js'
 
 const MAX_STATE_BYTES = 4 * 1024 * 1024
@@ -45,8 +46,9 @@ function registration(value: unknown): boolean {
     && ['ready', 'suspended', 'repair-required'].includes(String(value.health))
 }
 export function parsePushSnapshot(value: unknown): PushSnapshot {
-  if (!object(value) || !only(value, ['version', 'keys', 'ownerGenerations', 'registrations', 'pending', 'receipts', 'references']) || value.version !== 1) throw new Error('push state has an unsupported version')
+  if (!object(value) || !only(value, ['version', 'keys', 'ownerGenerations', 'ownerGenerationFloor', 'registrations', 'pending', 'receipts', 'references']) || value.version !== 1) throw new Error('push state has an unsupported version')
   for (const field of ['ownerGenerations', 'registrations', 'pending', 'receipts', 'references']) if (!list(value[field])) throw new Error(`push state ${field} must be an array`)
+  if (value.ownerGenerationFloor !== undefined && (!Number.isSafeInteger(value.ownerGenerationFloor) || Number(value.ownerGenerationFloor) < 0)) throw new Error('push state has an invalid owner generation floor')
   if (value.keys !== undefined && !validKey(value.keys)) throw new Error('push state contains invalid key material')
   const owners = value.ownerGenerations as unknown[]
   const registrations = value.registrations as unknown[]
@@ -63,7 +65,7 @@ export function parsePushSnapshot(value: unknown): PushSnapshot {
   const ownerKeys = validOwners.map(o => JSON.stringify([o.scopeId, o.deviceId, o.origin]))
   const validRegistrations = registrations as Array<Record<string, unknown>>
   const regKeys = validRegistrations.map(reg => JSON.stringify([reg.scopeId, reg.deviceId, reg.origin, reg.installationId]))
-  const endpoints = validRegistrations.map(reg => (reg.subscription as Record<string, unknown>).endpoint)
+  const endpoints = validRegistrations.map(reg => canonicalPushEndpoint((reg.subscription as Record<string, unknown>).endpoint as string))
   if (new Set(ownerKeys).size !== owners.length || new Set(regKeys).size !== registrations.length || new Set(endpoints).size !== endpoints.length) throw new Error('push state contains duplicate ownership')
   for (const reg of validRegistrations) if (validRegistrations.filter(other => other.scopeId === reg.scopeId && other.deviceId === reg.deviceId).length > 4) throw new Error('push state exceeds the per-device registration limit')
   return structuredClone(value) as unknown as PushSnapshot

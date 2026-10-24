@@ -1,4 +1,5 @@
 import { createECDH, createHash } from 'node:crypto'
+import { canonicalPushEndpoint } from './endpoint.js'
 import { MAX_PENDING_PER_SCOPE, MAX_REGISTRATIONS_PER_DEVICE, MAX_REGISTRATIONS_PER_SCOPE } from './contracts.js'
 import type { PushConfig, PushEnrollment, PushEnrollmentResult, PushMutationGuard, PushOwner, PushPreferences, PushRecipientKey, PushRegistration, PushSnapshot, VapidKeys } from './contracts.js'
 
@@ -38,7 +39,16 @@ export class PushRegistry {
     return result
   }
   private assertReady() { if (!this.initialized) throw new Error('push registry is not initialized') }
-  private ownerGeneration(owner: PushOwner): number { return this.state.ownerGenerations.find(item => sameOwner(item, owner))?.generation ?? 0 }
+  private ownerGeneration(owner: PushOwner): number {
+    return Math.max(this.state.ownerGenerationFloor ?? 0, this.state.ownerGenerations.find(item => sameOwner(item, owner))?.generation ?? 0)
+  }
+  private advanceOwnerGenerationFloor(snapshot: PushSnapshot, removedRegistrationGenerations: readonly number[] = []): PushSnapshot {
+    let maximum = snapshot.ownerGenerationFloor ?? 0
+    for (const row of snapshot.ownerGenerations) maximum = Math.max(maximum, row.generation)
+    for (const generation of removedRegistrationGenerations) maximum = Math.max(maximum, generation)
+    if (!Number.isSafeInteger(maximum) || maximum >= Number.MAX_SAFE_INTEGER) throw new Error('owner generation floor exceeds safe integer range')
+    return { ...snapshot, ownerGenerationFloor: maximum + 1 }
+  }
   private async commit(next: PushSnapshot): Promise<void> { await this.store.save(next); this.state = next }
   private putOwnerGeneration(next: PushSnapshot, owner: PushOwner, generation: number): PushSnapshot {
     const rows = [...next.ownerGenerations]
@@ -84,12 +94,14 @@ export class PushRegistry {
       preferences: clone(registration?.preferences ?? defaultPreferences),
     }
   }
+  /** Server-internal persistence snapshot; includes private VAPID material and is not a public config projection. */
   snapshot(): PushSnapshot { this.assertReady(); return clone(this.state) }
   async transact(update: (snapshot: PushSnapshot) => PushSnapshot): Promise<void> {
     await this.serialize(async () => {
       this.assertReady()
       const next = update(clone(this.state))
       if (JSON.stringify(next.keys) !== JSON.stringify(this.state.keys)
+        || next.ownerGenerationFloor !== this.state.ownerGenerationFloor
         || JSON.stringify(next.ownerGenerations) !== JSON.stringify(this.state.ownerGenerations)
         || JSON.stringify(next.registrations) !== JSON.stringify(this.state.registrations)) throw new Error('push transactions may only update delivery state')
       const validated = { ...next, ...this.pruneExpired(next) }
@@ -103,11 +115,13 @@ export class PushRegistry {
       boundedText(owner.scopeId, 'scope'); boundedText(owner.deviceId, 'device'); boundedText(owner.origin, 'origin')
       boundedText(input.installationId, 'installation'); boundedText(input.keyFingerprint, 'key fingerprint')
       boundedText(input.subscription?.endpoint, 'subscription endpoint')
-      if (!input.subscription.keys?.p256dh || !input.subscription.keys.auth) throw new Error('invalid subscription keys')
+      const canonicalEndpoint = canonicalPushEndpoint(input.subscription.endpoint)
+      const normalizedSubscription = { ...input.subscription, endpoint: canonicalEndpoint }
+      if (!normalizedSubscription.keys?.p256dh || !normalizedSubscription.keys.auth) throw new Error('invalid subscription keys')
       if (!this.state.keys || input.keyFingerprint !== this.state.keys.fingerprint) throw new Error('subscription VAPID key fingerprint conflict')
       const key: PushRecipientKey = { ...owner, installationId: input.installationId }
       const current = this.state.registrations.find(reg => idOfKey(reg) === idOfKey(key))
-      const sameEndpoint = this.state.registrations.find(reg => reg.subscription.endpoint === input.subscription.endpoint)
+      const sameEndpoint = this.state.registrations.find(reg => canonicalPushEndpoint(reg.subscription.endpoint) === canonicalEndpoint)
       if (sameEndpoint && !sameOwner(sameEndpoint, owner)) throw new Error('subscription endpoint is already owned by another device (conflict)')
       if (sameEndpoint && !current) {
         if (sameEndpoint.keyFingerprint !== input.keyFingerprint || !sameEndpoint.enabled) throw new Error('canonical subscription recovery conflict')
@@ -115,11 +129,11 @@ export class PushRegistry {
       }
       const ownerGeneration = this.ownerGeneration(owner)
       if (input.ownerGeneration !== ownerGeneration || input.registrationGeneration !== (current?.generation ?? 0)) throw new Error('stale push mutation generation')
-      if (current?.enabled && current.subscription.endpoint === input.subscription.endpoint && current.locale === input.locale && JSON.stringify(current.preferences) === JSON.stringify(input.preferences) && current.keyFingerprint === input.keyFingerprint) return { registration: clone(current) }
+      if (current?.enabled && canonicalPushEndpoint(current.subscription.endpoint) === canonicalEndpoint && current.locale === input.locale && JSON.stringify(current.preferences) === JSON.stringify(input.preferences) && current.keyFingerprint === input.keyFingerprint) return { registration: clone(current) }
       if (!current && this.state.registrations.filter(reg => reg.scopeId === owner.scopeId).length >= MAX_REGISTRATIONS_PER_SCOPE) throw new Error('push registration limit reached for scope')
       if (!current && this.state.registrations.filter(reg => sameOwner(reg, owner)).length >= MAX_REGISTRATIONS_PER_DEVICE) throw new Error('push registration limit reached for device')
-      const generation = (current?.generation ?? 0) + 1
-      const registration: PushRegistration = { ...key, subscription: clone(input.subscription), locale: input.locale, preferences: clone(input.preferences), generation, keyFingerprint: input.keyFingerprint, enabled: true, health: 'ready' }
+      const generation = current ? current.generation + 1 : ownerGeneration + 1
+      const registration: PushRegistration = { ...key, subscription: clone(normalizedSubscription), locale: input.locale, preferences: clone(input.preferences), generation, keyFingerprint: input.keyFingerprint, enabled: true, health: 'ready' }
       let next: PushSnapshot = { ...this.state, registrations: [...this.state.registrations.filter(reg => idOfKey(reg) !== idOfKey(key)), registration] }
       next = this.pruneExpired(next)
       if (next.pending.filter(intent => intent.key.scopeId === owner.scopeId).length > MAX_PENDING_PER_SCOPE) throw new Error('pending push limit reached for scope')
@@ -154,14 +168,14 @@ export class PushRegistry {
       const registration = this.state.registrations.find(row => idOfKey(row) === idOfKey(key))
       if (!registration || registration.generation !== expectedGeneration) return
       if (result === 'gone') {
-        let next: PushSnapshot = {
-          ...this.state,
+        const withFloor = this.advanceOwnerGenerationFloor(this.state, [registration.generation])
+        const next: PushSnapshot = {
+          ...withFloor,
           registrations: this.state.registrations.filter(row => idOfKey(row) !== idOfKey(key)),
           pending: this.state.pending.filter(row => idOfKey(row.key) !== idOfKey(key)),
           receipts: this.state.receipts.filter(row => idOfKey(row.key) !== idOfKey(key)),
           references: this.state.references.filter(row => idOfKey(row.key) !== idOfKey(key)),
         }
-        next = this.putOwnerGeneration(next, key, this.ownerGeneration(key) + 1)
         await this.commit(next)
       } else {
         const updated = { ...registration, health: 'suspended' as const, generation: registration.generation + 1 }
@@ -179,25 +193,31 @@ export class PushRegistry {
   }
   async purgeDevices(scopeId: string, ids: readonly string[]): Promise<void> {
     await this.serialize(async () => {
-      this.assertReady(); const selected = new Set(ids)
-      const remove = (key: PushRecipientKey) => key.scopeId === scopeId && selected.has(key.deviceId)
-      let next: PushSnapshot = { ...this.state, registrations: this.state.registrations.filter(reg => !remove(reg)), pending: this.state.pending.filter(intent => !remove(intent.key)), receipts: this.state.receipts.filter(row => !remove(row.key)), references: this.state.references.filter(row => !remove(row.key)) }
-      const affected = new Map<string, PushOwner>()
-      for (const row of this.state.ownerGenerations) if (row.scopeId === scopeId && selected.has(row.deviceId)) affected.set(idOfOwner(row), row)
-      for (const reg of this.state.registrations) if (remove(reg)) affected.set(idOfOwner(reg), reg)
-      for (const owner of affected.values()) next = this.putOwnerGeneration(next, owner, this.ownerGeneration(owner) + 1)
+      this.assertReady()
+      if (ids.length === 0) return
+      const selected = new Set(ids)
+      const remove = (key: PushOwner) => key.scopeId === scopeId && selected.has(key.deviceId)
+      const removedRegistrationGenerations = this.state.registrations.filter(reg => remove(reg)).map(reg => reg.generation)
+      const withFloor = this.advanceOwnerGenerationFloor(this.state, removedRegistrationGenerations)
+      const next: PushSnapshot = {
+        ...withFloor,
+        ownerGenerations: withFloor.ownerGenerations.filter(row => !remove(row)),
+        registrations: withFloor.registrations.filter(reg => !remove(reg)),
+        pending: withFloor.pending.filter(intent => !remove(intent.key)),
+        receipts: withFloor.receipts.filter(row => !remove(row.key)),
+        references: withFloor.references.filter(row => !remove(row.key)),
+      }
       await this.commit(next)
     })
   }
   async resetKeys(): Promise<void> {
     await this.serialize(async () => {
       this.assertReady()
+      const withFloor = this.advanceOwnerGenerationFloor(this.state, this.state.registrations.map(reg => reg.generation))
       const keys = this.createKeys()
       const nextKeys = { ...keys, fingerprint: fingerprint(keys) }
-      const { keys: _oldKeys, ...withoutKeys } = this.state
-      let next: PushSnapshot = { ...withoutKeys, registrations: [], pending: [], receipts: [], references: [] }
-      for (const row of this.state.ownerGenerations) next = this.putOwnerGeneration(next, row, row.generation + 1)
-      await this.commit({ ...next, keys: nextKeys })
+      const next: PushSnapshot = { ...withFloor, keys: nextKeys, ownerGenerations: [], registrations: [], pending: [], receipts: [], references: [] }
+      await this.commit(next)
     })
   }
   async close(): Promise<void> { await this.queue; this.closed = true }

@@ -20,6 +20,29 @@ describe('private push snapshot stores', () => {
     expect(loaded).not.toBe(input)
   })
 
+  it('round-trips a safe owner-generation floor and accepts legacy snapshots without one', async () => {
+    const legacy = new MemoryPushStore(empty)
+    expect(legacy.inspect()).toEqual(empty)
+    const withFloor: PushSnapshot = { ...empty, ownerGenerationFloor: 9 }
+    const store = new MemoryPushStore(withFloor)
+    await store.save(withFloor)
+    expect(await store.load()).toEqual(withFloor)
+    expect(store.inspect().ownerGenerationFloor).toBe(9)
+  })
+
+  it.each([-1, 1.5, Number.MAX_SAFE_INTEGER + 1, Number.NaN, Number.POSITIVE_INFINITY])('rejects an invalid owner-generation floor (%s)', floor => {
+    const invalid = { ...empty, ownerGenerationFloor: floor }
+    expect(() => new MemoryPushStore(invalid)).toThrow(/owner generation floor/u)
+  })
+
+  it('persists the owner-generation floor across a JSON store restart', async () => {
+    const file = join(await root(), 'notifications', 'state-v1.json')
+    const first = new JsonPushStore(file)
+    const withFloor: PushSnapshot = { ...empty, ownerGenerationFloor: 9 }
+    await first.save(withFloor)
+    expect(await new JsonPushStore(file).load()).toEqual(withFloor)
+  })
+
   it('persists key material atomically with owner-only file permissions', async () => {
     const file = join(await root(), 'notifications', 'state-v1.json')
     const first = new JsonPushStore(file)
@@ -66,6 +89,14 @@ describe('private push snapshot stores', () => {
     }
     const leaking = { ...empty, pending: [{ id: 'x', key: { scopeId: 's', deviceId: 'd', origin: 'https://x', installationId: 'i' }, source: { sourceId: 'x', sessionId: 's', targetSessionId: 's', category: 'question', createdAt: 1, expiresAt: 2, lifetime: 'live', question: 'private question text' }, ownerGeneration: 0, recipientGeneration: 0, attempts: 0, nextAttemptAt: 1 }] }
     await expect(new MemoryPushStore().save(leaking as unknown as PushSnapshot)).rejects.toThrow(/invalid records/u)
+  })
+
+  it('rejects case and default-port aliases of an already-owned Apple endpoint', () => {
+    const registrations = [
+      { scopeId: 'scope-a', deviceId: 'device-a', origin: 'https://mobile.example.test', installationId: 'install-a', subscription: { endpoint: 'https://web.push.apple.com/topic/token-a', keys: { p256dh: 'p', auth: 'a' } }, locale: 'en' as const, preferences: { question: true, plan: true, approval: true, response: true, goal: true, failure: true }, generation: 1, keyFingerprint: 'fp', enabled: true, health: 'ready' as const },
+      { scopeId: 'scope-a', deviceId: 'device-b', origin: 'https://mobile.example.test', installationId: 'install-b', subscription: { endpoint: 'https://WEB.PUSH.APPLE.COM:443/topic/token-a', keys: { p256dh: 'q', auth: 'b' } }, locale: 'en' as const, preferences: { question: true, plan: true, approval: true, response: true, goal: true, failure: true }, generation: 1, keyFingerprint: 'fp', enabled: true, health: 'ready' as const },
+    ]
+    expect(() => new MemoryPushStore({ version: 1, keys: { publicKey: 'public', privateKey: 'private', fingerprint: 'fp' }, ownerGenerations: [], registrations, pending: [], receipts: [], references: [] })).toThrow(/duplicate ownership/u)
   })
 
   it('leaves the last valid state intact when a replacement is rejected', async () => {
