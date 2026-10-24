@@ -5,7 +5,7 @@ import type { ClientRequest, IncomingMessage } from 'node:http'
 import { describe, expect, it, vi } from 'vitest'
 import { buildDeclarativePayload } from '../src/mobile-push/payload.js'
 import { createVapidKeys, PushSender } from '../src/mobile-push/sender.js'
-import { resolveAppleEndpoint, validatePushSubscription } from '../src/mobile-push/endpoint.js'
+import { canonicalPushEndpoint, resolveAppleEndpoint, validatePushSubscription } from '../src/mobile-push/endpoint.js'
 import type { PushRegistration } from '../src/mobile-push/contracts.js'
 
 const GENERATOR_POINT = 'BGsX0fLhLEJH-Lzm5WOkQPJ3A32BLeszoPShOUXYmMKWT-NC4v4af5uO5-tKfA-eFivOM1drMV7Oy7ZAaDe_UfU'
@@ -75,8 +75,25 @@ function senderFor(status: number, headers: IncomingMessage['headers'] = {}, bod
 }
 
 describe('Apple Web Push endpoint validation', () => {
+  it('canonicalizes WHATWG URL identity without applying push policy', () => {
+    expect(canonicalPushEndpoint('https://PUSH.APPLE.COM:443/opaque-token')).toBe('https://push.apple.com/opaque-token')
+    expect(canonicalPushEndpoint('https://other.example:443')).toBe('https://other.example/')
+    let errorMessage = ''
+    try { canonicalPushEndpoint('not a URL with sensitive text') } catch (error) { errorMessage = (error as Error).message }
+    expect(errorMessage).toBe('push_endpoint_invalid')
+  })
+
   it('accepts a valid Apple endpoint and canonical uncompressed P-256 subscription keys', () => {
     expect(validatePushSubscription(subscription)).toEqual(subscription)
+  })
+
+  it('normalizes endpoint identity for WHATWG-equivalent Apple URLs', () => {
+    for (const endpoint of [
+      'https://WEB.PUSH.APPLE.COM/opaque-token',
+      'https://web.push.apple.com:443/opaque-token',
+    ]) {
+      expect(validatePushSubscription({ ...subscription, endpoint }).endpoint).toBe(ENDPOINT)
+    }
   })
 
   it('rejects non-Apple, non-HTTPS, ambiguous and oversized endpoint URLs', () => {
@@ -93,6 +110,7 @@ describe('Apple Web Push endpoint validation', () => {
       'https://attackerpush.apple.com/token',
       'https://web.push.apple.com',
       `https://web.push.apple.com/${'a'.repeat(2048)}`,
+      `https://web.push.apple.com/${'é'.repeat(350)}`,
     ]
     for (const endpoint of invalid) expect(() => validatePushSubscription({ ...subscription, endpoint })).toThrow()
   })
@@ -231,7 +249,7 @@ describe('bounded Apple Web Push sender', () => {
     expect(request).not.toHaveBeenCalled()
   })
 
-  it('rejects oversized payload and response bodies and never accepts non-declarative fields', async () => {
+  it('rejects oversized payloads and caps response streams without losing 2xx acceptance', async () => {
     const oversizedPayload = input()
     oversizedPayload.payload = JSON.stringify({ web_push: 8030, notification: { title: 'x', body: 'z'.repeat(3100), lang: 'en', navigate: '/?mobile-push=x', tag: 't' } })
     const unused = senderFor(200)
@@ -248,9 +266,22 @@ describe('bounded Apple Web Push sender', () => {
     expect(await unused.sender.send(relativeNavigation)).toEqual({ kind: 'permanent' })
     expect(unused.requestCount()).toBe(0)
 
-    const oversizedResponse = senderFor(200, {}, [Buffer.alloc(8193)])
-    expect(await oversizedResponse.sender.send(input())).toEqual({ kind: 'retry' })
+    const oversizedResponse = senderFor(201, {}, [Buffer.alloc(8193)])
+    const accepted = await oversizedResponse.sender.send(input())
     expect(oversizedResponse.request?.destroyed).toBe(true)
+    expect(oversizedResponse.request?.response?.destroyed).toBe(true)
+    expect(accepted).toEqual({ kind: 'accepted' })
+  })
+
+  it.each([
+    [404, 'gone'], [410, 'gone'], [401, 'suspended'], [403, 'suspended'],
+    [429, 'retry'], [500, 'retry'], [400, 'permanent'],
+  ] as const)('preserves HTTP %i result mapping when the capped response body is oversized', async (status, kind) => {
+    const fixture = senderFor(status, {}, [Buffer.alloc(8193)])
+    const result = await fixture.sender.send(input())
+    expect(fixture.request?.destroyed).toBe(true)
+    expect(fixture.request?.response?.destroyed).toBe(true)
+    expect(result).toEqual({ kind })
   })
 
   it('terminates stalled DNS and stalled TLS/response phases at the same absolute budget', async () => {

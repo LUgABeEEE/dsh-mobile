@@ -15,7 +15,7 @@ export type PushSendResult =
   | { readonly kind: 'accepted' | 'gone' | 'suspended' | 'permanent' }
   | { readonly kind: 'retry'; readonly retryAfterMs?: number }
 
-interface PushResponse { readonly statusCode: number; readonly headers: IncomingMessage['headers']; readonly oversized: boolean }
+interface PushResponse { readonly statusCode: number; readonly headers: IncomingMessage['headers'] }
 type RequestFactory = (url: URL, options: HttpsRequestOptions) => ClientRequest
 
 /** Test seam for DNS and the final HTTPS request boundary; production defaults remain fixed and SSRF-checked. */
@@ -139,7 +139,7 @@ function responseFromRequest(
           return
         }
         if (statusCode >= 300 && statusCode < 400) {
-          finish({ statusCode, headers: response.headers, oversized: false })
+          finish({ statusCode, headers: response.headers })
           response.destroy()
           request.destroy()
           return
@@ -150,15 +150,15 @@ function responseFromRequest(
           bytes += Buffer.byteLength(chunk)
           if (bytes > MAX_RESPONSE_BYTES && !oversized) {
             oversized = true
+            finish({ statusCode, headers: response.headers })
             response.destroy()
             request.destroy()
-            finish({ statusCode, headers: response.headers, oversized: true })
           }
         })
         response.once('error', () => {
           if (!oversized) finish(undefined, new Error('push_transport_failed'))
         })
-        response.once('end', () => finish({ statusCode, headers: response.headers, oversized }))
+        response.once('end', () => finish({ statusCode, headers: response.headers }))
       })
       request.end(body)
     } catch {
@@ -259,7 +259,6 @@ export class PushSender {
         responseFromRequest(this.requestFactory, resolved.url, requestConfig, details.body ?? Buffer.alloc(0), controller.signal),
         controller.signal,
       )
-      if (response.oversized) return { kind: 'retry' }
       if (controller.signal.aborted || performance.now() - started > this.budgetMs) return { kind: 'retry' }
       const waitMs = retryAfterMs(response.headers['retry-after'], Date.now())
       return safeStatus(response.statusCode, waitMs, input.ttlSeconds)

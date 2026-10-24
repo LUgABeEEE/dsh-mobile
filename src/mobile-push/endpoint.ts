@@ -8,6 +8,15 @@ const MAX_ENDPOINT_BYTES = 2048
 const APPLE_SUFFIX = '.push.apple.com'
 const BASE64URL = /^[A-Za-z0-9_-]+$/u
 
+/** Canonical URL identity for push endpoint ownership; policy checks live elsewhere. */
+export function canonicalPushEndpoint(value: string): string {
+  try {
+    return new URL(value).href
+  } catch {
+    throw new TypeError('push_endpoint_invalid')
+  }
+}
+
 function invalid(): never {
   throw new TypeError('push_subscription_invalid')
 }
@@ -36,7 +45,9 @@ function validateEndpoint(value: unknown): string {
     || hostname.split('.').some(label => label.length < 1 || label.length > 63 || !/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/u.test(label))) {
     return invalid()
   }
-  return value
+  const canonical = canonicalPushEndpoint(value)
+  if (Buffer.byteLength(canonical, 'utf8') > MAX_ENDPOINT_BYTES) return invalid()
+  return canonical
 }
 
 function validateP256PublicKey(value: unknown): string {
