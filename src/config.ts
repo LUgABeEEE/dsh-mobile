@@ -102,6 +102,10 @@ export interface PluginConfig {
   maxActiveRequests?: number
   maxWebSockets?: number
   maxBodyBytes?: number
+  /** Short-lived, per-device cache for idempotent API GET responses; zero disables it. */
+  contentCacheTtlMs?: number
+  /** Total bytes the content cache may retain before it evicts older entries. */
+  contentCacheMaxBytes?: number
   /** Transport, upload, static-response and WebSocket-handshake idle timeout. */
   upstreamTimeoutMs?: number
   /** Authenticated /api response and established DSH plugin-event stream idle timeout; zero disables it. */
@@ -148,6 +152,9 @@ export interface ResolvedGatewayConfig {
   readonly maxActiveRequests: number
   readonly maxWebSockets: number
   readonly maxBodyBytes: number
+  /** Zero when the API content cache is disabled. */
+  readonly contentCacheTtlMs: number
+  readonly contentCacheMaxBytes: number
   readonly upstreamTimeoutMs: number
   readonly upstreamApiTimeoutMs: number
   readonly rateLimitWindowMs: number
@@ -208,6 +215,8 @@ export const Config: z<PluginConfig> = z.object({
   maxActiveRequests: z.natural(),
   maxWebSockets: z.natural(),
   maxBodyBytes: z.natural(),
+  contentCacheTtlMs: z.natural(),
+  contentCacheMaxBytes: z.natural(),
   upstreamTimeoutMs: z.natural(),
   upstreamApiTimeoutMs: z.natural(),
   rateLimitWindowMs: z.natural(),
@@ -422,6 +431,10 @@ export function parseGatewayConfig(raw: unknown): ResolvedGatewayConfig {
     maxActiveRequests: integer(value.maxActiveRequests, 'maxActiveRequests', 32, 1, 1024),
     maxWebSockets: integer(value.maxWebSockets, 'maxWebSockets', 16, 1, 256),
     maxBodyBytes: integer(value.maxBodyBytes, 'maxBodyBytes', 160 * 1024 * 1024, 1024, 256 * 1024 * 1024),
+    // The API content cache is opt-in: a wrong TTL hides fresh Session state, so
+    // the default keeps today's behavior and an operator chooses a window.
+    contentCacheTtlMs: integer(value.contentCacheTtlMs, 'contentCacheTtlMs', 0, 0, 60 * 60_000),
+    contentCacheMaxBytes: integer(value.contentCacheMaxBytes, 'contentCacheMaxBytes', 8 * 1024 * 1024, 64 * 1024, 64 * 1024 * 1024),
     upstreamTimeoutMs: integer(value.upstreamTimeoutMs, 'upstreamTimeoutMs', 30_000, 1_000, 300_000),
     upstreamApiTimeoutMs: integer(value.upstreamApiTimeoutMs, 'upstreamApiTimeoutMs', 0, 0, 2_147_483_647),
     rateLimitWindowMs: integer(value.rateLimitWindowMs, 'rateLimitWindowMs', 60_000, 1_000, 3_600_000),

@@ -110,6 +110,8 @@ websocketCompression:
 
 网关自身生成的资源使用带引号的 ETag，并在设备鉴权和资源检查之后处理 GET/HEAD 的条件请求。网关对上游静态资源做流式 gzip 时，可保留合法上游 ETag 的弱校验形式，并维护 `Vary: Accept-Encoding`；不会把原始内容的长度或范围元信息当作压缩内容的元信息，也不会缓存失败响应或为 API 请求新增缓存。
 
+移动网关可选一层「内容短缓存」，用于慢链路上重复打开同一视图。默认关闭（`contentCacheTtlMs: 0`）；开启后只缓存**已认证设备**发起的 `GET /api/` 完整响应：状态 200、媒体类型为 JSON 或文本、无 `Set-Cookie`、无上游内容编码、上游未声明 `no-store`、单条不超过 512KB；请求带 `Cache-Control: no-cache`/`no-store` 时绕过。命中时直接回放字节并加 `X-DSH-Mobile-Cache: hit`，不会再次访问 DSH；缓存键按配对设备隔离，总字节由 `contentCacheMaxBytes`（默认 8MB）约束并按最久未用淘汰，条目按 TTL 过期。它不改变浏览器侧策略（响应仍是 `no-store`），也不缓存写入、SSE 或流式响应；TTL 过长会隐藏 Session 的新状态，因此必须由操作者显式开启。
+
 上游未提供校验标识的资源不会因此自动得到一个可靠标识。检查重复下载时，比较同一完整资源 URL 在普通打开、重新加载和 App 冷启动中的 `200`/`304`、缓存命中、`If-None-Match`、编码与实际传输量；不要先清除站点数据再把结果当作正常缓存行为。HTTP 校验语义改善不保证每个 WebView 都会复用缓存，也不能仅凭这些响应头认定 [#107](https://github.com/saya-ch/dsh-mobile/issues/107) 已完全解决。
 
 ## 手动压缩会话与长时间 API 请求（0.6.0）

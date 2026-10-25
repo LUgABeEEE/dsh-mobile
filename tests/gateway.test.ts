@@ -295,6 +295,19 @@ async function upstream(
       response.end('authentication required')
       return
     }
+    if (incoming.url?.startsWith('/api/large') === true) {
+      const body = JSON.stringify({ rows: 'x'.repeat(600 * 1024) })
+      response.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'content-length': Buffer.byteLength(body) })
+      response.end(body)
+      return
+    }
+    if (incoming.url?.startsWith('/api/cacheable') === true) {
+      // A plain JSON read without Set-Cookie: the shape the content cache accepts.
+      const body = JSON.stringify({ items: [{ id: 'a' }, { id: 'b' }], fetchedAt: Date.now() })
+      response.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'content-length': Buffer.byteLength(body) })
+      response.end(body)
+      return
+    }
     if (incoming.url === '/api/stream-hold') {
       response.writeHead(200, { 'content-type': 'text/plain' })
       response.write('first')
@@ -3419,5 +3432,80 @@ describe('auth failure recording', () => {
     expect(rejected.status).toBe(403)
     expect(entries[0]).toMatchObject({ csrfCookies: 3, csrfHeader: false, sessionCookie: true })
     expect(JSON.stringify(entries)).not.toContain(paired.csrf)
+  })
+})
+
+describe('short API content cache', () => {
+  it('replays an identical API GET inside the window and honors a no-cache request', async () => {
+    const inner = await upstream('remote-settings')
+    const instance = await gateway(inner.port, { contentCacheTtlMs: 60_000 })
+    const paired = await pair(instance)
+    const headers = { ...browserHeaders(instance), cookie: `${SESSION_COOKIE}=${paired.session}` }
+
+    const first = await request(instance.address().port, '/api/cacheable', { headers })
+    expect(first.status).toBe(200)
+    expect(first.headers['x-dsh-mobile-cache']).toBeUndefined()
+    const upstreamHits = inner.observations.filter(entry => entry.url === '/api/cacheable').length
+    expect(upstreamHits).toBe(1)
+
+    const second = await request(instance.address().port, '/api/cacheable', { headers })
+    expect(second.status).toBe(200)
+    expect(second.headers['x-dsh-mobile-cache']).toBe('hit')
+    expect(second.body).toBe(first.body)
+    // A cached repeat must not re-reach DSH at all.
+    expect(inner.observations.filter(entry => entry.url === '/api/cacheable')).toHaveLength(upstreamHits)
+
+    const bypassed = await request(instance.address().port, '/api/cacheable', {
+      headers: { ...headers, 'cache-control': 'no-cache' },
+    })
+    expect(bypassed.headers['x-dsh-mobile-cache']).toBeUndefined()
+    expect(inner.observations.filter(entry => entry.url === '/api/cacheable')).toHaveLength(upstreamHits + 1)
+  })
+
+  it('stays off by default and never caches non-GET responses', async () => {
+    const inner = await upstream('remote-settings')
+    const disabled = await gateway(inner.port)
+    const disabledPair = await pair(disabled)
+    const disabledHeaders = { ...browserHeaders(disabled), cookie: `${SESSION_COOKIE}=${disabledPair.session}` }
+    await request(disabled.address().port, '/api/cacheable', { headers: disabledHeaders })
+    const repeated = await request(disabled.address().port, '/api/cacheable', { headers: disabledHeaders })
+    expect(repeated.headers['x-dsh-mobile-cache']).toBeUndefined()
+
+    const enabled = await gateway(inner.port, { contentCacheTtlMs: 60_000 })
+    const enabledPair = await pair(enabled)
+    const enabledHeaders = { ...browserHeaders(enabled), cookie: `${SESSION_COOKIE}=${enabledPair.session}` }
+    const head = await request(enabled.address().port, '/api/cacheable', { method: 'HEAD', headers: enabledHeaders })
+    expect(head.status).toBe(200)
+    expect(head.headers['x-dsh-mobile-cache']).toBeUndefined()
+  })
+})
+
+describe('short API content cache bounds', () => {
+  it('does not retain a response above the per-entry limit', async () => {
+    const inner = await upstream('remote-settings')
+    const instance = await gateway(inner.port, { contentCacheTtlMs: 60_000 })
+    const paired = await pair(instance)
+    const headers = { ...browserHeaders(instance), cookie: `${SESSION_COOKIE}=${paired.session}` }
+
+    const first = await request(instance.address().port, '/api/large', { headers })
+    expect(first.status).toBe(200)
+    expect(first.rawBody.byteLength).toBeGreaterThan(512 * 1024)
+    const repeated = await request(instance.address().port, '/api/large', { headers })
+    expect(repeated.status).toBe(200)
+    expect(repeated.headers['x-dsh-mobile-cache']).toBeUndefined()
+    expect(repeated.body).toBe(first.body)
+  })
+
+  it('stops replaying once the window elapses', async () => {
+    const inner = await upstream('remote-settings')
+    const instance = await gateway(inner.port, { contentCacheTtlMs: 40 })
+    const paired = await pair(instance)
+    const headers = { ...browserHeaders(instance), cookie: `${SESSION_COOKIE}=${paired.session}` }
+
+    await request(instance.address().port, '/api/cacheable', { headers })
+    await new Promise(resolve => { setTimeout(resolve, 60) })
+    const stale = await request(instance.address().port, '/api/cacheable', { headers })
+    expect(stale.status).toBe(200)
+    expect(stale.headers['x-dsh-mobile-cache']).toBeUndefined()
   })
 })
