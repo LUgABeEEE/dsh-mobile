@@ -19,6 +19,8 @@ npm run verify
 
 `verify` checks version alignment, documentation links/structure, bundled licenses, mobile assets, TypeScript, tests and build/package output. `npm run check:docs` is the quick documentation-only check; it does not judge prose accuracy, external services or rendered appearance.
 
+`npm run check:attribution` is a separate, network-dependent check that compares every credited contributor handle with the actual author of the issue or pull request it cites, in the tracked Markdown. It caches the issue index under `local/`, needs the `gh` CLI or a `GITHUB_TOKEN`, and is a pre-release step rather than part of `verify`. `npm run check:attribution -- --self-test` proves the check still detects a wrong author, an unknown reference and a clause boundary without using the network. Run it after editing contributor credits in the changelog, the contributor table or a release note.
+
 ## Select behavior checks
 
 Browser checks consume built client files. Run `npm run build` and `npx playwright install chromium --only-shell`, then choose the affected checks:
@@ -138,7 +140,7 @@ The Caddy publisher shell test needs Bash on POSIX and Git for Windows on Window
 Release preparation is not publication. Keep the candidate marked unreleased and retain working stable APK links until publication is authorized.
 
 1. Align the npm package and lockfile versions; use `npm run check:version`. Keep Android `versionName` and `versionCode` unchanged for plugin-only changes. The checker validates Android separately against the published App descriptor in [apps/mobile/release.json](apps/mobile/release.json).
-2. Review release notes, app manuals, compatibility statements, contributors, third-party notices and package contents. Preserve original author commits when incorporating community PRs.
+2. Review release notes, app manuals, compatibility statements, contributors, third-party notices and package contents. Preserve original author commits when incorporating community PRs. Run `npm run check:attribution` before finalizing contributor credits.
 3. After publication is authorized, finalize the CHANGELOG date and plugin stable version in both root READMEs before the final validation. Keep APK links and App manuals on the published App version. `check:release-tag` validates these independently and refuses unfinished plugin release documentation.
 4. Pass relevant local checks and every applicable CI job for that final candidate, including its release-documentation changes, not only checks required by branch protection. Later changes require the checks relevant to their diff; do not use an earlier commit's green checks as the final candidate's evidence. Record device/network coverage without treating local probes as public-route evidence.
 5. Merge the tested candidate, tag that commit with `v<plugin-version>` and let [.github/workflows/release.yml](.github/workflows/release.yml) build and publish the plugin. Verify npm/GitHub package equality and checksums afterward. Link the current App download in the plugin release notes; an unchanged App does not get a new APK.
