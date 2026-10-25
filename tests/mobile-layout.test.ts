@@ -1320,6 +1320,18 @@ describe('mobile boot batch chunking', () => {
     expect(split.rows.flatMap(row => row.entries).sort()).toEqual([...ids, layoutId].sort())
   })
 
+  it('keeps each merged batch inside the phone download budget', () => {
+    const ids = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j']
+    const plan = parseMobileBootPlan(batchedIndex(ids))
+    const sizes = new Map(ids.map(id => [`/plugins/${id}.js`, 2 * 1024 * 1024]))
+    const split = splitMobileBootBatch(plan.planEntries!, sizes, new Set())
+    const merged = split.rows.filter(row => row.url.startsWith('/mobile-access/mobile-boot/'))
+    expect(merged.length).toBeGreaterThan(1)
+    // Two 2 MB entries per batch plus separators stay under the 3 MB budget.
+    for (const row of merged) expect(row.entries.length).toBeLessThanOrEqual(3)
+    expect(split.rows.flatMap(row => row.entries).sort()).toEqual([...ids, layoutId].sort())
+  })
+
   it('keeps the layout module inside a merged batch even when the batch is otherwise oversized', () => {
     const plan = parseMobileBootPlan(batchedIndex(['a']))
     const split = splitMobileBootBatch(plan.planEntries!, new Map([
