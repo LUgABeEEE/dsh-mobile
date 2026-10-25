@@ -2,6 +2,10 @@
 
 Notable changes are recorded here. GitHub Releases provide the downloadable packages and generated commit notes.
 
+## Unreleased
+
+- Refresh the legacy `upstreamOrigin` snapshot in a managed `mobile-access/setup.json` when the DSH WebServer is on a different port. The gateway already follows the active WebServer port (which matters for a Desktop profile started with `--port 0`), but the stale snapshot read like a stale gateway and sent [#273](https://github.com/saya-ch/dsh-mobile/issues/273) to a manual edit. Only that field is rewritten; the pairing identity, listener and trusted networks are untouched.
+
 ## 0.6.17 - 2026-10-25
 
 - Keep DSH's own directory-picker composition instead of registering a second Host service and Client surface. Official Desktop retains its native chooser, **Add workspace** action and `Ctrl+O` shortcut independently of Mobile's in-page picker. Thanks @ChaoPhone for [#257](https://github.com/saya-ch/dsh-mobile/issues/257) and @bvbhu for [#258](https://github.com/saya-ch/dsh-mobile/issues/258).

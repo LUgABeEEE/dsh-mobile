@@ -97,6 +97,7 @@ import {
   availableLanNetworks,
   isNetworkSelectionError,
   materializeManagedSetup,
+  refreshManagedUpstreamOrigin,
   parseAdditionalTrustedNetworks,
   parseManagedSetup,
   saveManagedTrustedNetworks,
@@ -496,6 +497,17 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
   const logFile = await installMobileFileLogger(ctx, stateDirectory)
   const logger = ctx.logger('dsh-mobile')
   logger.info('logging initialized file=%s', logFile)
+  if (loaded.kind === 'managed' && typeof ctx.webServer.port === 'number') {
+    // Keep the compatibility snapshot in step with the port the gateway actually
+    // follows; the value itself never selects the upstream.
+    try {
+      if (await refreshManagedUpstreamOrigin(loaded.setupFile, loaded.setup, ctx.webServer.port)) {
+        logger.info('dsh-mobile: refreshed the managed setup upstream snapshot to the active DSH port')
+      }
+    } catch (error) {
+      logger.warn('dsh-mobile: could not refresh the managed setup upstream snapshot: %s', error instanceof Error ? error.message : String(error))
+    }
+  }
   // Completed root turns fan out to every live mobile gateway, whose phones
   // render the notification text locally. One subscription serves all paths.
   const taskEventHub = new TaskEventHub()
