@@ -85,8 +85,8 @@ import { JsonPushStore } from './mobile-push/store.js'
 import { PushRegistry } from './mobile-push/registry.js'
 import { PushDelivery } from './mobile-push/delivery.js'
 import { createVapidKeys, PushSender } from './mobile-push/sender.js'
-import { PushGatewayCoordinator } from './mobile-push/gateway.js'
-import type { ContextLike } from './mobile-push/contracts.js'
+import { PushGatewayCoordinator, type PushGatewayOriginBinding, type PushGatewayService } from './mobile-push/gateway.js'
+import type { ContextLike, PushConfig } from './mobile-push/contracts.js'
 import { loadOrCreateInstallationId } from './installation-id.js'
 import { withInstallationIdentity } from './gateway-identity.js'
 import {
@@ -118,6 +118,20 @@ export const name = 'dsh-mobile'
 
 /** The stock WebServer serves the control card; Connection authenticates the loopback DSH origin. */
 export const inject = ['webServer', 'commands', 'connection']
+
+const pushHostServices = ['userQuestions', 'approval', 'sessionProjections', 'sessionQuery', 'agents'] as const
+const unavailablePushPreferences = Object.freeze({ question: true, plan: true, approval: true, response: true, goal: true, failure: true })
+
+function unavailablePushConfig(installationId: string): PushConfig {
+  return {
+    available: false,
+    installationId,
+    ownerGeneration: 0,
+    registrationGeneration: 0,
+    status: 'disabled',
+    preferences: unavailablePushPreferences,
+  }
+}
 
 /** Run cleanup steps in ownership order and report every failure after all steps settle. */
 export async function settleCleanupSteps(steps: readonly (() => void | Promise<void>)[]): Promise<void> {
@@ -514,8 +528,116 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
   let pushRegistry: PushRegistry | undefined
   let pushDelivery: PushDelivery | undefined
   let pushGatewayService: PushGatewayCoordinator | undefined
-  const closePushRuntime = async (): Promise<void> => {
-    const coordinator = pushGatewayService; pushGatewayService = undefined
+  let pushRuntimeReady: Promise<PushGatewayCoordinator | undefined> | undefined
+  let resolvePushRuntimeReady: ((service: PushGatewayCoordinator | undefined) => void) | undefined
+  interface PushRuntimeGeneration {
+    active: boolean
+    readonly ready: Promise<PushGatewayCoordinator | undefined>
+    initialization: Promise<void>
+    closePromise?: Promise<void>
+  }
+  let activePushRuntimeGeneration: PushRuntimeGeneration | undefined
+  const pushOriginAttachments = new Map<symbol, { binding: PushGatewayOriginBinding; detach: (() => void) | undefined }>()
+  const pendingDeviceInvalidations = new Map<string, Set<string>>()
+  const beginPushRuntimeReadiness = (): Promise<PushGatewayCoordinator | undefined> => {
+    if (pushGatewayService !== undefined) return Promise.resolve(pushGatewayService)
+    pushRuntimeReady ??= new Promise(resolve => { resolvePushRuntimeReady = resolve })
+    return pushRuntimeReady
+  }
+  const settlePushRuntimeReadiness = (service: PushGatewayCoordinator | undefined): void => {
+    const resolve = resolvePushRuntimeReady
+    resolvePushRuntimeReady = undefined
+    pushRuntimeReady = undefined
+    resolve?.(service)
+  }
+  const setPushGatewayService = (service: PushGatewayCoordinator | undefined): void => {
+    for (const attachment of pushOriginAttachments.values()) {
+      try { attachment.detach?.() } catch { logger.warn('declarative push origin detach failed') }
+      attachment.detach = undefined
+    }
+    pushGatewayService = service
+    if (service !== undefined) {
+      for (const attachment of pushOriginAttachments.values()) {
+        try { attachment.detach = service.attachOrigin(attachment.binding) } catch {
+          logger.warn('declarative push origin attach failed; Mobile access remains active')
+        }
+      }
+    }
+    settlePushRuntimeReadiness(service)
+  }
+  const currentPushGatewayService = async (): Promise<PushGatewayCoordinator | undefined> => {
+    if (pushGatewayService !== undefined) return pushGatewayService
+    return pushRuntimeReady === undefined ? undefined : pushRuntimeReady
+  }
+  const requiredPushGatewayService = async (): Promise<PushGatewayCoordinator> => {
+    const service = await currentPushGatewayService()
+    if (service === undefined) throw new Error('push_unavailable')
+    return service
+  }
+  const queueDeviceInvalidations = (scopeId: string, deviceIds: readonly string[]): void => {
+    let queued = pendingDeviceInvalidations.get(scopeId)
+    if (queued === undefined) pendingDeviceInvalidations.set(scopeId, queued = new Set())
+    for (const deviceId of deviceIds) queued.add(deviceId)
+  }
+  const flushDeviceInvalidations = async (service: PushGatewayCoordinator): Promise<void> => {
+    while (pendingDeviceInvalidations.size > 0) {
+      const batch = [...pendingDeviceInvalidations]
+      pendingDeviceInvalidations.clear()
+      for (const [scopeId, deviceIds] of batch) await service.invalidateDevices(scopeId, [...deviceIds])
+    }
+  }
+  const pushGatewayFacade: PushGatewayService = {
+    attachOrigin(binding) {
+      const id = Symbol('dsh-mobile push origin')
+      const attachment: { binding: PushGatewayOriginBinding; detach: (() => void) | undefined } = { binding, detach: undefined }
+      pushOriginAttachments.set(id, attachment)
+      try {
+        if (pushGatewayService !== undefined) attachment.detach = pushGatewayService.attachOrigin(binding)
+      } catch (error) {
+        pushOriginAttachments.delete(id)
+        throw error
+      }
+      let active = true
+      return () => {
+        if (!active) return
+        active = false
+        pushOriginAttachments.delete(id)
+        try { attachment.detach?.() } finally { attachment.detach = undefined }
+      }
+    },
+    async invalidateDevices(scopeId, deviceIds) {
+      if (pushGatewayService !== undefined) {
+        await pushGatewayService.invalidateDevices(scopeId, deviceIds)
+        return
+      }
+      queueDeviceInvalidations(scopeId, deviceIds)
+    },
+    async reset() {
+      const service = await requiredPushGatewayService()
+      await service.reset()
+    },
+    async config(owner, installationId) {
+      const service = await currentPushGatewayService()
+      return service === undefined ? unavailablePushConfig(installationId) : service.config(owner, installationId)
+    },
+    async enroll(owner, input) { return (await requiredPushGatewayService()).enroll(owner, input) },
+    async preferences(owner, installationId, value, guard) {
+      return (await requiredPushGatewayService()).preferences(owner, installationId, value, guard)
+    },
+    async disable(owner, installationId, ifGeneration) {
+      await (await requiredPushGatewayService()).disable(owner, installationId, ifGeneration)
+    },
+    async logout(owner) {
+      const service = await currentPushGatewayService()
+      if (service !== undefined) await service.logout(owner)
+    },
+    async test(owner, installationId) { await (await requiredPushGatewayService()).test(owner, installationId) },
+    async resolve(owner, reference) { return (await requiredPushGatewayService()).resolve(owner, reference) },
+  }
+  const closePushRuntime = async (coordinatorOverride?: PushGatewayCoordinator): Promise<void> => {
+    const coordinator = coordinatorOverride ?? pushGatewayService
+    if (pushGatewayService === coordinator) setPushGatewayService(undefined)
+    else if (coordinator === undefined) settlePushRuntimeReadiness(undefined)
     const delivery = pushDelivery; pushDelivery = undefined
     const registry = pushRegistry; pushRegistry = undefined
     const host = pushHost; pushHost = undefined
@@ -526,22 +648,60 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
       () => host?.close(),
     ])
   }
-  const initializePushRuntime = async (): Promise<void> => {
+  const initializePushRuntime = async (pushContext: ContextLike, isActive: () => boolean): Promise<void> => {
     try {
-      pushHost = createPushHost(ctx as unknown as ContextLike)
+      pushHost = createPushHost(pushContext)
       if (!pushHost.available) {
         logger.info('declarative push unavailable: this DSH Host lacks the required public notification services')
         return
       }
       pushRegistry = new PushRegistry(new JsonPushStore(join(stateDirectory, 'mobile-push', 'push-state.json')), createVapidKeys)
       await pushRegistry.initialize()
+      if (!isActive()) return
       pushDelivery = new PushDelivery({ host: pushHost, registry: pushRegistry, sender: new PushSender() })
       await pushDelivery.start()
-      pushGatewayService = new PushGatewayCoordinator(pushHost, pushRegistry, pushDelivery)
+      if (!isActive()) return
+      const coordinator = new PushGatewayCoordinator(pushHost, pushRegistry, pushDelivery)
+      await flushDeviceInvalidations(coordinator)
+      if (!isActive()) return
+      setPushGatewayService(coordinator)
     } catch (error) {
       logger.warn('declarative push unavailable; Mobile access remains active (%s)', error instanceof Error ? error.name : 'initialization-failed')
-      try { await closePushRuntime() } catch { logger.warn('declarative push cleanup failed; Mobile access remains active') }
+      if (isActive()) {
+        try { await closePushRuntime() } catch { logger.warn('declarative push cleanup failed; Mobile access remains active') }
+      }
     }
+  }
+  const startPushRuntimeGeneration = (pushContext: ContextLike): PushRuntimeGeneration => {
+    const generation: PushRuntimeGeneration = {
+      active: true,
+      ready: beginPushRuntimeReadiness(),
+      initialization: Promise.resolve(),
+    }
+    activePushRuntimeGeneration = generation
+    generation.initialization = (async () => {
+      await initializePushRuntime(pushContext, () => generation.active)
+      if (generation.active && pushGatewayService === undefined) settlePushRuntimeReadiness(undefined)
+    })()
+    return generation
+  }
+  const closePushRuntimeGeneration = (generation: PushRuntimeGeneration): Promise<void> => {
+    if (generation.closePromise !== undefined) return generation.closePromise
+    generation.active = false
+    if (activePushRuntimeGeneration !== generation) {
+      generation.closePromise = generation.initialization
+      return generation.closePromise
+    }
+    const coordinator = pushGatewayService
+    if (coordinator !== undefined) setPushGatewayService(undefined)
+    else settlePushRuntimeReadiness(undefined)
+    generation.closePromise = (async () => {
+      await generation.initialization
+      if (activePushRuntimeGeneration !== generation) return
+      activePushRuntimeGeneration = undefined
+      await closePushRuntime(coordinator)
+    })()
+    return generation.closePromise
   }
   const remoteDirectory = join(stateDirectory, 'remote')
   const configuredDshHome = process.env.DSH_HOME?.trim()
@@ -632,7 +792,7 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
       entry => { logger.warn('auth failure %s', JSON.stringify(entry)) },
       entry => { logger.warn('http failure %s', JSON.stringify(entry)) },
       entry => { logger.info('upstream auth %s', JSON.stringify(entry)) },
-      pushGatewayService,
+      pushGatewayFacade,
     )
     await candidate.start()
     lanGateway = candidate
@@ -718,7 +878,7 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
         entry => { logger.warn('auth failure %s', JSON.stringify(entry)) },
         entry => { logger.warn('http failure %s', JSON.stringify(entry)) },
         entry => { logger.info('upstream auth %s', JSON.stringify(entry)) },
-        pushGatewayService,
+        pushGatewayFacade,
       )
       await candidate.start()
       return candidate
@@ -747,7 +907,7 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
       entry => { logger.warn('auth failure %s', JSON.stringify(entry)) },
       entry => { logger.warn('http failure %s', JSON.stringify(entry)) },
       entry => { logger.info('upstream auth %s', JSON.stringify(entry)) },
-      pushGatewayService,
+      pushGatewayFacade,
     )
     try { await candidate.start() } catch (error) {
       await candidate.close()
@@ -763,7 +923,7 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
       entry => { logger.warn('auth failure %s', JSON.stringify(entry)) },
       entry => { logger.warn('http failure %s', JSON.stringify(entry)) },
       entry => { logger.info('upstream auth %s', JSON.stringify(entry)) },
-      pushGatewayService,
+      pushGatewayFacade,
     )
     try { await candidate.start() } catch (error) {
       await candidate.close()
@@ -1525,8 +1685,20 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
         return { kind: 'success', text: '已把需求交给 DSH 处理，改动会在手机端几秒内生效。' }
       },
     })
+    let disposePushRuntimeInjection: (() => void | Promise<void>) | undefined
     try {
-      await initializePushRuntime()
+      const pushHostPresent = pushHostServices.every(service => ctx.get(service) !== undefined)
+      if (pushHostPresent) beginPushRuntimeReadiness()
+      const pushRuntimeFiber = ctx.inject(pushHostServices, pushContext => {
+        const generation = startPushRuntimeGeneration(pushContext as unknown as ContextLike)
+        return () => closePushRuntimeGeneration(generation)
+      })
+      disposePushRuntimeInjection = () => pushRuntimeFiber.dispose()
+      if (pushHostPresent) {
+        await pushRuntimeFiber.await()
+        const generation = activePushRuntimeGeneration
+        if (generation !== undefined) await generation.ready
+      }
       await mobileAccess.startLocal(template.extensionsDir, ctx, { hostExecution: template.hostExecution })
       await lanController.initialize()
       const stores: Record<RemoteProvider, JsonMobileAccessControlStore> = {
@@ -1570,6 +1742,7 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
             if (failures.length > 0) throw new AggregateError(failures, 'remote provider cleanup failed')
           },
           () => lanController.close(),
+          () => disposePushRuntimeInjection?.(),
           closePushRuntime,
           () => mobileAccess.stopLocal(),
           unregisterBuiltin,
@@ -1592,6 +1765,7 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
           if (failures.length > 0) throw new AggregateError(failures, 'remote provider cleanup failed')
         },
         () => lanController.close(),
+        () => disposePushRuntimeInjection?.(),
         closePushRuntime,
         () => mobileAccess.stopLocal(),
         unregisterBuiltin,

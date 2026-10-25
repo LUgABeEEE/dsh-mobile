@@ -3,7 +3,7 @@ import type { WebRoute, WebServer } from '@deepseek-ai/dsh-host-webserver'
 import type { CommandDefinition } from '@deepseek-ai/dsh-commands'
 import { createHash, X509Certificate } from 'node:crypto'
 import { createTestTlsChain } from './tls-fixtures.js'
-import { createServer, request as requestHttp, type IncomingMessage } from 'node:http'
+import { createServer, request as requestHttp, type IncomingHttpHeaders, type IncomingMessage } from 'node:http'
 import { request as requestHttps } from 'node:https'
 import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { connect, type AddressInfo } from 'node:net'
@@ -23,13 +23,14 @@ import { ensureFrpIngressCertificate } from '../src/frp-ingress.js'
 import { DSH_MOBILE_VERSION, MINIMUM_ANDROID_APP_VERSION } from '../src/version.js'
 import { DESKTOP_ADMIN_HEADER, DESKTOP_ADMIN_MARKER, WEB_ADMIN_HEADER, WEB_ADMIN_MARKER } from '../src/local-admin-host.js'
 import { AccessController } from '../src/access.js'
+import { SESSION_COOKIE } from '../src/http-security.js'
 import { buildExtensionWorkerEntry } from './helpers/extension-worker-build.js'
 import { parseUnavailableExtensionHosts } from '../src/extension-recovery-ui.js'
 import { CaddyComponentManager, CADDY_VERSION, type CaddyArtifact } from '../src/caddy-component.js'
 import { FunnelController, type FunnelControllerOptions } from '../src/funnel.js'
 import { FrpController, type FrpControllerOptions } from '../src/frp.js'
 import type { MobileAccessGateway } from '../src/gateway.js'
-import { PushGatewayCoordinator } from '../src/mobile-push/gateway.js'
+import { PushGatewayCoordinator, type PushGatewayOriginBinding } from '../src/mobile-push/gateway.js'
 import { PushDelivery } from '../src/mobile-push/delivery.js'
 import { PushRegistry } from '../src/mobile-push/registry.js'
 
@@ -108,7 +109,14 @@ async function mount(
   indexInjections: readonly { kind: string; text?: string }[] = [],
   pushHostAvailable = false,
   blockPushStoreDirectory = false,
-): Promise<{ context: Context; route: WebRoute; command: CommandDefinition; upstreamBase: string | undefined; directory: string; pushProjectionDisposer: (() => void) | undefined }> {
+  scopedPushHostServices = false,
+  loaderMobileInjection = false,
+  waitForPushRuntime = true,
+): Promise<{
+  context: Context; route: WebRoute; command: CommandDefinition; upstreamBase: string | undefined; directory: string;
+  pushProjectionDisposer: (() => void) | undefined; pushProjectionRegistered: Promise<void>;
+  installPushHostServices: () => Promise<{ dispose: () => Promise<void>; projectionDisposer: () => void; registered: Promise<void> }>
+}> {
   const directory = await mkdtemp(join(tmpdir(), 'dsh-mobile-plugin-'))
   temporaryDirectories.push(directory)
   if (blockPushStoreDirectory) await writeFile(join(directory, 'mobile-push'), 'not-a-directory')
@@ -139,21 +147,47 @@ async function mount(
     },
     requestRejection,
   } as never)
-  if (pushHostAvailable) {
-    pushProjectionDisposer = vi.fn()
-    context.provide('userQuestions', { pending: () => [] } as never)
-    context.provide('approval', {} as never)
-    context.provide('sessionProjections', {
+  let resolvePushProjectionRegistered!: () => void
+  const pushProjectionRegistered = new Promise<void>(resolve => { resolvePushProjectionRegistered = resolve })
+  let pushHostProviderSequence = 0
+  const providePushHostServices = (hostContext: Context, projectionDisposer: () => void, onRegistered: () => void): void => {
+    hostContext.provide('userQuestions', { pending: () => [] } as never)
+    hostContext.provide('approval', {} as never)
+    hostContext.provide('sessionProjections', {
       stateOf: () => undefined,
       snapshot: () => ({ asOfSeq: 0, values: {} }),
-      register: () => pushProjectionDisposer,
+      register: () => {
+        resolvePushProjectionRegistered()
+        onRegistered()
+        return projectionDisposer
+      },
     } as never)
-    context.provide('sessionQuery', {
+    hostContext.provide('sessionQuery', {
       observeSession: async () => ({ source: 'prepared', [Symbol.dispose]: () => undefined }),
     } as never)
-    context.provide('agents', { get: () => undefined, list: () => [], roots: () => [], isOwnedBy: () => false } as never)
+    hostContext.provide('agents', { get: () => undefined, list: () => [], roots: () => [], isOwnedBy: () => false } as never)
   }
-  await context.plugin({ Config, inject, apply }, {
+  const installPushHostServices = async (): Promise<{ dispose: () => Promise<void>; projectionDisposer: () => void; registered: Promise<void> }> => {
+    let resolveRegistered!: () => void
+    const registered = new Promise<void>(resolve => { resolveRegistered = resolve })
+    const projectionDisposer = vi.fn()
+    const providerFiber = context.plugin({
+      name: `test-push-host-services-${++pushHostProviderSequence}`,
+      apply: hostContext => providePushHostServices(hostContext, projectionDisposer, resolveRegistered),
+    })
+    await providerFiber
+    pushProjectionDisposer = projectionDisposer
+    return { dispose: () => providerFiber.dispose(), projectionDisposer, registered }
+  }
+  if (pushHostAvailable) {
+    if (scopedPushHostServices) await installPushHostServices()
+    else {
+      const projectionDisposer = vi.fn()
+      pushProjectionDisposer = projectionDisposer
+      providePushHostServices(context, projectionDisposer, () => undefined)
+    }
+  }
+  await context.plugin({ Config, inject: loaderMobileInjection ? ['webServer', 'connection'] : inject, apply }, {
     listenPort: 0,
     stateFile: join(directory, 'devices.json'),
     controlFile: join(directory, 'control.json'),
@@ -163,9 +197,19 @@ async function mount(
     tls: { mode: 'disabled' },
     ...config,
   })
+  if (pushHostAvailable && !blockPushStoreDirectory && waitForPushRuntime) {
+    const pushStatePath = join(directory, 'mobile-push', 'push-state.json')
+    await vi.waitFor(async () => {
+      const pushState = JSON.parse(await readFile(pushStatePath, 'utf8')) as { keys?: { fingerprint: string } }
+      expect(pushState.keys?.fingerprint).toMatch(/^[0-9a-f]{64}$/u)
+    })
+  }
   if (route === undefined) throw new Error('plugin did not register its control route')
   if (command === undefined) throw new Error('plugin did not register its /mobile command')
-  return { context, route, command, upstreamBase, directory, pushProjectionDisposer }
+  return {
+    context, route, command, upstreamBase, directory, pushProjectionRegistered, installPushHostServices,
+    get pushProjectionDisposer() { return pushProjectionDisposer },
+  }
 }
 
 async function unusedOriginPort(): Promise<number> {
@@ -302,6 +346,41 @@ async function nativeGatewayRequest(
       })
     })
     request.setTimeout(5000, () => { request.destroy(new Error('Owned native request timed out')) })
+    request.once('error', reject)
+    request.end(body)
+  })
+}
+
+async function mobileGatewayRequest(
+  port: number,
+  origin: string,
+  path: string,
+  options: { method?: 'GET' | 'POST'; body?: Record<string, unknown>; cookie?: string } = {},
+): Promise<{ status: number; headers: IncomingHttpHeaders; body: Record<string, unknown> }> {
+  const body = options.body === undefined ? undefined : JSON.stringify(options.body)
+  return new Promise((resolve, reject) => {
+    const request = requestHttp({
+      host: '127.0.0.1', port, path, method: options.method ?? 'GET', agent: false,
+      headers: {
+        host: new URL(origin).host,
+        origin,
+        'sec-fetch-site': 'same-origin',
+        ...(options.cookie === undefined ? {} : { cookie: options.cookie }),
+        ...(body === undefined ? {} : { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) }),
+      },
+    }, response => {
+      const chunks: Buffer[] = []
+      response.on('data', chunk => chunks.push(Buffer.from(chunk)))
+      response.once('error', reject)
+      response.once('end', () => {
+        try {
+          const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+          if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) throw new Error('Mobile Gateway response must be an object')
+          resolve({ status: response.statusCode ?? 0, headers: response.headers, body: parsed as Record<string, unknown> })
+        } catch (error) { reject(error) }
+      })
+    })
+    request.setTimeout(5000, () => { request.destroy(new Error('Owned Mobile Gateway request timed out')) })
     request.once('error', reject)
     request.end(body)
   })
@@ -778,6 +857,187 @@ describe('stock DSH lifecycle', () => {
     const allowed = await invoke(mounted.route, 'GET', '/api/mobile-access/lan/control', '', '192.168.50.23')
     expect(allowed.status).toBe(200)
     expect(JSON.parse(allowed.body)).toMatchObject({ running: false })
+  })
+
+  it('binds optional push Host services across the scoped Loader boundary', async () => {
+    const mounted = await mount(false, 3080, {}, () => 401, [], true, false, true, true)
+    const pushState = JSON.parse(await readFile(join(mounted.directory, 'mobile-push', 'push-state.json'), 'utf8')) as {
+      keys?: { fingerprint: string }
+    }
+    expect(pushState.keys?.fingerprint).toMatch(/^[0-9a-f]{64}$/u)
+    expect(mounted.pushProjectionDisposer).toBeDefined()
+    await mounted.context.fiber.dispose()
+    expect(mounted.pushProjectionDisposer).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps an already-running Gateway attached across late Host and Registry readiness', async () => {
+    const requestRejection = vi.fn(() => undefined)
+    const mounted = await mount(true, 3080, {}, requestRejection, [], false, false, false, true)
+    let releaseRegistryInit!: () => void
+    const registryInitGate = new Promise<void>(resolve => { releaseRegistryInit = resolve })
+    let registryInitStarted!: () => void
+    const registryInitStartedPromise = new Promise<void>(resolve => { registryInitStarted = resolve })
+    const originalInitialize = PushRegistry.prototype.initialize
+    const initialize = vi.spyOn(PushRegistry.prototype, 'initialize').mockImplementation(async function (this: PushRegistry) {
+      registryInitStarted()
+      await registryInitGate
+      return originalInitialize.call(this)
+    })
+    try {
+      const status = await invoke(mounted.route, 'GET', '/api/mobile-access/lan/control')
+      const origin = responseString(JSON.parse(status.body) as Record<string, unknown>, 'origin')
+      const port = Number(new URL(origin).port)
+      const installationId = '11111111-1111-4111-8111-111111111111'
+      const opened = await invoke(mounted.route, 'POST', '/api/mobile-access/lan/pairing/open', '{}')
+      expect(opened.status).toBe(201)
+      const token = responseString(JSON.parse(opened.body) as Record<string, unknown>, 'token')
+      const paired = await mobileGatewayRequest(port, origin, '/mobile-access/auth/pair', {
+        method: 'POST', body: { token, label: 'Late push composition test' },
+      })
+      expect(paired.status).toBe(201)
+      const sessionCookie = paired.headers['set-cookie']?.map(value => value.split(';', 1)[0] ?? '')
+        .find(value => value.startsWith(`${SESSION_COOKIE}=`))
+      if (sessionCookie === undefined) throw new Error('Owned Gateway pairing did not issue a session cookie')
+
+      const before = await mobileGatewayRequest(port, origin, `/mobile-access/push/config?installationId=${encodeURIComponent(installationId)}`, { cookie: sessionCookie })
+      expect(before.status).toBe(200)
+      expect(before.body).toMatchObject({ available: false, installationId, status: 'disabled' })
+
+      await mounted.installPushHostServices()
+      await mounted.pushProjectionRegistered
+      await registryInitStartedPromise
+      const configPendingOnReadiness = mobileGatewayRequest(port, origin, `/mobile-access/push/config?installationId=${encodeURIComponent(installationId)}`, { cookie: sessionCookie })
+      releaseRegistryInit()
+      const after = await configPendingOnReadiness
+      expect(initialize).toHaveBeenCalledTimes(1)
+      expect(after.status).toBe(200)
+      expect(after.body).toMatchObject({ available: true, installationId, status: 'disabled' })
+      expect(after.body.publicKey).toMatch(/^[A-Za-z0-9_-]+$/u)
+      expect(after.body.keyFingerprint).toMatch(/^[0-9a-f]{64}$/u)
+    } finally {
+      releaseRegistryInit()
+      await mounted.context.fiber.dispose()
+    }
+  })
+
+  it('drains push initialization before parent disposal and cannot resurrect the runtime', async () => {
+    const mounted = await mount()
+    let releaseRegistryInit!: () => void
+    const registryInitGate = new Promise<void>(resolve => { releaseRegistryInit = resolve })
+    let registryInitStarted!: () => void
+    const registryInitStartedPromise = new Promise<void>(resolve => { registryInitStarted = resolve })
+    const originalInitialize = PushRegistry.prototype.initialize
+    const initialize = vi.spyOn(PushRegistry.prototype, 'initialize').mockImplementation(async function (this: PushRegistry) {
+      registryInitStarted()
+      await registryInitGate
+      return originalInitialize.call(this)
+    })
+    const closeCoordinator = vi.spyOn(PushGatewayCoordinator.prototype, 'close')
+    const closeDelivery = vi.spyOn(PushDelivery.prototype, 'close')
+    const closeRegistry = vi.spyOn(PushRegistry.prototype, 'close')
+    let disposed = false
+    try {
+      await mounted.installPushHostServices()
+      await mounted.pushProjectionRegistered
+      await registryInitStartedPromise
+      const disposal = mounted.context.fiber.dispose().then(() => { disposed = true })
+      await Promise.resolve()
+      expect(disposed).toBe(false)
+      releaseRegistryInit()
+      await disposal
+
+      expect(initialize).toHaveBeenCalledTimes(1)
+      expect(closeCoordinator).not.toHaveBeenCalled()
+      expect(closeDelivery).not.toHaveBeenCalled()
+      expect(closeRegistry).toHaveBeenCalledTimes(1)
+      expect(mounted.pushProjectionDisposer).toHaveBeenCalledTimes(1)
+    } finally {
+      releaseRegistryInit()
+      if (!disposed) await mounted.context.fiber.dispose()
+    }
+  })
+
+  it('drains replaced Host generation A before publishing generation B', async () => {
+    const mounted = await mount(true)
+    let releaseGenerationA!: () => void
+    const generationAGate = new Promise<void>(resolve => { releaseGenerationA = resolve })
+    let generationAStarted!: () => void
+    const generationAStartedPromise = new Promise<void>(resolve => { generationAStarted = resolve })
+    let generationBStarted!: () => void
+    const generationBStartedPromise = new Promise<void>(resolve => { generationBStarted = resolve })
+    const originalInitialize = PushRegistry.prototype.initialize
+    const originalClose = PushRegistry.prototype.close
+    const activeRegistries = new Set<PushRegistry>()
+    let maxConcurrentRegistries = 0
+    let initializeCount = 0
+    const initialize = vi.spyOn(PushRegistry.prototype, 'initialize').mockImplementation(async function (this: PushRegistry) {
+      const attempt = ++initializeCount
+      activeRegistries.add(this)
+      maxConcurrentRegistries = Math.max(maxConcurrentRegistries, activeRegistries.size)
+      if (attempt === 1) {
+        generationAStarted()
+        await generationAGate
+      } else if (attempt === 2) {
+        generationBStarted()
+      }
+      return originalInitialize.call(this)
+    })
+    vi.spyOn(PushRegistry.prototype, 'close').mockImplementation(async function (this: PushRegistry) {
+      try { await originalClose.call(this) } finally { activeRegistries.delete(this) }
+    })
+    const closeCoordinator = vi.spyOn(PushGatewayCoordinator.prototype, 'close')
+    let resolveOriginAttached!: () => void
+    const originAttached = new Promise<void>(resolve => { resolveOriginAttached = resolve })
+    const originalAttachOrigin = PushGatewayCoordinator.prototype.attachOrigin
+    const attachOrigin = vi.spyOn(PushGatewayCoordinator.prototype, 'attachOrigin').mockImplementation(function (
+      this: PushGatewayCoordinator,
+      binding: PushGatewayOriginBinding,
+    ) {
+      const detach = originalAttachOrigin.call(this, binding)
+      resolveOriginAttached()
+      return detach
+    })
+    let providerA: Awaited<ReturnType<typeof mounted.installPushHostServices>> | undefined
+    let providerB: Awaited<ReturnType<typeof mounted.installPushHostServices>> | undefined
+    try {
+      providerA = await mounted.installPushHostServices()
+      await providerA.registered
+      await generationAStartedPromise
+      const losingA = providerA.dispose()
+      providerB = await mounted.installPushHostServices()
+      releaseGenerationA()
+      await losingA
+      await providerB.registered
+      await generationBStartedPromise
+      await originAttached
+
+      expect(initialize).toHaveBeenCalledTimes(2)
+      expect(maxConcurrentRegistries).toBe(1)
+      expect(activeRegistries.size).toBe(1)
+      expect(providerA.projectionDisposer).toHaveBeenCalledTimes(1)
+      expect(providerB.projectionDisposer).not.toHaveBeenCalled()
+      expect(attachOrigin).toHaveBeenCalledTimes(1)
+      expect(closeCoordinator).not.toHaveBeenCalled()
+
+      await mounted.context.fiber.dispose()
+      expect(closeCoordinator).toHaveBeenCalledTimes(1)
+      expect(providerB.projectionDisposer).toHaveBeenCalledTimes(1)
+      expect(activeRegistries.size).toBe(0)
+    } finally {
+      releaseGenerationA()
+      if (providerB !== undefined) await providerB.dispose()
+      if (providerA !== undefined) await providerA.dispose()
+      await mounted.context.fiber.dispose()
+    }
+  })
+
+  it('keeps ordinary Mobile active when optional push Host services are absent', async () => {
+    const mounted = await mount()
+    expect(mounted.command.name).toBe('mobile')
+    const localControl = await invoke(mounted.route, 'GET', '/api/mobile-access/lan/control')
+    expect(localControl.status).toBe(200)
+    expect(JSON.parse(localControl.body)).toMatchObject({ running: false })
+    await expect(readFile(join(mounted.directory, 'mobile-push', 'push-state.json'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
   })
 
   it('closes the single push runtime on normal plugin unload', async () => {
