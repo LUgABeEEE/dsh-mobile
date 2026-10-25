@@ -29,6 +29,9 @@ import { CaddyComponentManager, CADDY_VERSION, type CaddyArtifact } from '../src
 import { FunnelController, type FunnelControllerOptions } from '../src/funnel.js'
 import { FrpController, type FrpControllerOptions } from '../src/frp.js'
 import type { MobileAccessGateway } from '../src/gateway.js'
+import { PushGatewayCoordinator } from '../src/mobile-push/gateway.js'
+import { PushDelivery } from '../src/mobile-push/delivery.js'
+import { PushRegistry } from '../src/mobile-push/registry.js'
 
 const contexts: Context[] = []
 const temporaryDirectories: string[] = []
@@ -105,13 +108,14 @@ async function mount(
   indexInjections: readonly { kind: string; text?: string }[] = [],
   pushHostAvailable = false,
   blockPushStoreDirectory = false,
-): Promise<{ context: Context; route: WebRoute; command: CommandDefinition; upstreamBase: string | undefined; directory: string }> {
+): Promise<{ context: Context; route: WebRoute; command: CommandDefinition; upstreamBase: string | undefined; directory: string; pushProjectionDisposer: (() => void) | undefined }> {
   const directory = await mkdtemp(join(tmpdir(), 'dsh-mobile-plugin-'))
   temporaryDirectories.push(directory)
   if (blockPushStoreDirectory) await writeFile(join(directory, 'mobile-push'), 'not-a-directory')
   let route: WebRoute | undefined
   let command: CommandDefinition | undefined
   let upstreamBase: string | undefined
+  let pushProjectionDisposer: (() => void) | undefined
   const context = new Context()
   contexts.push(context)
   context.provide('webServer', {
@@ -136,12 +140,13 @@ async function mount(
     requestRejection,
   } as never)
   if (pushHostAvailable) {
+    pushProjectionDisposer = vi.fn()
     context.provide('userQuestions', { pending: () => [] } as never)
     context.provide('approval', {} as never)
     context.provide('sessionProjections', {
       stateOf: () => undefined,
       snapshot: () => ({ asOfSeq: 0, values: {} }),
-      register: () => () => undefined,
+      register: () => pushProjectionDisposer,
     } as never)
     context.provide('sessionQuery', {
       observeSession: async () => ({ source: 'prepared', [Symbol.dispose]: () => undefined }),
@@ -160,7 +165,7 @@ async function mount(
   })
   if (route === undefined) throw new Error('plugin did not register its control route')
   if (command === undefined) throw new Error('plugin did not register its /mobile command')
-  return { context, route, command, upstreamBase, directory }
+  return { context, route, command, upstreamBase, directory, pushProjectionDisposer }
 }
 
 async function unusedOriginPort(): Promise<number> {
@@ -773,6 +778,30 @@ describe('stock DSH lifecycle', () => {
     const allowed = await invoke(mounted.route, 'GET', '/api/mobile-access/lan/control', '', '192.168.50.23')
     expect(allowed.status).toBe(200)
     expect(JSON.parse(allowed.body)).toMatchObject({ running: false })
+  })
+
+  it('closes the single push runtime on normal plugin unload', async () => {
+    vi.useFakeTimers()
+    const closeCoordinator = vi.spyOn(PushGatewayCoordinator.prototype, 'close')
+    const closeDelivery = vi.spyOn(PushDelivery.prototype, 'close')
+    const closeRegistry = vi.spyOn(PushRegistry.prototype, 'close')
+    try {
+      const mounted = await mount(false, 3080, {}, () => 401, [], true)
+      const pushState = JSON.parse(await readFile(join(mounted.directory, 'mobile-push', 'push-state.json'), 'utf8')) as {
+        keys?: { fingerprint: string }
+      }
+      expect(pushState.keys?.fingerprint).toMatch(/^[0-9a-f]{64}$/u)
+      expect(mounted.pushProjectionDisposer).toBeDefined()
+
+      await mounted.context.fiber.dispose()
+      expect(closeCoordinator).toHaveBeenCalledTimes(1)
+      expect(closeDelivery).toHaveBeenCalledTimes(1)
+      expect(closeRegistry).toHaveBeenCalledTimes(1)
+      expect(mounted.pushProjectionDisposer).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.clearAllTimers()
+      vi.useRealTimers()
+    }
   })
 
   it('resets the shared push key registry through the trusted Desktop route', async () => {

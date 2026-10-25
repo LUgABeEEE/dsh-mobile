@@ -1592,6 +1592,7 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
           if (failures.length > 0) throw new AggregateError(failures, 'remote provider cleanup failed')
         },
         () => lanController.close(),
+        closePushRuntime,
         () => mobileAccess.stopLocal(),
         unregisterBuiltin,
       ])
