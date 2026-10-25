@@ -295,6 +295,14 @@ async function upstream(
       response.end('authentication required')
       return
     }
+    if (incoming.url?.startsWith('/plugins/sse-fixture') === true || incoming.url?.startsWith('/api/sse-fixture') === true) {
+      // Same media type on a static and a non-static path: the static contract is
+      // unchanged, while a non-static event stream must stay incremental.
+      response.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8' })
+      response.write('data: probe\n\n')
+      response.end()
+      return
+    }
     if (incoming.url === '/api/stream-hold') {
       response.writeHead(200, { 'content-type': 'text/plain' })
       response.write('first')
@@ -3505,5 +3513,28 @@ describe('compressible proxied text and slow API diagnostics', () => {
     })
     expect(samples[0]!.durationMs).toBeGreaterThanOrEqual(3_000)
     expect(JSON.stringify(samples)).not.toContain('secret-session')
+  })
+})
+
+describe('compression contract boundaries', () => {
+  it('keeps the static contract and leaves non-static event streams uncompressed', async () => {
+    const inner = await upstream('remote-settings')
+    const instance = await gateway(inner.port)
+    const paired = await pair(instance)
+    const headers = {
+      ...browserHeaders(instance),
+      cookie: `${SESSION_COOKIE}=${paired.session}`,
+      'accept-encoding': 'gzip',
+    }
+
+    // `/plugins/` handled the same media type before this change; a regression here
+    // broke DSH 0.1.7 boot ordering in CI, so the contract is pinned explicitly.
+    const staticStream = await request(instance.address().port, '/plugins/sse-fixture', { headers })
+    expect(staticStream.status).toBe(200)
+    expect(staticStream.headers['content-encoding']).toBe('gzip')
+
+    const apiStream = await request(instance.address().port, '/api/sse-fixture', { headers })
+    expect(apiStream.status).toBe(200)
+    expect(apiStream.headers['content-encoding']).toBeUndefined()
   })
 })

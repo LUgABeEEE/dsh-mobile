@@ -950,31 +950,26 @@ function responseMediaType(value: string | string[] | undefined): string {
   return contentType?.split(';', 1)[0]?.trim().toLowerCase() ?? ''
 }
 
+/** Static asset paths keep their existing compression contract unchanged. */
 function isStaticAssetPath(url: string | undefined): boolean {
   const pathname = url?.split('?', 1)[0] ?? ''
   return pathname.startsWith('/plugins/') || pathname.startsWith('/assets/')
 }
 
 function canCompressResponse(request: IncomingMessage, response: IncomingMessage): boolean {
-  // Every compressible text response is a candidate: documents, API JSON and
-  // asset bundles all stream through the same gzip pipeline. Event streams are
-  // the exception — their frames must reach the client as they are produced.
-  if (request.method !== 'GET' && request.method !== 'HEAD') return false
+  const compressibleRequest = request.method === 'GET' || request.method === 'HEAD'
+  if (!compressibleRequest) return false
+  if (response.statusCode !== 200) return false
+  if (request.headers.range !== undefined) return false
+  if (response.headers['content-range'] !== undefined) return false
+  if (response.headers['content-encoding'] !== undefined) return false
+  if (!isCompressibleContentType(response.headers['content-type'])) return false
+  if (isStaticAssetPath(request.url)) return true
+  // Outside static assets the response is a document or API payload: keep event
+  // streams incremental and skip bodies that gzip cannot shrink.
   if (INCREMENTAL_MEDIA_TYPES.has(responseMediaType(response.headers['content-type']))) return false
-  // A declared length marks a complete representation, and a tiny one costs more
-  // to compress than it saves. Static assets keep their earlier coverage even when
-  // upstream streams them; any other unknown-length response may be consumed
-  // incrementally, so it keeps its bytes instead of waiting for a gzip block.
   const declaredLength = Number(response.headers['content-length'])
-  const compressibleSize = Number.isFinite(declaredLength)
-    ? declaredLength >= MIN_COMPRESSIBLE_BYTES
-    : isStaticAssetPath(request.url)
-  if (!compressibleSize) return false
-  return response.statusCode === 200
-    && request.headers.range === undefined
-    && response.headers['content-range'] === undefined
-    && response.headers['content-encoding'] === undefined
-    && isCompressibleContentType(response.headers['content-type'])
+  return Number.isFinite(declaredLength) && declaredLength >= MIN_COMPRESSIBLE_BYTES
 }
 
 function revisionedStaticCacheControl(
