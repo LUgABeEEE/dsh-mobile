@@ -135,6 +135,7 @@
     "check:android-release-tag": "node ./scripts/check-release-version.mjs --android-tag-env",
     "check:version": "node ./scripts/check-release-version.mjs",
     "check:companion-package": "node ./scripts/check-companion-package.mjs",
+    "check:attribution": "node ./scripts/check-attribution.mjs",
     "check:docs": "node ./scripts/check-docs.mjs",
     "clean": "node ./scripts/clean.mjs",
     "generate:funnel-licenses": "node ./scripts/funnel-third-party-licenses.mjs --write",

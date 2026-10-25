@@ -47,7 +47,7 @@ Select **Save and start backend**. An active backend reloads its settings. The p
 2. Point the proxy at the displayed private HTTP backend, not the phone's public HTTPS address.
 3. Preserve the external **Host including non-default port**: the example requires `phone.example.com:8815`, not the private target or a hostname without its port.
 4. Preserve Origin, Cookie, Set-Cookie and authentication/CSRF headers. Do not rewrite Cookie domain/security attributes or cache authentication responses.
-5. Forward HTTP/1.1 WebSocket upgrades and bidirectional data. Approve any required third-party WebSocket paths separately in diagnostics.
+5. Forward HTTP/1.1 WebSocket upgrades and bidirectional data. The existing WebSocket path allowlist keeps applying; when a third-party plugin needs its own path, approve it separately in diagnostics.
 
 [Lucky's official Web documentation](https://www.lucky666.cn/docs/modules/web/) describes WebSocket support. UI labels vary by version, but this backend requires the incoming external Host. Do not enable target-address Host; if a version offers custom Host, provide the full public hostname and port. Certificates belong on Lucky, not this HTTP backend.
 

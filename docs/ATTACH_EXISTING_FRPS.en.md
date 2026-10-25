@@ -28,18 +28,42 @@ Plugin 0.6.16 adds Chinese, English and Italian field-level feedback: submission
 ## Public-CA mode
 
 1. In **Self-hosted FRP**, choose **Attach to my existing frps** and **Public CA certificate**. Enter the VPS address, frps control port, high-entropy shared token, public domain or IPv4 HTTPS origin, and the frps instance's actual `vhostHTTPPort`. Do not assume the managed deployment's default of 7080.
-2. Copy the attachment plan. Confirm the plaintext vhost is loopback-only, then add the generated Caddy snippet and `import` manually. Caddy manages domain certificates. For public IPv4, the current plan pins Certbot 5.8.0 and uses `--standalone --preferred-profile shortlived --ip-address` for a [roughly six-day Let's Encrypt IP certificate](https://letsencrypt.org/2026/03/11/shorter-certs-certbot). Standalone issuance briefly stops Caddy to free port 80 and may interrupt other sites on the VPS; schedule a maintenance window, choose a domain, or use the self-signed TCP mode in app 0.4.6 or later if that interruption is unacceptable. The attach path only checks an existing `certbot.timer`; it does not install renewal or a certificate-copy/reload hook. Arrange renewal, installation into Caddy, and reload before expiry yourself. Copying the plan does not change the VPS.
+2. Copy the attachment plan. Confirm the plaintext vhost is loopback-only, then add the generated Caddy snippet at `/etc/caddy/dsh-mobile-dsh.caddy` and its `import` line at the top of the Caddyfile manually. Caddy manages domain certificates. For public IPv4, the current plan pins Certbot 5.8.0 and uses `--standalone --preferred-profile shortlived --ip-address` for a [roughly six-day Let's Encrypt IP certificate](https://letsencrypt.org/2026/03/11/shorter-certs-certbot). Standalone issuance briefly stops Caddy to free port 80 and may interrupt other sites on the VPS; schedule a maintenance window, choose a domain, or use the self-signed TCP mode in app 0.4.6 or later if that interruption is unacceptable. The attach path only checks an existing `certbot.timer`; it does not install renewal or a certificate-copy/reload hook. Arrange renewal, installation into Caddy, and reload before expiry yourself. Copying the plan does not change the VPS.
 3. Install the pinned official `frpc` on the computer, save and verify the connection, and test `/mobile-access/discovery` from an independent external network with normal certificate validation. Confirm HTTP 200 and this computer's installation identifier before pairing through the app's **Remote access** flow or a phone browser. A local self-check alone does not verify public reachability.
 
 ## Self-signed passthrough mode
 
 The computer-side gateway terminates TLS with a five-year CA and 397-day public-IPv4 leaf. The leaf can renew under the same CA; an expired or replaced CA requires a new fingerprint check and pairing. QR links and App keys carry the CA-required `dsh2` marker, rejected by older apps. Supported apps keep this CA in their private connection records, never Android's system trust store.
 
+> Topology: `phone ──HTTPS(:33080)──▶ frps TCP proxy (passthrough) ──encrypted tunnel──▶ local frpc ──▶ 127.0.0.1:<gateway HTTPS port> ──▶ dsh web 127.0.0.1:3080`
+
 1. In **Self-hosted FRP**, enter the VPS address, frps control port, token, and `https://YOUR_PUBLIC_IPV4`. Choose **Attach to my existing frps**, **Self-signed passthrough**, and the public TCP port (default 33080; not 3080, 3443, or 3444).
 2. Copy and review the masked `frpc.toml` and VPS checklist. This is read-only: finish the server checks before selecting **Save and verify connection**.
 3. On the VPS, allow the chosen TCP entry port in its host firewall and cloud security group; the existing frps control port must already be reachable from the computer. Confirm frps is running and the TCP proxy listens on an address reachable from the public network. The plugin does not change the server's frps configuration or firewall.
+
+   ```sh
+   ufw allow 33080/tcp
+   ufw status | grep 33080
+   ```
+
+   With firewalld or a cloud security group, allow the same **TCP 33080**. Then check the frps service and its listeners (use your own service manager if frps does not run under systemd):
+
+   ```sh
+   systemctl is-active frps || true
+   ss -lnt | grep -E ':(<your bindPort>|33080)\b' || true
+   ```
+
+   The control port should already be listening. A proxy entry such as 33080 usually appears only after frpc registers successfully, so check its actual address once the connection is up.
 4. Install official frpc and select **Save and verify connection**. The plugin now writes the config in private `remote/frp/config/` (Unix `0600`, restricted Windows ACL), then runs `frpc verify` before startup. Clear the clipboard if you explicitly copied a token-bearing config. A public TCP proxy port normally appears only after frpc registers; check its actual listener then.
-5. From another network, check `curl -k -sS -o /dev/null -w '%{http_code}\n' https://YOUR_PUBLIC_IPV4:33080/mobile-access/discovery`, replacing the host/port. HTTP 200 proves reachability only: `-k` does not verify identity. Pair through **Remote access** in app 0.4.6 or later; it fetches the CA without device credentials, checks the `dsh2` fingerprint and pins the exact Origin. CA HTTP 404 cannot fall back to platform trust. An Origin or CA change requires new pairing.
+5. From another network, check the public entry end to end, replacing the host and port with your own:
+
+   ```sh
+   # Replace YOUR_PUBLIC_IPV4 and 33080, then run this from an external network.
+   curl -k -sS -o /dev/null -w '%{http_code}\n' https://YOUR_PUBLIC_IPV4:33080/mobile-access/discovery
+   # Expected output: 200. `-k` skips curl's certificate check and proves reachability only, not identity.
+   ```
+
+   HTTP 200 proves reachability only: `-k` does not verify identity. Pair through **Remote access** in app 0.4.6 or later; it fetches the CA without device credentials, checks the `dsh2` fingerprint and pins the exact Origin. CA HTTP 404 cannot fall back to platform trust. An Origin or CA change requires new pairing.
 
 ## Troubleshooting and cleanup
 
@@ -53,5 +77,11 @@ The computer-side gateway terminates TLS with a five-year CA and 397-day public-
 | `frp_proxy_name_in_use` | frps keeps proxy names unique across **all** its clients, and this installation's own name (`dsh-mobile-<first 12 characters of the installation identity>`) is already registered — usually another DSH computer, or this computer's previous session before the frps heartbeat expires it. Disable self-hosted FRP there, or remove that proxy on the frps. frpc keeps running without publishing the entry port, so check proxy registration rather than relying on process liveness. |
 | `frp_remote_port_in_use` | Another proxy on the same frps already owns the chosen entry port. Ports are first-come, first-served per server, so give this computer a different `publicPort` and allow it in the firewall. |
 | Public entry unreachable | Check the chosen port, cloud and host firewalls, frps listener address, running `frpc`, and the external-network probe. A computer-side probe is not proof that a phone can connect. |
+| App reports "connected to another DSH" | The public entry points at a different DSH: check `remotePort`, and confirm frpc is running on this computer. |
+
+## Relation to the other channels
+
+- The **`origin` own-reverse-proxy channel** (default 3444) is a separate path: TLS is terminated by **your own external proxy** and it is independent of this mode.
+- **Deploy mode** (the plugin installs frps + Caddy) is unchanged and still needs SSH; attach mode needs **zero SSH**.
 
 **Remove FRP completely** deletes only plugin-managed FRP files on the computer, including the local `frpc` configuration and self-signed ingress material. The non-secret plugin `installation-id` remains so a later FRP connection keeps the same proxy name; removing all DSH Mobile private state removes that identifier too. The attach path never deletes or restarts your existing frps, Caddy site, certificates, or firewall rules on the VPS. Managed deployment and its separate server cleanup are described in the [self-hosted FRP guide](SELF_HOSTED_FRP.en.md).
