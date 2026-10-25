@@ -130,6 +130,7 @@
     "smoke:upstream-auth": "node ./scripts/smoke-upstream-auth.mjs",
     "smoke:history-scroll": "node ./scripts/smoke-history-scroll-stability.mjs",
     "smoke:directory-picker": "node ./scripts/smoke-directory-picker-split.mjs",
+    "smoke:directory-picker-browse": "node ./scripts/smoke-directory-picker-browse.mjs",
     "capture:screenshots": "node ./scripts/capture-mobile-screenshots.mjs",
     "check:release-tag": "node ./scripts/check-release-version.mjs --tag-env",
     "check:android-release-tag": "node ./scripts/check-release-version.mjs --android-tag-env",

@@ -153,14 +153,21 @@ export function mobileProfilePnpmConfiguration({ packageStoreDirectory, packageI
     + `packageImportMethod: ${JSON.stringify(packageImportMethod)}\n`
 }
 
-/** Launch a supported DSH profile with scrubbed environment and await owned process exit. */
-export function launchDsh(root, home, dshBin) {
+/**
+ * Launch a supported DSH profile with scrubbed environment and await owned process exit.
+ * @param root - owned working directory for the launched process.
+ * @param home - owned DSH home directory.
+ * @param dshBin - DSH CLI entry point.
+ * @param extraArgs - additional CLI arguments appended after the fixed local web flags.
+ * @returns the owned process handle.
+ */
+export function launchDsh(root, home, dshBin, extraArgs = []) {
   const environment = {}
   for (const key of ['PATH', 'Path', 'PATHEXT', 'SystemRoot', 'WINDIR', 'TEMP', 'TMP', 'TMPDIR', 'HOME',
     'USERPROFILE', 'LOCALAPPDATA', 'APPDATA', 'LANG', 'LC_ALL']) {
     if (process.env[key] !== undefined) environment[key] = process.env[key]
   }
-  const child = spawn(process.execPath, [dshBin, 'web', '--host', '127.0.0.1', '--port', '0', '--no-open'], {
+  const child = spawn(process.execPath, [dshBin, 'web', '--host', '127.0.0.1', '--port', '0', '--no-open', ...extraArgs], {
     cwd: root,
     env: {
       ...environment,
