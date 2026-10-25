@@ -693,7 +693,7 @@ describe('HTTP gateway', () => {
     expect(unauthenticated.status).toBe(401)
   })
 
-  it('serves the latest authenticated mobile Web assets without caching them', async () => {
+  it('serves the latest authenticated mobile Web assets with revalidating cache', async () => {
     const inner = await upstream()
     const directory = await mkdtemp(join(tmpdir(), 'dsh-mobile-css-'))
     cleanups.push(() => rm(directory, { recursive: true, force: true }))
@@ -714,7 +714,9 @@ describe('HTTP gateway', () => {
 
     const first = await request(instance.address().port, '/mobile-access/custom.css', { headers })
     expect(first.status).toBe(200)
-    expect(first.headers['cache-control']).toBe('no-store')
+    // An owned asset with a strong validator must be revalidatable; `no-store`
+    // would forbid the conditional request entirely and re-send the body.
+    expect(first.headers['cache-control']).toBe('private, no-cache')
     expect(first.headers.etag).toMatch(/^"[a-f0-9]{64}"$/u)
     expect(first.headers['last-modified']).toBeDefined()
     expect(first.body).toContain('--preview: first')
@@ -727,7 +729,7 @@ describe('HTTP gateway', () => {
     expect(cached.body).toBe('')
     expect(cached.headers.etag).toBe(first.headers.etag)
     expect(cached.headers['last-modified']).toBe(first.headers['last-modified'])
-    expect(cached.headers['cache-control']).toBe('no-store')
+    expect(cached.headers['cache-control']).toBe('private, no-cache')
     const wildcard = await request(instance.address().port, '/mobile-access/custom.css', {
       headers: { ...headers, 'if-none-match': '*' },
     })
@@ -749,7 +751,7 @@ describe('HTTP gateway', () => {
     const script = await request(instance.address().port, '/mobile-access/custom.js', { headers })
     expect(script.status).toBe(200)
     expect(script.headers['content-type']).toBe('text/javascript; charset=utf-8')
-    expect(script.headers['cache-control']).toBe('no-store')
+    expect(script.headers['cache-control']).toBe('private, no-cache')
     expect(script.body).toContain('dshMobile.register')
 
     const layout = await request(instance.address().port, '/mobile-access/mobile-layout.js', { headers })
@@ -760,14 +762,14 @@ describe('HTTP gateway', () => {
     const compatibility = await request(instance.address().port, '/mobile-access/compat.js', { headers })
     expect(compatibility.status).toBe(200)
     expect(compatibility.headers['content-type']).toBe('text/javascript; charset=utf-8')
-    expect(compatibility.headers['cache-control']).toBe('no-store')
+    expect(compatibility.headers['cache-control']).toBe('private, no-cache')
     expect(compatibility.headers['x-content-type-options']).toBe('nosniff')
     expect(compatibility.body).toContain('__compatibilityProbe = true')
     const cachedCompatibility = await request(instance.address().port, '/mobile-access/compat.js', {
       headers: { ...headers, 'if-none-match': String(compatibility.headers.etag) },
     })
     expect(cachedCompatibility.status).toBe(304)
-    expect(cachedCompatibility.headers['cache-control']).toBe('no-store')
+    expect(cachedCompatibility.headers['cache-control']).toBe('private, no-cache')
     expect(cachedCompatibility.body).toBe('')
     await writeFile(mobileCompatibilityFile, 'globalThis.__compatibilityProbe = "updated";\n', 'utf8')
     const updatedCompatibility = await request(instance.address().port, '/mobile-access/compat.js', {
@@ -3419,5 +3421,47 @@ describe('auth failure recording', () => {
     expect(rejected.status).toBe(403)
     expect(entries[0]).toMatchObject({ csrfCookies: 3, csrfHeader: false, sessionCookie: true })
     expect(JSON.stringify(entries)).not.toContain(paired.csrf)
+  })
+})
+
+describe('owned document revalidation', () => {
+  it('answers a conditional mobile document request with 304 instead of the assembled body', async () => {
+    const inner = await upstream('batched')
+    const directory = await mkdtemp(join(tmpdir(), 'dsh-mobile-doc-revalidate-'))
+    cleanups.push(() => rm(directory, { recursive: true, force: true }))
+    const mobileLayoutFile = join(directory, 'mobile-layout.js')
+    await writeFile(mobileLayoutFile, 'globalThis.__documentRevalidation = true;\n', 'utf8')
+    const instance = await gateway(inner.port, { mobileLayoutFile })
+    const paired = await pair(instance)
+    const headers = {
+      ...browserHeaders(instance),
+      accept: 'text/html,application/xhtml+xml',
+      cookie: `${SESSION_COOKIE}=${paired.session}`,
+    }
+
+    const first = await request(instance.address().port, '/', { headers })
+    expect(first.status).toBe(200)
+    expect(first.headers.etag).toMatch(/^"[a-f0-9]{64}"$/u)
+    // The assembled document is generated per request, so no-store would make
+    // every reload download it; no-cache still requires revalidation before reuse.
+    expect(first.headers['cache-control']).toBe('private, no-cache')
+    expect(first.rawBody.byteLength).toBeGreaterThan(0)
+
+    const revalidated = await request(instance.address().port, '/', {
+      headers: { ...headers, 'if-none-match': `W/${String(first.headers.etag)}` },
+    })
+    expect(revalidated.status).toBe(304)
+    expect(revalidated.rawBody.byteLength).toBe(0)
+    expect(revalidated.headers.etag).toBe(first.headers.etag)
+    expect(revalidated.headers['cache-control']).toBe('private, no-cache')
+
+    // The assembled document depends on the boot graph and the device selection,
+    // not on the owned layout file (that file is a separate request), so an
+    // unrelated validator still receives the full document.
+    const unrelated = await request(instance.address().port, '/', {
+      headers: { ...headers, 'if-none-match': '"unrelated"' },
+    })
+    expect(unrelated.status).toBe(200)
+    expect(unrelated.headers.etag).toBe(first.headers.etag)
   })
 })
