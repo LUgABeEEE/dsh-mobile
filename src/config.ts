@@ -131,6 +131,16 @@ export interface PluginConfig {
   contentCacheAssetTtlMs?: number
   /** Path prefixes for the static group; empty caches no asset. */
   contentCacheAssetPaths?: string[]
+  /**
+   * Freshness window for the third group: POST read methods such as a Session history
+   * page. `0` keeps it off. Only an exact allowlist of paths (and, when given, JSON
+   * body methods) is eligible, and every write clears the group.
+   */
+  contentCacheHistoryTtlMs?: number
+  /** POST paths whose read methods may be cached. */
+  contentCacheHistoryPaths?: string[]
+  /** JSON body `method` values allowed on those paths; empty allows any body. */
+  contentCacheHistoryMethods?: string[]
   rateLimitWindowMs?: number
   maxPairingAttempts?: number
   maxRateLimitKeys?: number
@@ -182,6 +192,9 @@ export interface ResolvedGatewayConfig {
   readonly contentCachePaths: readonly string[]
   readonly contentCacheAssetTtlMs: number
   readonly contentCacheAssetPaths: readonly string[]
+  readonly contentCacheHistoryTtlMs: number
+  readonly contentCacheHistoryPaths: readonly string[]
+  readonly contentCacheHistoryMethods: readonly string[]
   readonly rateLimitWindowMs: number
   readonly maxPairingAttempts: number
   readonly maxRateLimitKeys: number
@@ -249,6 +262,9 @@ export const Config: z<PluginConfig> = z.object({
   contentCachePaths: z.array(String).default(['/api/sessions']),
   contentCacheAssetTtlMs: z.natural(),
   contentCacheAssetPaths: z.array(String).default(['/plugins', '/assets', '/mobile-access']),
+  contentCacheHistoryTtlMs: z.natural(),
+  contentCacheHistoryPaths: z.array(String).default(['/api/session']),
+  contentCacheHistoryMethods: z.array(String).default(['page']),
   rateLimitWindowMs: z.natural(),
   maxPairingAttempts: z.natural(),
   maxRateLimitKeys: z.natural(),
@@ -488,6 +504,13 @@ export function parseGatewayConfig(raw: unknown): ResolvedGatewayConfig {
     contentCacheAssetPaths: Object.freeze(normalizeContentCachePaths(
       value.contentCacheAssetPaths ?? ['/plugins', '/assets', '/mobile-access'],
     )),
+    // A history page is read once per open; a window beyond a minute is stale state,
+    // not a saved wait. Writes clear the group, so the ceiling stays short.
+    contentCacheHistoryTtlMs: integer(value.contentCacheHistoryTtlMs, 'contentCacheHistoryTtlMs', 0, 0, 60_000),
+    contentCacheHistoryPaths: Object.freeze(normalizeContentCachePaths(value.contentCacheHistoryPaths ?? ['/api/session'])),
+    contentCacheHistoryMethods: Object.freeze(
+      (value.contentCacheHistoryMethods ?? ['page']).map(method => String(method)).filter(method => method !== ''),
+    ),
     rateLimitWindowMs: integer(value.rateLimitWindowMs, 'rateLimitWindowMs', 60_000, 1_000, 3_600_000),
     maxPairingAttempts: integer(value.maxPairingAttempts, 'maxPairingAttempts', 8, 1, 100),
     maxRateLimitKeys: integer(value.maxRateLimitKeys, 'maxRateLimitKeys', 256, 1, 4096),

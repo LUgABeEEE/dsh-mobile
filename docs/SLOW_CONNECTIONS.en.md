@@ -133,8 +133,8 @@ The gateway groups upstream application modules into start batches (`/mobile-acc
 
 Resources without upstream validators do not automatically acquire a reliable one. Compare the same complete resource URL during ordinary navigation, reload and app cold start: inspect `200`/`304`, cache hits, `If-None-Match`, encoding and actual transfer volume. Do not clear site data first and treat the result as normal cache behavior. Improved HTTP validation does not guarantee cache reuse in every WebView, and these headers alone do not establish a complete fix for [#107](https://github.com/saya-ch/dsh-mobile/issues/107).
 
-## Optional caches: API reads and static resources (plugin 0.9.0+)
-Reads stay fresh by default: both groups are off, the gateway caches nothing, and behavior is unchanged. On a slow link an operator can enable either one, each with its own explicit staleness window.
+## Optional caches: API reads, static resources and history pages (plugin 0.9.0+)
+Reads stay fresh by default: all three groups are off, the gateway caches nothing, and behavior is unchanged. On a slow link an operator can enable any of them, each with its own explicit staleness window.
 
 ### API read cache (`contentCacheTtlMs`, default `0`)
 
@@ -149,13 +149,24 @@ Reads stay fresh by default: both groups are off, the gateway caches nothing, an
 - **A write never clears this group**: it is unrelated to list or Session state and only changes with the files themselves.
 - 2MB per entry; each group has its own byte budget and entry cap, both taken from `contentCacheMaxBytes` (8MB default) and `contentCacheMaxEntries` (256 default).
 
-Both groups share the same guarantees: responses keep `Cache-Control: no-store`, so browser policy is unchanged; replays carry `Age` and `X-DSH-Mobile-Cache: hit` (`revalidated` after a conditional check); the stored copy is identity and replays are re-compressed for the caller's `Accept-Encoding`; uploads, writes, event streams, range requests, cookie-setting or auth-dependent responses are never cached.
+All groups share the same guarantees: responses keep `Cache-Control: no-store`, so browser policy is unchanged; replays carry `Age` and `X-DSH-Mobile-Cache: hit` (`revalidated` after a conditional check); the stored copy is identity and replays are re-compressed for the caller's `Accept-Encoding`; uploads, writes, event streams, range requests, cookie-setting or auth-dependent responses are never cached.
+
+### Session history cache (`contentCacheHistoryTtlMs`, default `0`)
+
+History pagination is a POST read method (`session/page`), so it cannot use the GET cache above and has its own group:
+
+- **One read by default**: paths in `contentCacheHistoryPaths` (default `["/api/session"]`) whose JSON body names a `method` in `contentCacheHistoryMethods` (default `["page"]`); a path that already ends in `/page` (such as `POST /api/session/page`) needs no body declaration. Other methods (`prompt`, `create`, …) are never cached and count as writes that clear the group.
+- **The body is part of the key**: device + path + SHA-256 of the body, so paging to another cursor is another entry rather than a replay of the previous page.
+- **Short window** (0–60 seconds). Every write clears the group; the history read itself does not.
+- **Bounds**: the request needs `content-length`, ≤64KB and a JSON content type; the response needs status 200, complete JSON, no `Set-Cookie`, no upstream `no-store`/`private`, ≤256KB per entry. Anything else bypasses the cache and behaves as before.
+- **The trade-off**: reopening a conversation inside the window can show the page as it was last read. Agent-produced events do not pass through a write request, so this group is not cleared by them; prefer 5–15 seconds and do not expect the newest message inside the window.
 
 Configuration fragment for the existing `mobile-access` entry:
 
 ```yaml
 contentCacheTtlMs: 15000                 # API reads: 15 seconds
 contentCacheAssetTtlMs: 600000           # static resources: 10 minutes
+contentCacheHistoryTtlMs: 8000           # history pages: 8 seconds
 # contentCachePaths: ["/api/sessions", "/api/changes"]
 # contentCacheAssetPaths: ["/plugins", "/assets", "/mobile-access"]
 # contentCacheMaxBytes: 8388608
