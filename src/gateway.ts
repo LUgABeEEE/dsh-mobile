@@ -2110,13 +2110,19 @@ export class MobileAccessGateway {
         const etag = `"${createHash('sha256').update(body).digest('hex')}"`
         const responseHeaders: Record<string, string | number> = { ETag: etag }
         if (mtime !== undefined) responseHeaders['Last-Modified'] = mtime.toUTCString()
+        // `no-store` from setSecurityHeaders would stop the client from even
+        // asking again, so an owned asset with a strong ETag would still be
+        // re-downloaded on every reload. Revalidation keeps the bytes local.
+        this.allowRevalidation(response)
         if (matchesIfNoneMatch(headerValue(request.headers, 'if-none-match'), etag)) {
           setSecurityHeaders(response, this.tlsEnabled)
+          this.allowRevalidation(response)
           response.writeHead(304, responseHeaders)
           response.end()
           return
         }
         setSecurityHeaders(response, this.tlsEnabled)
+        this.allowRevalidation(response)
         response.writeHead(200, {
           ...responseHeaders,
           'Content-Type': customAsset.contentType,
@@ -3007,6 +3013,19 @@ export class MobileAccessGateway {
       upstreamRequest?.destroy()
       await upstreamClosed
     }
+  }
+
+  /**
+   * Let the client revalidate an owned, ETag-validated response.
+   *
+   * setSecurityHeaders defaults every response to `no-store`. That is right for
+   * pairing documents and authenticated API calls, but it also makes an owned
+   * asset with a strong validator unusable: the browser never asks again. A
+   * `no-cache` directive still requires revalidation before reuse, so no stale
+   * bytes are served while a reload costs one 304 instead of the whole body.
+   */
+  private allowRevalidation(response: ServerResponse): void {
+    response.setHeader('Cache-Control', 'private, no-cache')
   }
 
   private async serveMobileBootBatch(

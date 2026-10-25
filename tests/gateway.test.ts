@@ -726,7 +726,7 @@ describe('HTTP gateway', () => {
     expect(unauthenticated.status).toBe(401)
   })
 
-  it('serves the latest authenticated mobile Web assets without caching them', async () => {
+  it('serves the latest authenticated mobile Web assets with revalidating cache', async () => {
     const inner = await upstream()
     const directory = await mkdtemp(join(tmpdir(), 'dsh-mobile-css-'))
     cleanups.push(() => rm(directory, { recursive: true, force: true }))
@@ -747,7 +747,9 @@ describe('HTTP gateway', () => {
 
     const first = await request(instance.address().port, '/mobile-access/custom.css', { headers })
     expect(first.status).toBe(200)
-    expect(first.headers['cache-control']).toBe('no-store')
+    // An owned asset with a strong validator must be revalidatable; `no-store`
+    // would forbid the conditional request entirely and re-send the body.
+    expect(first.headers['cache-control']).toBe('private, no-cache')
     expect(first.headers.etag).toMatch(/^"[a-f0-9]{64}"$/u)
     expect(first.headers['last-modified']).toBeDefined()
     expect(first.body).toContain('--preview: first')
@@ -760,7 +762,7 @@ describe('HTTP gateway', () => {
     expect(cached.body).toBe('')
     expect(cached.headers.etag).toBe(first.headers.etag)
     expect(cached.headers['last-modified']).toBe(first.headers['last-modified'])
-    expect(cached.headers['cache-control']).toBe('no-store')
+    expect(cached.headers['cache-control']).toBe('private, no-cache')
     const wildcard = await request(instance.address().port, '/mobile-access/custom.css', {
       headers: { ...headers, 'if-none-match': '*' },
     })
@@ -782,7 +784,7 @@ describe('HTTP gateway', () => {
     const script = await request(instance.address().port, '/mobile-access/custom.js', { headers })
     expect(script.status).toBe(200)
     expect(script.headers['content-type']).toBe('text/javascript; charset=utf-8')
-    expect(script.headers['cache-control']).toBe('no-store')
+    expect(script.headers['cache-control']).toBe('private, no-cache')
     expect(script.body).toContain('dshMobile.register')
 
     const layout = await request(instance.address().port, '/mobile-access/mobile-layout.js', { headers })
@@ -793,14 +795,14 @@ describe('HTTP gateway', () => {
     const compatibility = await request(instance.address().port, '/mobile-access/compat.js', { headers })
     expect(compatibility.status).toBe(200)
     expect(compatibility.headers['content-type']).toBe('text/javascript; charset=utf-8')
-    expect(compatibility.headers['cache-control']).toBe('no-store')
+    expect(compatibility.headers['cache-control']).toBe('private, no-cache')
     expect(compatibility.headers['x-content-type-options']).toBe('nosniff')
     expect(compatibility.body).toContain('__compatibilityProbe = true')
     const cachedCompatibility = await request(instance.address().port, '/mobile-access/compat.js', {
       headers: { ...headers, 'if-none-match': String(compatibility.headers.etag) },
     })
     expect(cachedCompatibility.status).toBe(304)
-    expect(cachedCompatibility.headers['cache-control']).toBe('no-store')
+    expect(cachedCompatibility.headers['cache-control']).toBe('private, no-cache')
     expect(cachedCompatibility.body).toBe('')
     await writeFile(mobileCompatibilityFile, 'globalThis.__compatibilityProbe = "updated";\n', 'utf8')
     const updatedCompatibility = await request(instance.address().port, '/mobile-access/compat.js', {
