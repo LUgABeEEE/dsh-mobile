@@ -131,8 +131,14 @@ describe('authenticated client module selection', () => {
     expect(view).toMatchObject({ source: 'plugin', excludedClientModules: [], defaultExcludedClientModules: [], reloadRequired: true })
     expect(view.entries.find(entry => entry.id === layoutId)?.required).toBe(true)
     expect(view.entries.find(entry => entry.id === core[0])?.required).toBe(true)
-    expect(view.entries.find(entry => entry.id === 'dependent')).toEqual({ id: 'dependent', required: false, dependencies: ['base'] })
+    expect(view.entries.find(entry => entry.id === 'dependent')).toMatchObject({ id: 'dependent', required: false, dependencies: ['base'] })
     expect(view.entries.find(entry => entry.id === 'feature')?.required).toBe(false)
+    // The panel exists to choose what the phone loads, so measured entries report
+    // both source and gzipped bytes; a failed probe leaves both fields absent.
+    const sized = view.entries.filter(entry => entry.bytes !== undefined)
+    expect(sized.length).toBeGreaterThan(0)
+    for (const entry of sized) expect(entry.gzipBytes).toBeGreaterThan(0)
+    for (const entry of view.entries.filter(entry => entry.bytes === undefined)) expect(entry.gzipBytes).toBeUndefined()
     const body = JSON.stringify(view)
     expect(body).not.toContain('/plugins/')
     expect(body).not.toContain('127.0.0.1')

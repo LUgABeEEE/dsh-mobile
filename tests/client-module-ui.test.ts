@@ -10,6 +10,13 @@ describe('client module settings response', () => {
   it('retains the required marker, exact module ids and dependencies', () => {
     expect(parseClientModuleView(catalog)).toEqual(catalog)
   })
+  it('carries optional measured sizes and rejects malformed ones', () => {
+    const sized = { ...catalog, entries: [{ id: 'core', required: true, dependencies: [], bytes: 2048, gzipBytes: 900 }] }
+    expect(parseClientModuleView(sized).entries[0]).toMatchObject({ bytes: 2048, gzipBytes: 900 })
+    for (const bad of [{ bytes: -1 }, { gzipBytes: 1.5 }, { bytes: '2' }]) {
+      expect(() => parseClientModuleView({ ...catalog, entries: [{ ...catalog.entries[0], ...bad }] })).toThrow('invalid_module_catalog')
+    }
+  })
   it('rejects malformed wire values before making choices interactive', () => {
     for (const value of [null, {}, { ...catalog, source: 'admin' }, { ...catalog, entries: [null] }, { ...catalog, entries: [{ id: 'x', required: 'yes', dependencies: [] }] }, { ...catalog, excludedClientModules: [null] }, { ...catalog, entries: [{ id: 'x', required: false, dependencies: [{}] }] }, { ...catalog, entries: [{ id: '', required: false, dependencies: [] }] }, { ...catalog, entries: [catalog.entries[0], catalog.entries[0]] }]) {
       expect(() => parseClientModuleView(value)).toThrow('invalid_module_catalog')

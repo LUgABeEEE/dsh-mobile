@@ -137,6 +137,8 @@ const MOBILE_BOOT_CHUNK_BYTES = 16 * 1024 * 1024
 /** Bytes the assembly emits after each entry (`body` plus `\n;\n`). */
 const MOBILE_BOOT_SEPARATOR_BYTES = 3
 /** Freshness window for cached upstream bundle byte sizes. */
+/** Catalog sizes change only on a plugin rebuild or host restart. */
+const CLIENT_MODULE_SIZE_TTL_MS = 10 * 60_000
 const MOBILE_BOOT_SIZE_CACHE_TTL_MS = 30_000
 /** Marker header distinguishing size probes from ordinary proxied bundle fetches. */
 const MOBILE_BOOT_SIZE_PROBE_HEADER = 'x-dsh-mobile-size-probe'
@@ -1215,6 +1217,7 @@ export class MobileAccessGateway {
   private readonly probeDeviceLimiter: BoundedRateLimiter
   private readonly probeInFlight = new Set<string>()
   private readonly clientModulePreferences: ClientModulePreferenceStore
+  private readonly clientModuleSizeCache = new Map<string, { at: number; bytes: number; gzipBytes: number }>()
   private readonly clientModuleOperations = new Set<AbortController>()
   private readonly clientModuleTasks = new Set<Promise<ClientModulePreferenceView>>()
   private readonly clientModuleRevocations = new Set<Promise<void>>()
@@ -2420,6 +2423,117 @@ export class MobileAccessGateway {
     return this.clientModulePreferenceOperation('reset', undefined, deviceId, callerSignal)
   }
 
+  /**
+   * Add measured transfer sizes to the settings catalog.
+   *
+   * The panel exists to decide what the phone loads, so the byte count is part of
+   * the decision, not a diagnostic extra. A failed measurement simply leaves the
+   * size unknown; it never blocks the catalog.
+   */
+  private async describeMobileModulesWithSizes(
+    html: string,
+    signal?: AbortSignal,
+  ): Promise<readonly ClientModuleEntry[]> {
+    const entries = describeMobileClientModules(html)
+    const urls = new Map(parseMobileBootPlan(html).entries.map(entry => [entry.id, entry.url]))
+    const measured = new Map<string, { bytes: number; gzipBytes: number }>()
+    const queue = entries.filter(entry => urls.get(entry.id) !== undefined)
+    let cursor = 0
+    const worker = async (): Promise<void> => {
+      while (cursor < queue.length) {
+        signal?.throwIfAborted()
+        const entry = queue[cursor++]!
+        const source = urls.get(entry.id)!
+        const size = await this.upstreamBundleMeasurement(source, signal).catch(() => undefined)
+        if (size !== undefined) measured.set(entry.id, size)
+      }
+    }
+    await Promise.allSettled(Array.from({ length: Math.min(6, queue.length) }, worker))
+    signal?.throwIfAborted()
+    return Object.freeze(entries.map(entry => {
+      const size = measured.get(entry.id)
+      return size === undefined
+        ? entry
+        : Object.freeze({ ...entry, bytes: size.bytes, gzipBytes: size.gzipBytes })
+    }))
+  }
+
+  /**
+   * Measure one upstream bundle's source and gzipped size.
+   *
+   * Measurements are cached for ten minutes: the settings panel is opened rarely
+   * and upstream bundle bytes only change on a plugin rebuild or host restart.
+   */
+  private async upstreamBundleMeasurement(
+    source: string,
+    signal?: AbortSignal,
+  ): Promise<{ bytes: number; gzipBytes: number } | undefined> {
+    signal?.throwIfAborted()
+    const cached = this.clientModuleSizeCache.get(source)
+    if (cached !== undefined && Date.now() - cached.at < CLIENT_MODULE_SIZE_TTL_MS) {
+      return { bytes: cached.bytes, gzipBytes: cached.gzipBytes }
+    }
+    const target = upstreamPluginBundleUrl(source, this.config.upstreamOrigin)
+    if (target === undefined) return undefined
+    let upstreamRequest: ClientRequest | undefined
+    const abort = (): void => { upstreamRequest?.destroy(requestAbortedError()) }
+    signal?.addEventListener('abort', abort, { once: true })
+    try {
+      const upstreamCookie = signal === undefined
+        ? await this.upstreamCookieHeader()
+        : await waitForRequestTask(this.upstreamCookieHeader(), signal)
+      signal?.throwIfAborted()
+      const proxied = await new Promise<IncomingMessage>((resolve, reject) => {
+        upstreamRequest = requestHttp({
+          protocol: 'http:',
+          hostname: stripIpv6Brackets(this.config.upstreamOrigin.hostname),
+          port: Number(this.config.upstreamOrigin.port),
+          method: 'GET',
+          path: `${target.pathname}${target.search}`,
+          headers: {
+            host: this.config.upstreamOrigin.host,
+            accept: 'text/javascript',
+            'accept-encoding': 'identity',
+            [MOBILE_BOOT_SIZE_PROBE_HEADER]: '1',
+            ...(upstreamCookie === undefined ? {} : { cookie: upstreamCookie }),
+          },
+          agent: false,
+        })
+        upstreamRequest.setTimeout(this.config.upstreamTimeoutMs, () => {
+          upstreamRequest?.destroy(upstreamTimeoutError())
+        })
+        upstreamRequest.once('response', resolve)
+        upstreamRequest.once('error', reject)
+        upstreamRequest.end()
+      })
+      if (proxied.statusCode !== 200) {
+        proxied.resume()
+        return undefined
+      }
+      const body = await new Promise<Buffer | undefined>((resolve, reject) => {
+        const chunks: Buffer[] = []
+        let bytes = 0
+        proxied.on('data', (chunk: Buffer) => {
+          bytes += chunk.length
+          if (bytes > MAX_MOBILE_BOOT_ENTRY_BYTES) {
+            proxied.destroy()
+            resolve(undefined)
+            return
+          }
+          chunks.push(Buffer.from(chunk))
+        })
+        proxied.once('end', () => resolve(Buffer.concat(chunks)))
+        proxied.once('error', reject)
+      })
+      if (body === undefined) return undefined
+      const gzipBytes = (await gzipBuffer(body)).byteLength
+      this.clientModuleSizeCache.set(source, { at: Date.now(), bytes: body.byteLength, gzipBytes })
+      return { bytes: body.byteLength, gzipBytes }
+    } finally {
+      signal?.removeEventListener('abort', abort)
+    }
+  }
+
   private async clientModulePreferenceOperation(
     kind: 'describe' | 'configure' | 'reset', excluded: unknown, deviceId?: string, callerSignal?: AbortSignal,
   ): Promise<ClientModulePreferenceView> {
@@ -2453,7 +2567,7 @@ export class MobileAccessGateway {
       try {
         const plan = parseMobileBootPlan(html)
         return Object.freeze({
-          entries: describeMobileClientModules(html),
+          entries: await this.describeMobileModulesWithSizes(html, controller.signal),
           ...selection,
           ...(plan.batches === undefined ? { excludedClientModules: Object.freeze([]), defaultExcludedClientModules: Object.freeze([]) } : {}),
           reloadRequired: true,
