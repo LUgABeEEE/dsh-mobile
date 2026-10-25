@@ -80,6 +80,13 @@ import { OriginConfigStore, parseOriginSettings, validateOriginListenPort, type 
 import { OriginController } from './origin-proxy.js'
 import { PluginReleaseManager, releaseProfileDirectory } from './release-update.js'
 import { installMobileFileLogger } from './file-logger.js'
+import { createPushHost } from './mobile-push/host.js'
+import { JsonPushStore } from './mobile-push/store.js'
+import { PushRegistry } from './mobile-push/registry.js'
+import { PushDelivery } from './mobile-push/delivery.js'
+import { createVapidKeys, PushSender } from './mobile-push/sender.js'
+import { PushGatewayCoordinator } from './mobile-push/gateway.js'
+import type { ContextLike } from './mobile-push/contracts.js'
 import { loadOrCreateInstallationId } from './installation-id.js'
 import { withInstallationIdentity } from './gateway-identity.js'
 import {
@@ -503,6 +510,39 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
     onTaskCompleted: event => taskEventHub.broadcast(event),
     log(event, fields) { logger.info('task event=%s fields=%o', event, fields) },
   })
+  let pushHost: ReturnType<typeof createPushHost> | undefined
+  let pushRegistry: PushRegistry | undefined
+  let pushDelivery: PushDelivery | undefined
+  let pushGatewayService: PushGatewayCoordinator | undefined
+  const closePushRuntime = async (): Promise<void> => {
+    const coordinator = pushGatewayService; pushGatewayService = undefined
+    const delivery = pushDelivery; pushDelivery = undefined
+    const registry = pushRegistry; pushRegistry = undefined
+    const host = pushHost; pushHost = undefined
+    await settleCleanupSteps([
+      () => coordinator?.close(),
+      () => delivery?.close(),
+      () => registry?.close(),
+      () => host?.close(),
+    ])
+  }
+  const initializePushRuntime = async (): Promise<void> => {
+    try {
+      pushHost = createPushHost(ctx as unknown as ContextLike)
+      if (!pushHost.available) {
+        logger.info('declarative push unavailable: this DSH Host lacks the required public notification services')
+        return
+      }
+      pushRegistry = new PushRegistry(new JsonPushStore(join(stateDirectory, 'mobile-push', 'push-state.json')), createVapidKeys)
+      await pushRegistry.initialize()
+      pushDelivery = new PushDelivery({ host: pushHost, registry: pushRegistry, sender: new PushSender() })
+      await pushDelivery.start()
+      pushGatewayService = new PushGatewayCoordinator(pushHost, pushRegistry, pushDelivery)
+    } catch (error) {
+      logger.warn('declarative push unavailable; Mobile access remains active (%s)', error instanceof Error ? error.name : 'initialization-failed')
+      try { await closePushRuntime() } catch { logger.warn('declarative push cleanup failed; Mobile access remains active') }
+    }
+  }
   const remoteDirectory = join(stateDirectory, 'remote')
   const configuredDshHome = process.env.DSH_HOME?.trim()
   const dshHome = configuredDshHome === undefined || configuredDshHome === ''
@@ -592,6 +632,7 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
       entry => { logger.warn('auth failure %s', JSON.stringify(entry)) },
       entry => { logger.warn('http failure %s', JSON.stringify(entry)) },
       entry => { logger.info('upstream auth %s', JSON.stringify(entry)) },
+      pushGatewayService,
     )
     await candidate.start()
     lanGateway = candidate
@@ -677,6 +718,7 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
         entry => { logger.warn('auth failure %s', JSON.stringify(entry)) },
         entry => { logger.warn('http failure %s', JSON.stringify(entry)) },
         entry => { logger.info('upstream auth %s', JSON.stringify(entry)) },
+        pushGatewayService,
       )
       await candidate.start()
       return candidate
@@ -705,6 +747,7 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
       entry => { logger.warn('auth failure %s', JSON.stringify(entry)) },
       entry => { logger.warn('http failure %s', JSON.stringify(entry)) },
       entry => { logger.info('upstream auth %s', JSON.stringify(entry)) },
+      pushGatewayService,
     )
     try { await candidate.start() } catch (error) {
       await candidate.close()
@@ -720,6 +763,7 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
       entry => { logger.warn('auth failure %s', JSON.stringify(entry)) },
       entry => { logger.warn('http failure %s', JSON.stringify(entry)) },
       entry => { logger.info('upstream auth %s', JSON.stringify(entry)) },
+      pushGatewayService,
     )
     try { await candidate.start() } catch (error) {
       await candidate.close()
@@ -924,6 +968,15 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
         assertLocalAdminTrust(request, request.method === 'POST', () => authenticateDesktopAdmin(request))
         if (adminClosing) throw new HttpError(503, 'unavailable')
         if (target.search !== '') throw new HttpError(400, 'bad_request')
+        if (target.decodedPathname === `${LOCAL_ADMIN_PREFIX}/push/reset`) {
+          if (request.method !== 'POST') throw new HttpError(405, 'method_not_allowed')
+          const body = await readJsonObject(request, 1024)
+          if (Object.keys(body).length !== 1 || body.confirm !== 'reset-web-push') throw new HttpError(400, 'bad_request')
+          if (pushGatewayService === undefined) throw new HttpError(503, 'push_unavailable')
+          await pushGatewayService.reset()
+          sendJson(response, 200, { reset: true }, false)
+          return
+        }
         const lanControl = target.decodedPathname === `${LOCAL_ADMIN_PREFIX}/control`
           || target.decodedPathname === `${LOCAL_ADMIN_PREFIX}/lan/control`
         if (request.method === 'GET' && lanControl) {
@@ -1473,6 +1526,7 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
       },
     })
     try {
+      await initializePushRuntime()
       await mobileAccess.startLocal(template.extensionsDir, ctx, { hostExecution: template.hostExecution })
       await lanController.initialize()
       const stores: Record<RemoteProvider, JsonMobileAccessControlStore> = {
@@ -1516,6 +1570,7 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
             if (failures.length > 0) throw new AggregateError(failures, 'remote provider cleanup failed')
           },
           () => lanController.close(),
+          closePushRuntime,
           () => mobileAccess.stopLocal(),
           unregisterBuiltin,
         ])

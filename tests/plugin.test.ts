@@ -103,9 +103,12 @@ async function mount(
   config: Partial<PluginConfig> = {},
   requestRejection: (request: IncomingMessage) => 401 | 403 | undefined = () => 401,
   indexInjections: readonly { kind: string; text?: string }[] = [],
+  pushHostAvailable = false,
+  blockPushStoreDirectory = false,
 ): Promise<{ context: Context; route: WebRoute; command: CommandDefinition; upstreamBase: string | undefined; directory: string }> {
   const directory = await mkdtemp(join(tmpdir(), 'dsh-mobile-plugin-'))
   temporaryDirectories.push(directory)
+  if (blockPushStoreDirectory) await writeFile(join(directory, 'mobile-push'), 'not-a-directory')
   let route: WebRoute | undefined
   let command: CommandDefinition | undefined
   let upstreamBase: string | undefined
@@ -132,6 +135,19 @@ async function mount(
     },
     requestRejection,
   } as never)
+  if (pushHostAvailable) {
+    context.provide('userQuestions', { pending: () => [] } as never)
+    context.provide('approval', {} as never)
+    context.provide('sessionProjections', {
+      stateOf: () => undefined,
+      snapshot: () => ({ asOfSeq: 0, values: {} }),
+      register: () => () => undefined,
+    } as never)
+    context.provide('sessionQuery', {
+      observeSession: async () => ({ source: 'prepared', [Symbol.dispose]: () => undefined }),
+    } as never)
+    context.provide('agents', { get: () => undefined, list: () => [], roots: () => [], isOwnedBy: () => false } as never)
+  }
   await context.plugin({ Config, inject, apply }, {
     listenPort: 0,
     stateFile: join(directory, 'devices.json'),
@@ -757,6 +773,67 @@ describe('stock DSH lifecycle', () => {
     const allowed = await invoke(mounted.route, 'GET', '/api/mobile-access/lan/control', '', '192.168.50.23')
     expect(allowed.status).toBe(200)
     expect(JSON.parse(allowed.body)).toMatchObject({ running: false })
+  })
+
+  it('resets the shared push key registry through the trusted Desktop route', async () => {
+    const requestRejection = vi.fn((request: IncomingMessage) => request.headers.cookie === 'dsh-session=valid' ? undefined : 401)
+    const mounted = await mount(false, 3080, {}, requestRejection, [], true)
+    const before = JSON.parse(await readFile(join(mounted.directory, 'mobile-push', 'push-state.json'), 'utf8')) as {
+      keys?: { fingerprint: string }; registrations: unknown[]; pending: unknown[]; references: unknown[]
+    }
+    const response = await invoke(mounted.route, 'POST', '/api/mobile-access/push/reset', JSON.stringify({ confirm: 'reset-web-push' }), '127.0.0.1', {
+      [DESKTOP_ADMIN_HEADER]: DESKTOP_ADMIN_MARKER, cookie: 'dsh-session=valid',
+    })
+    expect(response.status).toBe(200)
+    expect(JSON.parse(response.body)).toEqual({ reset: true })
+    const after = JSON.parse(await readFile(join(mounted.directory, 'mobile-push', 'push-state.json'), 'utf8')) as {
+      keys?: { fingerprint: string }; registrations: unknown[]; pending: unknown[]; references: unknown[]
+    }
+    expect(after.keys?.fingerprint).not.toBe(before.keys?.fingerprint)
+    expect(after.registrations).toEqual([])
+    expect(after.pending).toEqual([])
+    expect(after.references).toEqual([])
+  })
+
+  it('keeps Mobile controls alive when only push state initialization fails', async () => {
+    const requestRejection = vi.fn((request: IncomingMessage) => request.headers.cookie === 'dsh-session=valid' ? undefined : 401)
+    const mounted = await mount(false, 3080, {}, requestRejection, [], true, true)
+
+    expect(mounted.command).toBeDefined()
+    const control = await invoke(mounted.route, 'GET', '/api/mobile-access/lan/control')
+    expect(control.status).toBe(200)
+    const reset = await invoke(mounted.route, 'POST', '/api/mobile-access/push/reset', JSON.stringify({ confirm: 'reset-web-push' }), '127.0.0.1', {
+      [DESKTOP_ADMIN_HEADER]: DESKTOP_ADMIN_MARKER, cookie: 'dsh-session=valid',
+    })
+    expect(reset.status).toBe(503)
+    expect(JSON.parse(reset.body)).toEqual({ error: 'push_unavailable' })
+  })
+
+  it('protects the explicit local push key reset with Desktop trust, exact confirmation, and bounded JSON', async () => {
+    const requestRejection = vi.fn((request: IncomingMessage) => request.headers.cookie === 'dsh-session=valid' ? undefined : 401)
+    const mounted = await mount(false, 3080, {}, requestRejection)
+    const path = '/api/mobile-access/push/reset'
+    const marker = { [DESKTOP_ADMIN_HEADER]: DESKTOP_ADMIN_MARKER }
+    const valid = JSON.stringify({ confirm: 'reset-web-push' })
+
+    const unmarked = await invoke(mounted.route, 'POST', path, valid, '127.0.0.1', { 'content-type': 'application/json' })
+    expect(unmarked.status).toBe(403)
+    const unauthenticated = await invoke(mounted.route, 'POST', path, valid, '127.0.0.1', marker)
+    expect(unauthenticated.status).toBe(403)
+    const wrongConfirmation = await invoke(mounted.route, 'POST', path, JSON.stringify({ confirm: true }), '127.0.0.1', {
+      ...marker, cookie: 'dsh-session=valid',
+    })
+    expect(wrongConfirmation.status).toBe(400)
+    const extraFields = await invoke(mounted.route, 'POST', path, JSON.stringify({ confirm: 'reset-web-push', installationId: 'attacker' }), '127.0.0.1', {
+      ...marker, cookie: 'dsh-session=valid',
+    })
+    expect(extraFields.status).toBe(400)
+    const validButUnavailable = await invoke(mounted.route, 'POST', path, valid, '127.0.0.1', {
+      ...marker, cookie: 'dsh-session=valid',
+    })
+    expect(validButUnavailable.status).toBe(503)
+    expect(JSON.parse(validButUnavailable.body)).toEqual({ error: 'push_unavailable' })
+    expect(requestRejection).toHaveBeenCalled()
   })
 
   it('requires an authenticated Host session for official Desktop Origin-less writes', async () => {
