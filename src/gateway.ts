@@ -132,15 +132,23 @@ const MAX_MOBILE_BOOT_ENTRY_BYTES = 8 * 1024 * 1024
  * of client bundles whose combined size exceeds the hard batch cap; the layout
  * batch is therefore chunked into multiple merged batches, each kept safely
  * below {@link MAX_MOBILE_BOOT_BATCH_BYTES} so assembly can never reject it.
+ *
+ * The budget also bounds what one phone request has to fetch. A single 16 MB
+ * merged batch gzips to several megabytes, which cannot finish inside the App's
+ * 15-second first-load budget on a slow link; the aborted response then has no
+ * cache entry, so every retry downloads it again. 3 MB of source bytes stays
+ * under a megabyte gzipped, so each merged batch can complete and be revalidated.
  */
-const MOBILE_BOOT_CHUNK_BYTES = 16 * 1024 * 1024
+const MOBILE_BOOT_CHUNK_BYTES = 3 * 1024 * 1024
 /** Bytes the assembly emits after each entry (`body` plus `\n;\n`). */
+/** Bodies below this size cost more to gzip than they save on the wire. */
+const MIN_COMPRESSIBLE_DOCUMENT_BYTES = 1024
 const MOBILE_BOOT_SEPARATOR_BYTES = 3
 /** Freshness window for cached upstream bundle byte sizes. */
 const MOBILE_BOOT_SIZE_CACHE_TTL_MS = 30_000
 /** Marker header distinguishing size probes from ordinary proxied bundle fetches. */
 const MOBILE_BOOT_SIZE_PROBE_HEADER = 'x-dsh-mobile-size-probe'
-const MAX_MOBILE_BOOT_BATCHES = 8
+const MAX_MOBILE_BOOT_BATCHES = 16
 const MOBILE_BOOT_UPSTREAM_ATTEMPTS = 4
 const MOBILE_BOOT_RETRY_DELAY_MS = 150
 
@@ -2579,12 +2587,22 @@ export class MobileAccessGateway {
       delete headers.etag
       // The proxied GUI document: it must be able to frame its own surfaces.
       setSecurityHeaders(response, this.tlsEnabled, 'proxied')
-      response.writeHead(200, {
+      // The gateway assembles this document, so it does not pass through the
+      // proxied-response compression path; compress it here for the same reason.
+      const documentGzip = body.byteLength >= MIN_COMPRESSIBLE_DOCUMENT_BYTES
+        && acceptsGzip(request.headers['accept-encoding'])
+      const payload = documentGzip ? await gzipBuffer(body) : body
+      const documentHeaders: OutgoingHttpHeaders = {
         ...headers,
         'Content-Type': 'text/html; charset=utf-8',
-        'Content-Length': body.byteLength,
-      })
-      response.end(body)
+        'Content-Length': payload.byteLength,
+      }
+      if (documentGzip) {
+        documentHeaders['Content-Encoding'] = 'gzip'
+        addVaryAcceptEncoding(documentHeaders)
+      }
+      response.writeHead(200, documentHeaders)
+      response.end(payload)
     } catch (error) {
       holder.request?.destroy()
       if (error instanceof HttpError) throw error
@@ -2799,14 +2817,14 @@ export class MobileAccessGateway {
       const headers: OutgoingHttpHeaders = {
         'Content-Type': 'text/javascript; charset=utf-8',
         'Content-Length': body.byteLength,
-        'Cache-Control': 'private, no-cache',
+        'Cache-Control': 'private, max-age=30, must-revalidate',
         ETag: etag,
       }
       if (compressed) headers['Content-Encoding'] = 'gzip'
       addVaryAcceptEncoding(headers)
       if (matchesIfNoneMatch(headerValue(request.headers, 'if-none-match'), etag)) {
         setSecurityHeaders(response, this.tlsEnabled)
-        response.writeHead(304, { ETag: etag, 'Cache-Control': 'private, no-cache', Vary: String(headers.vary) })
+        response.writeHead(304, { ETag: etag, 'Cache-Control': 'private, max-age=30, must-revalidate', Vary: String(headers.vary) })
         response.end()
         return
       }

@@ -1060,7 +1060,7 @@ describe('HTTP gateway', () => {
     expect(compressedCached.status).toBe(304)
     expect(compressedCached.headers.vary).toBe('Accept-Encoding')
     expect(compressedCached.headers.etag).toBe(compressed.headers.etag)
-    expect(compressedCached.headers['cache-control']).toBe('private, no-cache')
+    expect(compressedCached.headers['cache-control']).toBe('private, max-age=30, must-revalidate')
     expect(compressedCached.body).toBe('')
 
     const cached = await request(instance.address().port, path, {
@@ -1134,12 +1134,12 @@ describe('HTTP gateway', () => {
     expect(batchPath).toBeDefined()
     const first = await request(instance.address().port, batchPath!, { headers })
     expect(first.status).toBe(200)
-    expect(first.headers['cache-control']).toBe('private, no-cache')
+    expect(first.headers['cache-control']).toBe('private, max-age=30, must-revalidate')
     await writeFile(mobileLayoutFile, 'globalThis.__layoutRevision = "second";\n', 'utf8')
     await utimes(mobileLayoutFile, new Date('2020-01-02T00:00:00Z'), new Date('2020-01-02T00:00:00Z'))
     const next = await request(instance.address().port, batchPath!, { headers: { ...headers, 'if-none-match': String(first.headers.etag) } })
     expect(next.status).toBe(200)
-    expect(next.headers['cache-control']).toBe('private, no-cache')
+    expect(next.headers['cache-control']).toBe('private, max-age=30, must-revalidate')
     expect(next.headers.etag).not.toBe(first.headers.etag)
     expect(next.body).toContain('globalThis.__layoutRevision = "second";')
     expect(next.body).not.toContain('globalThis.__layoutRevision = "first";')
@@ -3419,5 +3419,34 @@ describe('auth failure recording', () => {
     expect(rejected.status).toBe(403)
     expect(entries[0]).toMatchObject({ csrfCookies: 3, csrfHeader: false, sessionCookie: true })
     expect(JSON.stringify(entries)).not.toContain(paired.csrf)
+  })
+})
+describe('mobile document compression', () => {
+  it('gzips the gateway-assembled mobile document when the client accepts gzip', async () => {
+    const inner = await upstream('batched')
+    const directory = await mkdtemp(join(tmpdir(), 'dsh-mobile-doc-gzip-'))
+    cleanups.push(() => rm(directory, { recursive: true, force: true }))
+    const mobileLayoutFile = join(directory, 'mobile-layout.js')
+    await writeFile(mobileLayoutFile, 'globalThis.__documentGzipProbe = true;\n', 'utf8')
+    const instance = await gateway(inner.port, { mobileLayoutFile })
+    const paired = await pair(instance)
+    const headers = {
+      ...browserHeaders(instance),
+      accept: 'text/html,application/xhtml+xml',
+      cookie: `${SESSION_COOKIE}=${paired.session}`,
+    }
+
+    const plain = await request(instance.address().port, '/', { headers })
+    expect(plain.status).toBe(200)
+    expect(plain.headers['content-encoding']).toBeUndefined()
+
+    const compressed = await request(instance.address().port, '/', {
+      headers: { ...headers, 'accept-encoding': 'gzip' },
+    })
+    expect(compressed.status).toBe(200)
+    expect(compressed.headers['content-encoding']).toBe('gzip')
+    expect(compressed.headers.vary).toBe('Accept-Encoding')
+    expect(gunzipSync(compressed.rawBody)).toEqual(plain.rawBody)
+    expect(compressed.rawBody.byteLength).toBeLessThan(plain.rawBody.byteLength)
   })
 })

@@ -110,6 +110,10 @@ Restart DSH and reopen the phone page after a change. Developer tools can show w
 
 Gateway-generated resources use quoted ETags and process conditional GET/HEAD requests only after device authentication and resource checks. When the gateway applies streaming gzip to an upstream static resource, a valid upstream ETag can remain usable as a weak validator with `Vary: Accept-Encoding`. Identity lengths and range metadata are not reused as compressed-representation metadata. Failed responses are not cached, and API requests receive no new caching policy.
 
+The Mobile start page is assembled by the gateway, so it does not pass through the proxy compression path: a request that advertises `Accept-Encoding: gzip` receives the document gzipped, with `Vary` maintained.
+
+The gateway merges an upstream application batch into a start batch (`/mobile-access/mobile-boot/<hash>.js`). Each merged batch is split against a source-byte budget (3 MB) so one response can finish inside the App's first-load budget on a slow link, with at most 16 merged batches. Merged batches carry a quoted ETag and `private, max-age=30, must-revalidate`: a quick reload reuses the local copy, and a layout-file edit invalidates it within 30 seconds. The ETag is bound to the body, so the same URL answers with new content instead of a 304 after a layout change.
+
 Resources without upstream validators do not automatically acquire a reliable one. Compare the same complete resource URL during ordinary navigation, reload and app cold start: inspect `200`/`304`, cache hits, `If-None-Match`, encoding and actual transfer volume. Do not clear site data first and treat the result as normal cache behavior. Improved HTTP validation does not guarantee cache reuse in every WebView, and these headers alone do not establish a complete fix for [#107](https://github.com/saya-ch/dsh-mobile/issues/107).
 
 ## Manual compaction and long-running API requests (0.6.0)
