@@ -247,146 +247,168 @@ try {
       dispose: () => { document.removeEventListener('click', listener, true); delete window.__directoryPickerSmoke } }
   })
 
-  for (const source of ['hero', 'sidebar']) {
-    await openFlow(source)
-    assert(await phone.locator('.dshm-picker__row').count() > 0, `${source}: real owned folders did not render after readiness`)
-    await cancelFlow()
-    await openFlow(source)
-    await phone.keyboard.press('Escape')
-    await phone.locator(selectors.dialog).waitFor({ state: 'hidden', timeout: CLIENT_TIMEOUT_MS })
-    await openFlow(source)
-    const consumed = await phone.evaluate(() => {
-      const event = new Event('dsh-mobile:native-back', { cancelable: true })
-      window.dispatchEvent(event)
-      return event.defaultPrevented
-    })
-    assert.equal(consumed, true, `${source}: native Back was not consumed by the dialog`)
-    await phone.locator(selectors.dialog).waitFor({ state: 'hidden', timeout: CLIENT_TIMEOUT_MS })
-    await openFlow(source)
-    await checkOverlayAndDismiss(source)
-    pass(`${source}: cancel, Escape and routed native Back close the real flow and allow reopening`)
+  // DSH decides the interaction at boot: a headless or remotely reachable host
+  // resolves `browse`, whose own web picker then fills the directory-flow slots
+  // and carries the official folder creation. The plugin owns the flow only when
+  // DSH resolved the native interaction, which a remote browser cannot open.
+  const browseHost = await phone.evaluate(() => (globalThis.__DSH_BOOT__?.entries ?? [])
+    .some(entry => typeof entry?.id === 'string' && entry.id.includes('dsh-client-ui-directory-picker-browse')))
+  if (browseHost) {
+    assert.equal(await phone.locator('.dshm-picker').count(), 0, 'The plugin kept its own picker on a browse host')
+    assert.equal(await phone.locator('style[data-plugin="dsh-mobile-directory-picker"]').count(), 0,
+      'The plugin\'s own picker styles loaded on a browse host')
+    const drawer = phone.locator('[data-dsh-mobile-sidebar]')
+    if (await drawer.getAttribute('data-open') !== 'true') await drawer.locator('[data-dsh-mobile-toggle]').click()
+    await drawer.getByRole('button', { name: 'Add workspace', exact: true }).click()
+    const upstreamDialog = phone.locator('[role="dialog"], dialog').filter({ hasText: /workspace directory|工作区目录/i }).first()
+    await upstreamDialog.waitFor({ state: 'visible', timeout: CLIENT_TIMEOUT_MS })
+    assert.equal(await phone.locator('.dshm-picker').count(), 0, 'Opening the flow mounted the plugin picker instead')
+    await phone.getByRole('button', { name: /new folder|新建文件夹/i }).first().waitFor({ state: 'visible', timeout: CLIENT_TIMEOUT_MS })
+    pass('a browse host keeps DSH\'s own picker, which offers the upstream folder creation')
   }
 
-  for (const mode of [
-    { name: 'small-light-en', width: 375, height: 812, scheme: 'light', lang: 'en' },
-    { name: 'landscape-dark-zh', width: 844, height: 390, scheme: 'dark', lang: 'zh-CN' },
-    { name: 'portrait-light-it', width: 390, height: 844, scheme: 'light', lang: 'it' },
-  ]) {
-    await phone.setViewportSize({ width: mode.width, height: mode.height })
-    await phone.emulateMedia({ colorScheme: mode.scheme })
-    await phone.evaluate(lang => { document.documentElement.lang = lang }, mode.lang)
-    await openFlow('hero')
-    const measured = await phone.locator(selectors.dialog).evaluate(dialog => {
-      const controls = [...dialog.querySelectorAll('button,input')].filter(node => node.getClientRects().length > 0)
-      return {
-        lang: dialog.lang,
-        panel: dialog.querySelector('.dshm-picker__panel').getBoundingClientRect().toJSON(),
-        controls: controls.map(node => node.getBoundingClientRect().toJSON()),
-        background: getComputedStyle(dialog.querySelector('.dshm-picker__panel')).backgroundColor,
-        foreground: getComputedStyle(dialog).color,
-        horizontalOverflow: dialog.scrollWidth > dialog.clientWidth,
-      }
-    })
-    assert.equal(measured.lang, mode.lang === 'zh-CN' ? 'zh' : mode.lang)
-    assert.equal(measured.horizontalOverflow, false, `${mode.name}: page-level horizontal overflow`)
-    assert(measured.controls.every(box => box.width >= 44 && box.height >= 44
-      && box.left >= 0 && box.top >= 0 && box.right <= mode.width + 1 && box.bottom <= mode.height + 1),
-    `${mode.name}: clipped or undersized controls: ${JSON.stringify(measured.controls)}`)
-    const evidence = process.env.DSH_DIRECTORY_PICKER_EVIDENCE_DIRECTORY
-    if (evidence !== undefined) {
-      await mkdir(resolve(evidence), { recursive: true })
-      await phone.screenshot({ path: join(resolve(evidence), `${mode.name}.png`) })
+  if (!browseHost) {
+    for (const source of ['hero', 'sidebar']) {
+      await openFlow(source)
+      assert(await phone.locator('.dshm-picker__row').count() > 0, `${source}: real owned folders did not render after readiness`)
+      await cancelFlow()
+      await openFlow(source)
+      await phone.keyboard.press('Escape')
+      await phone.locator(selectors.dialog).waitFor({ state: 'hidden', timeout: CLIENT_TIMEOUT_MS })
+      await openFlow(source)
+      const consumed = await phone.evaluate(() => {
+        const event = new Event('dsh-mobile:native-back', { cancelable: true })
+        window.dispatchEvent(event)
+        return event.defaultPrevented
+      })
+      assert.equal(consumed, true, `${source}: native Back was not consumed by the dialog`)
+      await phone.locator(selectors.dialog).waitFor({ state: 'hidden', timeout: CLIENT_TIMEOUT_MS })
+      await openFlow(source)
+      await checkOverlayAndDismiss(source)
+      pass(`${source}: cancel, Escape and routed native Back close the real flow and allow reopening`)
     }
+
+    for (const mode of [
+      { name: 'small-light-en', width: 375, height: 812, scheme: 'light', lang: 'en' },
+      { name: 'landscape-dark-zh', width: 844, height: 390, scheme: 'dark', lang: 'zh-CN' },
+      { name: 'portrait-light-it', width: 390, height: 844, scheme: 'light', lang: 'it' },
+    ]) {
+      await phone.setViewportSize({ width: mode.width, height: mode.height })
+      await phone.emulateMedia({ colorScheme: mode.scheme })
+      await phone.evaluate(lang => { document.documentElement.lang = lang }, mode.lang)
+      await openFlow('hero')
+      const measured = await phone.locator(selectors.dialog).evaluate(dialog => {
+        const controls = [...dialog.querySelectorAll('button,input')].filter(node => node.getClientRects().length > 0)
+        return {
+          lang: dialog.lang,
+          panel: dialog.querySelector('.dshm-picker__panel').getBoundingClientRect().toJSON(),
+          controls: controls.map(node => node.getBoundingClientRect().toJSON()),
+          background: getComputedStyle(dialog.querySelector('.dshm-picker__panel')).backgroundColor,
+          foreground: getComputedStyle(dialog).color,
+          horizontalOverflow: dialog.scrollWidth > dialog.clientWidth,
+        }
+      })
+      assert.equal(measured.lang, mode.lang === 'zh-CN' ? 'zh' : mode.lang)
+      assert.equal(measured.horizontalOverflow, false, `${mode.name}: page-level horizontal overflow`)
+      assert(measured.controls.every(box => box.width >= 44 && box.height >= 44
+        && box.left >= 0 && box.top >= 0 && box.right <= mode.width + 1 && box.bottom <= mode.height + 1),
+      `${mode.name}: clipped or undersized controls: ${JSON.stringify(measured.controls)}`)
+      const evidence = process.env.DSH_DIRECTORY_PICKER_EVIDENCE_DIRECTORY
+      if (evidence !== undefined) {
+        await mkdir(resolve(evidence), { recursive: true })
+        await phone.screenshot({ path: join(resolve(evidence), `${mode.name}.png`) })
+      }
+      await cancelFlow()
+      pass(`${mode.name}: localized dialog and touch controls fit the viewport (${measured.background}; ${measured.foreground})`)
+    }
+    await phone.setViewportSize({ width: 390, height: 844 })
+    await phone.emulateMedia({ colorScheme: 'light' })
+    await phone.evaluate(() => { document.documentElement.lang = 'en' })
+
+    await openFlow('sidebar')
+    await navigateTo(heroWorkspace)
+    await phone.locator(`${selectors.dialog} ${selectors.up}`).click()
+    await directoryReady(join(root, 'outside-initial-tree'))
+    pass('absolute path navigation reaches outside the initial tree and Up follows its real parent')
+    await phone.locator(`${selectors.dialog} ${selectors.path}`).fill('relative-workspace')
+    const load = phone.locator(`${selectors.dialog} ${selectors.load}`)
+    if (await load.isEnabled()) await load.click()
+    await phone.waitForFunction(selectors => {
+      const picker = document.querySelector(selectors.dialog)
+      const input = picker?.querySelector(selectors.path)
+      const confirm = picker?.querySelector(selectors.confirm)
+      return confirm instanceof HTMLButtonElement && confirm.disabled
+        && (input?.getAttribute('aria-invalid') === 'true' || picker?.querySelector('[role="alert"]') !== null)
+    }, selectors, { timeout: CLIENT_TIMEOUT_MS })
+    const invalid = await phone.evaluate(async listingPath => {
+      const response = await fetch(`${listingPath}?path=relative-workspace`, { credentials: 'same-origin' })
+      return { status: response.status, body: await response.json() }
+    }, listingPath)
+    assert.equal(invalid.status, 400, 'Gateway accepted a relative workspace path')
+    assert.equal(invalid.body.error, 'bad_path', 'Gateway rejected the invalid path for an unrelated reason')
     await cancelFlow()
-    pass(`${mode.name}: localized dialog and touch controls fit the viewport (${measured.background}; ${measured.foreground})`)
+    pass('relative paths are visibly rejected by the UI and rejected by the authenticated Gateway')
+
+    await openFlow('sidebar')
+    const delayed = holdNextListing()
+    await phone.locator(`${selectors.dialog} ${selectors.path}`).fill(slowFolder)
+    await phone.locator(`${selectors.dialog} ${selectors.load}`).click()
+    const delayedListing = await within(delayed.entered.promise, CLIENT_TIMEOUT_MS, () => 'Held listing never reached the real Gateway')
+    assert.equal(delayedListing.status, 200)
+    assert.equal(delayedListing.body.path, slowFolder)
+    assert.equal(await phone.locator(`${selectors.dialog} ${selectors.confirm}`).isEnabled(), false, 'Commit stayed enabled while navigation was pending')
+    delayed.cancelExpected = true
+    const aborted = phone.waitForEvent('requestfailed', { predicate: request => request === delayed.request,
+      timeout: CLIENT_TIMEOUT_MS }).then(() => ({ aborted: true }), error => ({ error }))
+    await cancelFlow()
+    await openFlow('hero')
+    delayed.release.resolve()
+    await within(delayed.done.promise, CLIENT_TIMEOUT_MS, () => 'Cancelled listing handler did not settle')
+    const abortResult = await aborted
+    if (abortResult.error !== undefined) throw abortResult.error
+    assert.equal(abortResult.aborted, true, 'Cancelling the picker did not abort the browser listing request')
+    await directoryReady()
+    await cancelFlow()
+    pass('loading can be cancelled; its aborted late response cannot replace a reopened flow')
+
+    nextListing = { kind: 'failure' }
+    await openFlow('sidebar', false)
+    await phone.locator(`${selectors.dialog} [role="alert"]:not([data-dshm-picker-create-error])`).waitFor({ state: 'visible', timeout: CLIENT_TIMEOUT_MS })
+    assert.equal(await phone.locator(`${selectors.dialog} ${selectors.confirm}`).isEnabled(), false, 'Failed initial listing allowed a commit')
+    await cancelFlow()
+    await openFlow('sidebar')
+    await cancelFlow()
+    pass('a failed initial listing remains cancellable and the next open can load normally')
+
+    // Folder creation on the remote entry: one explicit write, then the new
+    // directory is listed on the host and can be opened as a workspace.
+    await openFlow('hero')
+    await navigateTo(folders)
+    const createdFolder = join(folders, 'smoke-created')
+    await phone.locator(`${selectors.dialog} [data-dshm-picker-create]`).click()
+    await phone.locator(`${selectors.dialog} [data-dshm-picker-create-name]`).fill('smoke-created')
+    await phone.locator(`${selectors.dialog} [data-dshm-picker-create-confirm]`).click()
+    await phone.waitForTimeout(1500)
+    assert(existsSync(createdFolder), 'the created folder is missing on the host')
+    assert(requests.some(request => request.method === 'POST'), 'the picker did not issue an explicit create request')
+    pass('the remote entry creates a real host directory and lists it')
+    // The same name must fail with a readable error instead of a second write.
+    await navigateTo(folders)
+    await phone.locator(`${selectors.dialog} [data-dshm-picker-create]`).click()
+    await phone.locator(`${selectors.dialog} [data-dshm-picker-create-name]`).fill('smoke-created')
+    await phone.locator(`${selectors.dialog} [data-dshm-picker-create-confirm]`).click()
+    await phone.waitForTimeout(1200)
+    const duplicate = phone.locator(`${selectors.dialog} [data-dshm-picker-create-error]`).first()
+    assert(await duplicate.isVisible(), 'a duplicate folder name produced no readable error')
+    pass('a duplicate folder name is reported instead of writing again')
+    await cancelFlow()
+
+    await adoptWorkspace('hero', heroWorkspace)
+    await adoptWorkspace('sidebar', sidebarWorkspace)
+    assert(requests.some(request => request.path === heroWorkspace && request.status === 200), 'Absolute path never reached the real Gateway')
+    const writes = requests.filter(request => request.method === 'POST')
+    assert.equal(writes.length, 2, `the create flow issued ${writes.length} writes instead of the two user-initiated ones`)
   }
-  await phone.setViewportSize({ width: 390, height: 844 })
-  await phone.emulateMedia({ colorScheme: 'light' })
-  await phone.evaluate(() => { document.documentElement.lang = 'en' })
-
-  await openFlow('sidebar')
-  await navigateTo(heroWorkspace)
-  await phone.locator(`${selectors.dialog} ${selectors.up}`).click()
-  await directoryReady(join(root, 'outside-initial-tree'))
-  pass('absolute path navigation reaches outside the initial tree and Up follows its real parent')
-  await phone.locator(`${selectors.dialog} ${selectors.path}`).fill('relative-workspace')
-  const load = phone.locator(`${selectors.dialog} ${selectors.load}`)
-  if (await load.isEnabled()) await load.click()
-  await phone.waitForFunction(selectors => {
-    const picker = document.querySelector(selectors.dialog)
-    const input = picker?.querySelector(selectors.path)
-    const confirm = picker?.querySelector(selectors.confirm)
-    return confirm instanceof HTMLButtonElement && confirm.disabled
-      && (input?.getAttribute('aria-invalid') === 'true' || picker?.querySelector('[role="alert"]') !== null)
-  }, selectors, { timeout: CLIENT_TIMEOUT_MS })
-  const invalid = await phone.evaluate(async listingPath => {
-    const response = await fetch(`${listingPath}?path=relative-workspace`, { credentials: 'same-origin' })
-    return { status: response.status, body: await response.json() }
-  }, listingPath)
-  assert.equal(invalid.status, 400, 'Gateway accepted a relative workspace path')
-  assert.equal(invalid.body.error, 'bad_path', 'Gateway rejected the invalid path for an unrelated reason')
-  await cancelFlow()
-  pass('relative paths are visibly rejected by the UI and rejected by the authenticated Gateway')
-
-  await openFlow('sidebar')
-  const delayed = holdNextListing()
-  await phone.locator(`${selectors.dialog} ${selectors.path}`).fill(slowFolder)
-  await phone.locator(`${selectors.dialog} ${selectors.load}`).click()
-  const delayedListing = await within(delayed.entered.promise, CLIENT_TIMEOUT_MS, () => 'Held listing never reached the real Gateway')
-  assert.equal(delayedListing.status, 200)
-  assert.equal(delayedListing.body.path, slowFolder)
-  assert.equal(await phone.locator(`${selectors.dialog} ${selectors.confirm}`).isEnabled(), false, 'Commit stayed enabled while navigation was pending')
-  delayed.cancelExpected = true
-  const aborted = phone.waitForEvent('requestfailed', { predicate: request => request === delayed.request,
-    timeout: CLIENT_TIMEOUT_MS }).then(() => ({ aborted: true }), error => ({ error }))
-  await cancelFlow()
-  await openFlow('hero')
-  delayed.release.resolve()
-  await within(delayed.done.promise, CLIENT_TIMEOUT_MS, () => 'Cancelled listing handler did not settle')
-  const abortResult = await aborted
-  if (abortResult.error !== undefined) throw abortResult.error
-  assert.equal(abortResult.aborted, true, 'Cancelling the picker did not abort the browser listing request')
-  await directoryReady()
-  await cancelFlow()
-  pass('loading can be cancelled; its aborted late response cannot replace a reopened flow')
-
-  nextListing = { kind: 'failure' }
-  await openFlow('sidebar', false)
-  await phone.locator(`${selectors.dialog} [role="alert"]:not([data-dshm-picker-create-error])`).waitFor({ state: 'visible', timeout: CLIENT_TIMEOUT_MS })
-  assert.equal(await phone.locator(`${selectors.dialog} ${selectors.confirm}`).isEnabled(), false, 'Failed initial listing allowed a commit')
-  await cancelFlow()
-  await openFlow('sidebar')
-  await cancelFlow()
-  pass('a failed initial listing remains cancellable and the next open can load normally')
-
-  // Folder creation on the remote entry: one explicit write, then the new
-  // directory is listed on the host and can be opened as a workspace.
-  await openFlow('hero')
-  await navigateTo(folders)
-  const createdFolder = join(folders, 'smoke-created')
-  await phone.locator(`${selectors.dialog} [data-dshm-picker-create]`).click()
-  await phone.locator(`${selectors.dialog} [data-dshm-picker-create-name]`).fill('smoke-created')
-  await phone.locator(`${selectors.dialog} [data-dshm-picker-create-confirm]`).click()
-  await phone.waitForTimeout(1500)
-  assert(existsSync(createdFolder), 'the created folder is missing on the host')
-  assert(requests.some(request => request.method === 'POST'), 'the picker did not issue an explicit create request')
-  pass('the remote entry creates a real host directory and lists it')
-  // The same name must fail with a readable error instead of a second write.
-  await navigateTo(folders)
-  await phone.locator(`${selectors.dialog} [data-dshm-picker-create]`).click()
-  await phone.locator(`${selectors.dialog} [data-dshm-picker-create-name]`).fill('smoke-created')
-  await phone.locator(`${selectors.dialog} [data-dshm-picker-create-confirm]`).click()
-  await phone.waitForTimeout(1200)
-  const duplicate = phone.locator(`${selectors.dialog} [data-dshm-picker-create-error]`).first()
-  assert(await duplicate.isVisible(), 'a duplicate folder name produced no readable error')
-  pass('a duplicate folder name is reported instead of writing again')
-  await cancelFlow()
-
-  await adoptWorkspace('hero', heroWorkspace)
-  await adoptWorkspace('sidebar', sidebarWorkspace)
-  assert(requests.some(request => request.path === heroWorkspace && request.status === 200), 'Absolute path never reached the real Gateway')
-  const writes = requests.filter(request => request.method === 'POST')
-  assert.equal(writes.length, 2, `the create flow issued ${writes.length} writes instead of the two user-initiated ones`)
   assert.deepEqual(pageErrors, [], `Page errors: ${sanitized(pageErrors.join(' | '))}`)
   assert.deepEqual(prompts, [], 'The smoke attempted a model request')
   pass('both directory flows complete without page errors or model requests')
