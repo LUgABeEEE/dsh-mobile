@@ -25,6 +25,8 @@ const MESSAGES = {
     'bad-path': '请输入电脑上的绝对目录路径，例如 C:\\projects 或 /home/user/projects', unavailable: '无法读取此目录，请检查路径和访问权限后重试',
     unauthorized: '连接授权不可用，请关闭窗口并重新连接电脑', 'invalid-response': '目录响应不可用，请重试或重新连接电脑',
     'request-failed': '读取目录失败，请检查连接后重试', timeout: '读取目录超时，请重试或取消', failedOpen: '无法打开目录选择器，请重新连接后重试',
+    create: '新建文件夹', createTitle: '新建文件夹名称', createAction: '创建', createInvalid: '请输入单个文件夹名称，不能包含路径分隔符。',
+    createExists: '同名文件夹已存在。', createFailed: '无法创建文件夹，请检查该目录的写入权限后重试。',
   },
   en: {
     title: 'Select workspace directory', path: 'Directory path', go: 'Go', home: 'Home', up: 'Up one level', cancel: 'Cancel', close: 'Close', open: 'Open', retry: 'Retry',
@@ -32,13 +34,17 @@ const MESSAGES = {
     'bad-path': 'Enter an absolute computer path, such as C:\\projects or /home/user/projects', unavailable: 'Could not read this directory. Check its path and access permissions, then retry.',
     unauthorized: 'Connection authorization is unavailable. Close this dialog and reconnect to the computer.', 'invalid-response': 'The directory response is unavailable. Retry or reconnect to the computer.',
     'request-failed': 'Could not load this directory. Check the connection and retry.', timeout: 'Loading timed out. Retry or cancel.', failedOpen: 'Could not open the directory picker. Reconnect and retry.',
+    create: 'New folder', createTitle: 'New folder name', createAction: 'Create', createInvalid: 'Enter a single folder name without path separators.',
+    createExists: 'A folder with that name already exists.', createFailed: 'Could not create the folder. Check write access to this directory and retry.',
   },
   it: {
     title: 'Seleziona la cartella del workspace', path: 'Percorso della cartella', go: 'Vai', home: 'Home', up: 'Cartella superiore', cancel: 'Annulla', close: 'Chiudi', open: 'Apri', retry: 'Riprova',
     loading: 'Caricamento delle cartelle…', adopting: 'Apertura del workspace…', empty: 'Nessuna sottocartella in questa cartella', truncated: 'Sono mostrate solo le prime cartelle; inserisci un percorso completo per aprirne un’altra',
     'bad-path': 'Inserisci un percorso assoluto del computer, come C:\\projects o /home/user/projects', unavailable: 'Impossibile leggere questa cartella. Controlla il percorso e i permessi, poi riprova.',
     unauthorized: 'Autorizzazione non disponibile. Chiudi questa finestra e riconnettiti al computer.', 'invalid-response': 'Risposta della cartella non disponibile. Riprova o riconnettiti al computer.',
-    'request-failed': 'Impossibile caricare la cartella. Controlla la connessione e riprova.', timeout: 'Caricamento scaduto. Riprova o annulla.', failedOpen: 'Impossibile aprire la selezione della cartella. Riconnettiti e riprova.',
+    'request-failed': 'Impossibile caricare la cartella. Controlla la connessione e riprova.',
+    create: 'Nuova cartella', createTitle: 'Nome della nuova cartella', createAction: 'Crea', createInvalid: 'Inserisci un singolo nome di cartella senza separatori di percorso.',
+    createExists: 'Esiste già una cartella con questo nome.', createFailed: 'Impossibile creare la cartella. Controlla i permessi di scrittura e riprova.', timeout: 'Caricamento scaduto. Riprova o annulla.', failedOpen: 'Impossibile aprire la selezione della cartella. Riconnettiti e riprova.',
   },
 } as const
 type Locale = keyof typeof MESSAGES
@@ -64,6 +70,38 @@ function localeOf(doc: Document): Locale {
   return 'en'
 }
 
+/** Create one child directory through the same authenticated route that lists them. */
+async function createDirectory(path: string | null, name: string, signal: AbortSignal): Promise<string> {
+  const response = await fetch(WORKSPACE_DIRECTORIES_PATH, {
+    method: 'POST',
+    credentials: 'same-origin',
+    cache: 'no-store',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ path, name }),
+    signal,
+  })
+  if (!response.ok) {
+    const code = response.status === 409 ? 'directory-exists'
+      : response.status === 400 ? 'directory-create-failed'
+        : response.status === 401 || response.status === 403 ? 'unauthorized' : 'directory-create-failed'
+    try { await response.body?.cancel() } catch (error) { throw new MobileDirectoryCreateError(code) }
+    throw new MobileDirectoryCreateError(code)
+  }
+  const payload = await response.json() as { path?: unknown }
+  if (typeof payload?.path !== 'string') throw new MobileDirectoryCreateError('invalid-response')
+  return payload.path
+}
+
+/** A failed folder creation reported by the authenticated route. */
+type MobileDirectoryCreateFailure = 'directory-exists' | 'directory-create-failed' | 'unauthorized' | 'invalid-response' | 'request-failed'
+
+class MobileDirectoryCreateError extends Error {
+  constructor(readonly code: MobileDirectoryCreateFailure) {
+    super(`Mobile directory creation failed: ${code}`)
+    this.name = 'MobileDirectoryCreateError'
+  }
+}
+
 async function readDirectories(path: string | null, signal: AbortSignal): Promise<unknown> {
   const query = path === null ? '' : `?path=${encodeURIComponent(path)}`
   const response = await fetch(`${WORKSPACE_DIRECTORIES_PATH}${query}`, { credentials: 'same-origin', cache: 'no-store', signal })
@@ -79,27 +117,51 @@ async function readDirectories(path: string | null, signal: AbortSignal): Promis
 const STYLES = `
 dialog.dshm-picker{position:fixed;inset:0;box-sizing:border-box;width:100%;max-width:none;height:100%;max-height:none;margin:0;padding:max(16px,env(safe-area-inset-top)) max(16px,env(safe-area-inset-right)) max(16px,env(safe-area-inset-bottom)) max(16px,env(safe-area-inset-left));border:0;background:transparent;color:var(--dsw-alias-label-primary,#16181d);font:400 14px/1.5 system-ui;overflow:hidden}
 dialog.dshm-picker[open]{display:grid;place-items:center}dialog.dshm-picker::backdrop{background:rgb(0 0 0 / 42%)}
-.dshm-picker__panel{display:flex;flex-direction:column;box-sizing:border-box;width:min(680px,100%);height:min(500px,100%);min-height:0;overflow:hidden;border:1px solid var(--dsw-alias-border-l2,#dde0e4);border-radius:16px;background:var(--dsw-alias-bg-layer-1,#fff);box-shadow:0 16px 56px rgb(0 0 0 / 18%)}
-.dshm-picker__header{display:flex;align-items:center;flex:none;gap:12px;padding:12px 16px;border-bottom:1px solid var(--dsw-alias-border-l2,#dde0e4)}
-.dshm-picker__title{flex:1;min-width:0;margin:0;font-size:16px;font-weight:500;overflow-wrap:anywhere}
+.dshm-picker__panel{display:flex;flex-direction:column;box-sizing:border-box;width:min(680px,100%);height:min(500px,100%);min-height:0;overflow:hidden;border:0;border-radius:28px;box-shadow:0 0 0 .5px rgba(0 0 0 / 16%),0 3px 8px rgba(0 0 0 / 4%);background:var(--dsw-alias-bg-layer-1,#fff);box-shadow:0 16px 56px rgb(0 0 0 / 18%)}
+.dshm-picker__header{display:flex;align-items:center;flex:none;gap:8px;padding:16px 14px 8px 24px;border-bottom:1px solid var(--dsw-alias-border-l2,#dde0e4)}
+.dshm-picker__title{flex:1;min-width:0;margin:0;font-size:16px;font-weight:510;line-height:24px;overflow-wrap:anywhere}
 .dshm-picker__toolbar{display:flex;flex-wrap:wrap;gap:8px;flex:none;padding:12px 16px 8px}.dshm-picker__path-label{flex:1;min-width:min(180px,100%);display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--dsw-alias-label-secondary,#606873)}
 .dshm-picker__path{box-sizing:border-box;width:100%;min-width:0;min-height:48px;padding:10px 12px;border:1px solid var(--dsw-alias-border-l3,#cfd5dd);border-radius:10px;background:var(--dsw-alias-bg-layer-2,#f7f8fa);color:var(--dsw-alias-label-primary,#16181d);font:400 16px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace}
 .dshm-picker__path[aria-invalid=true]{border-color:var(--dsw-alias-state-error-primary,#b42318)}.dshm-picker__go{align-self:flex-end}
 .dshm-picker__navigation{display:flex;flex:none;gap:8px;padding:0 16px 8px}.dshm-picker__navigation .dshm-picker__button{flex:1;white-space:normal}
-.dshm-picker__list{flex:1;min-height:0;margin:0;padding:4px 12px;overflow:auto;overscroll-behavior:contain;list-style:none;scroll-padding:4px}
-.dshm-picker__row{display:flex;align-items:center;gap:12px;box-sizing:border-box;width:100%;min-height:48px;padding:10px 12px;border:0;border-radius:8px;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer;touch-action:manipulation}
+.dshm-picker__list{flex:1;min-height:0;margin:0;padding:16px 16px 16px 24px;overflow:auto;overscroll-behavior:contain;list-style:none;scroll-padding:4px}
+.dshm-picker__row{display:flex;align-items:center;gap:8px;box-sizing:border-box;width:100%;min-height:44px;padding:6px 8px;border:0;border-radius:8px;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer;touch-action:manipulation}
 .dshm-picker__folder{flex:none;width:20px;height:20px;color:var(--dsw-alias-label-secondary,#606873)}
 .dshm-picker__name{flex:1;min-width:0;overflow-wrap:anywhere}.dshm-picker__row:hover:not(:disabled),.dshm-picker__button:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover,#eef1f5)}
 .dshm-picker__row:active:not(:disabled),.dshm-picker__button:active:not(:disabled){background:var(--dsw-alias-interactive-bg-active,#e4e8ee)}
 .dshm-picker__button{flex:none;box-sizing:border-box;min-width:48px;min-height:48px;padding:10px 14px;border:1px solid var(--dsw-alias-border-l3,#cfd5dd);border-radius:10px;background:transparent;color:inherit;font:500 14px/1.4 system-ui;cursor:pointer;touch-action:manipulation}
 .dshm-picker :is(button,input):focus-visible{outline:2px solid var(--dsw-alias-state-business-primary,#2563eb);outline-offset:2px}.dshm-picker button:disabled{opacity:.5;cursor:default}
+.dshm-picker__create[hidden]{display:none}.dshm-picker__create{flex:none;display:flex;flex-direction:column;gap:8px;padding:12px 16px;border-top:1px solid var(--dsw-alias-border-l2,#dde0e4)}
+.dshm-picker__create-title{margin:0;font-size:13px;color:var(--dsw-alias-label-secondary,#606873)}
+.dshm-picker__create-input{box-sizing:border-box;width:100%;min-width:0;min-height:44px;padding:10px 12px;border:1px solid var(--dsw-alias-border-l3,#cfd5dd);border-radius:10px;background:var(--dsw-alias-bg-layer-2,#f7f8fa);color:var(--dsw-alias-label-primary,#0f1115);font:400 16px/1.4 inherit}
+.dshm-picker__create-actions{display:flex;justify-content:flex-end;gap:8px}.dshm-picker__create-error{color:var(--dsw-alias-state-error-primary,#b42318)}
+.dshm-picker__create-trigger{margin-right:auto}
 .dshm-picker__status{flex:none;margin:0;padding:8px 16px;font-size:13px;color:var(--dsw-alias-label-secondary,#606873);overflow-wrap:anywhere}.dshm-picker__error{color:var(--dsw-alias-state-error-primary,#b42318)}
-.dshm-picker__status[hidden],.dshm-picker__button[hidden]{display:none}.dshm-picker__footer{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;flex:none;gap:8px;padding:12px 16px;border-top:1px solid var(--dsw-alias-border-l2,#dde0e4)}
+.dshm-picker__status[hidden],.dshm-picker__button[hidden]{display:none}.dshm-picker__footer{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;flex:none;gap:8px;padding:16px 24px;border-top:1px solid var(--dsw-alias-border-l2,#dde0e4)}
 .dshm-picker__confirm{border-color:transparent;background:var(--dsw-alias-button-primary-fill,#2563eb);color:var(--dsw-alias-label-primary-foreground,#fff)}.dshm-picker__confirm:hover:not(:disabled),.dshm-picker__confirm:active:not(:disabled){background:var(--dsw-alias-button-primary-hover,#1d4ed8)}
 @media(max-width:420px){dialog.dshm-picker{padding:max(8px,env(safe-area-inset-top)) max(8px,env(safe-area-inset-right)) max(8px,env(safe-area-inset-bottom)) max(8px,env(safe-area-inset-left))}.dshm-picker__header,.dshm-picker__toolbar,.dshm-picker__footer{padding-left:12px;padding-right:12px}.dshm-picker__footer .dshm-picker__button{flex:1}.dshm-picker__path-label{min-width:0}}
 `
 
 interface DirectoryDialogOwner { setHostBusy(value: boolean): void; dispose(): Promise<void> }
+
+/**
+ * Whether DSH's own browse directory picker is already mounted on this page.
+ *
+ * DSH composes that surface itself since 0.2.1: `directory-picker` resolves to
+ * `@deepseek-ai/dsh-host-directory-picker-auto`, which mounts the Host backend
+ * and the Client face together and picks `browse` whenever the host is remotely
+ * reachable. Its client face fills the same directory-flow slots this plugin
+ * would use, so a plugin-owned picker would shadow the upstream one and take
+ * away its folder creation. The desktop keeps the native OS chooser; a remote
+ * browser can only reach the web implementation.
+ *
+ * @returns true when the upstream browse surface owns those slots on this page.
+ */
+export function hasUpstreamBrowsePicker (view: Window & typeof globalThis): boolean {
+  const graph = (view as unknown as { __DSH_BOOT__?: { entries?: { id?: unknown }[] } }).__DSH_BOOT__
+  const entries = Array.isArray(graph?.entries) ? graph.entries : []
+  return entries.some(entry => typeof entry?.id === 'string' && entry.id.includes('dsh-client-ui-directory-picker-browse'))
+}
 
 function openDirectoryDialog(doc: Document, getProps: () => DirectoryFlowProps, trackDisposal: (task: Promise<void>) => void): DirectoryDialogOwner {
   const view = doc.defaultView
@@ -133,12 +195,63 @@ function openDirectoryDialog(doc: Document, getProps: () => DirectoryFlowProps, 
   const list = doc.createElement('ul'); list.className = 'dshm-picker__list'; list.setAttribute('aria-label', copy.title)
   const footer = doc.createElement('footer'); footer.className = 'dshm-picker__footer'
   const retry = button(copy.retry, 'retry'); retry.hidden = true
+  const create = button(copy.create, 'create'); create.classList.add('dshm-picker__create-trigger')
   const cancel = button(copy.cancel, 'cancel'); const confirm = button(copy.open, 'confirm'); confirm.classList.add('dshm-picker__confirm')
-  footer.append(retry, cancel, confirm); panel.append(header, toolbar, navigation, status, error, list, footer); dialog.append(panel)
+  const createPanel = doc.createElement('div'); createPanel.className = 'dshm-picker__create'; createPanel.hidden = true
+  const createTitle = doc.createElement('p'); createTitle.className = 'dshm-picker__create-title'; createTitle.textContent = copy.createTitle
+  const createInput = doc.createElement('input'); createInput.type = 'text'; createInput.className = 'dshm-picker__create-input'
+  createInput.setAttribute('data-dshm-picker-create-name', ''); createInput.spellcheck = false; createInput.autocomplete = 'off'; createInput.maxLength = 255
+  const createError = doc.createElement('p'); createError.className = 'dshm-picker__status dshm-picker__create-error'; createError.setAttribute('role', 'alert'); createError.setAttribute('data-dshm-picker-create-error', ''); createError.hidden = true
+  const createActions = doc.createElement('div'); createActions.className = 'dshm-picker__create-actions'
+  const createCancel = button(copy.cancel, 'create-cancel'); const createConfirm = button(copy.createAction, 'create-confirm')
+  createActions.append(createCancel, createConfirm)
+  createPanel.append(createTitle, createInput, createError, createActions)
+  footer.append(create, retry, cancel, confirm); panel.append(header, toolbar, navigation, status, error, list, createPanel, footer); dialog.append(panel)
   const browser = new MobileDirectoryBrowser(readDirectories)
+  const closeCreate = (): void => {
+    createPanel.hidden = true
+    createInput.value = ''
+    createError.hidden = true
+    create.focus()
+  }
+  const submitCreate = async (): Promise<void> => {
+    const name = createInput.value.trim()
+    if (name === '' || name === '.' || name === '..' || name.includes('/') || name.includes('\\')) {
+      createError.textContent = copy.createInvalid
+      createError.hidden = false
+      return
+    }
+    const controller = new AbortController()
+    createAbort = controller
+    createConfirm.disabled = true
+    try {
+      const created = await createDirectory(currentPath, name, controller.signal)
+      createPanel.hidden = true
+      createInput.value = ''
+      createError.hidden = true
+      browser.navigate(created)
+    } catch (error) {
+      const code = error instanceof MobileDirectoryCreateError ? error.code : 'request-failed'
+      createError.textContent = code === 'directory-exists' ? copy.createExists
+        : code === 'unauthorized' ? copy.unauthorized
+          : code === 'invalid-response' ? copy['invalid-response'] : copy.createFailed
+      createError.hidden = false
+    } finally {
+      createConfirm.disabled = false
+      if (createAbort === controller) createAbort = undefined
+    }
+  }
+  create.addEventListener('click', () => { createPanel.hidden = false; createInput.focus(); createInput.select() })
+  createCancel.addEventListener('click', closeCreate)
+  createConfirm.addEventListener('click', () => { void submitCreate() })
+  createInput.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') { event.preventDefault(); void submitCreate() }
+  })
   let disposed = false
   let closedByOwner = false
   let renderedListing: ReturnType<MobileDirectoryBrowser['getSnapshot']>['listing']
+  let currentPath: string | null = null
+  let createAbort: AbortController | undefined
   let disposal: Promise<void> | undefined
   const render = (): void => {
     if (disposed) return
@@ -153,6 +266,7 @@ function openDirectoryDialog(doc: Document, getProps: () => DirectoryFlowProps, 
     retry.hidden = state.phase !== 'error' || state.error === 'bad-path'; retry.disabled = adopting
     status.textContent = adopting ? copy.adopting : state.phase === 'loading' ? copy.loading
       : state.listing?.truncated === true ? copy.truncated : state.listing?.entries.length === 0 ? copy.empty : ''
+    currentPath = state.listing?.path ?? null
     status.hidden = status.textContent === ''
     error.textContent = state.error === null ? '' : copy[state.error]; error.hidden = state.error === null
     list.setAttribute('aria-busy', String(state.phase === 'loading'))

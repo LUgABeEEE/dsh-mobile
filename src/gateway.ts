@@ -81,7 +81,7 @@ import {
 } from './version.js'
 import { addressAllowed, isLoopbackAddress, type ParsedCidr, RequestTrustPolicy } from './network.js'
 import type { DeviceStore } from './storage.js'
-import { listComputerImages, listWorkspaceDirectories, readComputerImage } from './computer-images.js'
+import { createWorkspaceDirectory, listComputerImages, listWorkspaceDirectories, readComputerImage } from './computer-images.js'
 import {
   disposeLateExtensionResponse,
   EXTENSION_LIMITS,
@@ -2004,7 +2004,8 @@ export class MobileAccessGateway {
     }
     const computerImages = request.method === 'GET' && target.decodedPathname === `${AUTH_PREFIX}/computer-images`
     const computerImage = request.method === 'GET' && target.decodedPathname === `${AUTH_PREFIX}/computer-image`
-    const workspaceDirectories = request.method === 'GET' && target.decodedPathname === `${AUTH_PREFIX}/workspace-directories`
+    const workspaceDirectories = (request.method === 'GET' || request.method === 'POST')
+      && target.decodedPathname === `${AUTH_PREFIX}/workspace-directories`
     const clientModules = target.decodedPathname === `${AUTH_PREFIX}/client-modules`
     const requestedExtension = extensionTarget(target.decodedPathname)
     const requestedMobileBootBatch = mobileBootBatchKey(target.decodedPathname)
@@ -2174,10 +2175,19 @@ export class MobileAccessGateway {
       response.once('close', onClose)
       const task = (async (): Promise<void> => {
         try {
-          const query = new URL(target.raw, this.address().origin).searchParams
-          const listing = await listWorkspaceDirectories(query.get('path'), operation.signal)
-          operation.signal.throwIfAborted()
-          sendJson(response, 200, listing, this.tlsEnabled)
+          if (request.method === 'POST') {
+            const body = await readJsonObject(request, MAX_CONTROL_BODY_BYTES)
+            const name = typeof body.name === 'string' ? body.name : ''
+            const parent = typeof body.path === 'string' ? body.path : null
+            const created = await createWorkspaceDirectory(parent, name, operation.signal)
+            operation.signal.throwIfAborted()
+            sendJson(response, 201, created, this.tlsEnabled)
+          } else {
+            const query = new URL(target.raw, this.address().origin).searchParams
+            const listing = await listWorkspaceDirectories(query.get('path'), operation.signal)
+            operation.signal.throwIfAborted()
+            sendJson(response, 200, listing, this.tlsEnabled)
+          }
         } catch (error) {
           if (operation.signal.aborted && error === operation.signal.reason) return
           throw error

@@ -1,4 +1,4 @@
-import { lstat, opendir, readFile, stat } from 'node:fs/promises'
+import { lstat, mkdir, opendir, readFile, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, dirname, extname, isAbsolute, posix, resolve, win32 } from 'node:path'
 import { HttpError } from './http-security.js'
@@ -165,6 +165,47 @@ export async function listWorkspaceDirectories(path: string | null, signal?: Abo
     entries: Object.freeze(rows),
     truncated,
   })
+}
+
+/**
+ * Create one child directory under an existing parent for the Mobile picker.
+ *
+ * The picker owns this directory access on the remote entry, so browsing and
+ * creating share one owner. The name rules mirror DSH's own browse backend:
+ * a single non-blank path segment, never a separator, a relative marker or an
+ * absolute path. The parent must already exist; creation is never recursive
+ * and a failed request is never replayed.
+ *
+ * @param path - absolute existing parent directory.
+ * @param name - single non-blank path segment.
+ * @returns the created directory's absolute path.
+ */
+export async function createWorkspaceDirectory (path: string | null, name: string, signal?: AbortSignal): Promise<{ path: string }> {
+  signal?.throwIfAborted()
+  if (typeof name !== 'string' || name.length === 0 || name.length > 255 || name.trim() === ''
+    || name === '.' || name === '..' || name.includes('/') || name.includes('\\') || name.includes('\0')
+    || isAbsolute(name)) {
+    throw new HttpError(400, 'directory_create_invalid')
+  }
+  const parent = resolveWorkspaceDirectoryPath(path)
+  let stats
+  try {
+    stats = await stat(parent)
+  } catch {
+    throw new HttpError(404, 'directory_unavailable')
+  }
+  if (!stats.isDirectory()) throw new HttpError(400, 'directory_create_invalid')
+  signal?.throwIfAborted()
+  const created = resolve(parent, name)
+  try {
+    await mkdir(created)
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    if (code === 'EEXIST') throw new HttpError(409, 'directory_exists')
+    throw new HttpError(400, 'directory_create_failed')
+  }
+  signal?.throwIfAborted()
+  return Object.freeze({ path: created })
 }
 
 /** Read one bounded regular image file selected by an authenticated device. */

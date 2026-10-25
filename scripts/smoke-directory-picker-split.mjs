@@ -1,6 +1,7 @@
 /** Exercise the packed desktop/mobile picker split without submitting a model request. */
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
+import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -351,17 +352,41 @@ try {
 
   nextListing = { kind: 'failure' }
   await openFlow('sidebar', false)
-  await phone.locator(`${selectors.dialog} [role="alert"]`).waitFor({ state: 'visible', timeout: CLIENT_TIMEOUT_MS })
+  await phone.locator(`${selectors.dialog} [role="alert"]:not([data-dshm-picker-create-error])`).waitFor({ state: 'visible', timeout: CLIENT_TIMEOUT_MS })
   assert.equal(await phone.locator(`${selectors.dialog} ${selectors.confirm}`).isEnabled(), false, 'Failed initial listing allowed a commit')
   await cancelFlow()
   await openFlow('sidebar')
   await cancelFlow()
   pass('a failed initial listing remains cancellable and the next open can load normally')
 
+  // Folder creation on the remote entry: one explicit write, then the new
+  // directory is listed on the host and can be opened as a workspace.
+  await openFlow('hero')
+  await navigateTo(folders)
+  const createdFolder = join(folders, 'smoke-created')
+  await phone.locator(`${selectors.dialog} [data-dshm-picker-create]`).click()
+  await phone.locator(`${selectors.dialog} [data-dshm-picker-create-name]`).fill('smoke-created')
+  await phone.locator(`${selectors.dialog} [data-dshm-picker-create-confirm]`).click()
+  await phone.waitForTimeout(1500)
+  assert(existsSync(createdFolder), 'the created folder is missing on the host')
+  assert(requests.some(request => request.method === 'POST'), 'the picker did not issue an explicit create request')
+  pass('the remote entry creates a real host directory and lists it')
+  // The same name must fail with a readable error instead of a second write.
+  await navigateTo(folders)
+  await phone.locator(`${selectors.dialog} [data-dshm-picker-create]`).click()
+  await phone.locator(`${selectors.dialog} [data-dshm-picker-create-name]`).fill('smoke-created')
+  await phone.locator(`${selectors.dialog} [data-dshm-picker-create-confirm]`).click()
+  await phone.waitForTimeout(1200)
+  const duplicate = phone.locator(`${selectors.dialog} [data-dshm-picker-create-error]`).first()
+  assert(await duplicate.isVisible(), 'a duplicate folder name produced no readable error')
+  pass('a duplicate folder name is reported instead of writing again')
+  await cancelFlow()
+
   await adoptWorkspace('hero', heroWorkspace)
   await adoptWorkspace('sidebar', sidebarWorkspace)
   assert(requests.some(request => request.path === heroWorkspace && request.status === 200), 'Absolute path never reached the real Gateway')
-  assert(requests.every(request => request.method === 'GET'), 'Listing fixture issued an unexpected filesystem write')
+  const writes = requests.filter(request => request.method === 'POST')
+  assert.equal(writes.length, 2, `the create flow issued ${writes.length} writes instead of the two user-initiated ones`)
   assert.deepEqual(pageErrors, [], `Page errors: ${sanitized(pageErrors.join(' | '))}`)
   assert.deepEqual(prompts, [], 'The smoke attempted a model request')
   pass('both directory flows complete without page errors or model requests')
