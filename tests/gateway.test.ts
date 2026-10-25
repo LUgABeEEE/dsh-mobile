@@ -304,6 +304,61 @@ async function upstream(
       response.end()
       return
     }
+    if (incoming.url?.startsWith('/api/sessions/large') === true) {
+      const body = JSON.stringify({ rows: 'x'.repeat(300 * 1024) })
+      response.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'content-length': String(Buffer.byteLength(body)) })
+      response.end(body)
+      return
+    }
+    if (incoming.url?.startsWith('/api/sessions/etag') === true) {
+      const body = JSON.stringify({ sessions: ['a', 'b'], version: 1 })
+      if (incoming.headers['if-none-match'] === '"sessions-v1"') {
+        response.writeHead(304, { etag: '"sessions-v1"' })
+        response.end()
+        return
+      }
+      response.writeHead(200, {
+        'content-type': 'application/json; charset=utf-8',
+        etag: '"sessions-v1"',
+        'content-length': String(Buffer.byteLength(body)),
+      })
+      response.end(body)
+      return
+    }
+    if (incoming.url?.startsWith('/api/sessions/secret') === true) {
+      const body = JSON.stringify({ secret: true })
+      response.writeHead(200, {
+        'content-type': 'application/json; charset=utf-8',
+        'set-cookie': 'sid=1; Path=/; HttpOnly',
+        'content-length': String(Buffer.byteLength(body)),
+      })
+      response.end(body)
+      return
+    }
+    if (incoming.method === 'POST' && incoming.url === '/api/sessions/write') {
+      response.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+      response.end('{"written":true}')
+      return
+    }
+    if (incoming.url === '/api/sessions/pad') {
+      // Above the gateway's compressible threshold, so the replay path is exercised.
+      const body = JSON.stringify({ sessions: [{ id: 'a', note: 'y'.repeat(4096) }] })
+      response.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'content-length': String(Buffer.byteLength(body)) })
+      response.end(body)
+      return
+    }
+    if (incoming.url === '/api/sessions') {
+      const body = JSON.stringify({ sessions: [{ id: 'a' }], version: 1 })
+      response.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'content-length': String(Buffer.byteLength(body)) })
+      response.end(body)
+      return
+    }
+    if (incoming.url === '/api/sessions-cookie' || incoming.url === '/api/other-read') {
+      const body = JSON.stringify({ unrelated: true })
+      response.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'content-length': String(Buffer.byteLength(body)) })
+      response.end(body)
+      return
+    }
     if (incoming.url === '/api/stream-hold') {
       response.writeHead(200, { 'content-type': 'text/plain' })
       response.write('first')
@@ -4009,5 +4064,178 @@ describe('mobile document compression', () => {
     expect(conditional.headers['cache-control']).toBe('no-store')
     expect(conditional.headers.etag).toBeUndefined()
     expect(gunzipSync(conditional.rawBody)).toEqual(plain.rawBody)
+  })
+})
+
+describe('opt-in API read cache', () => {
+  async function cachedGateway(overrides: Record<string, unknown> = { contentCacheTtlMs: 60_000 }) {
+    const inner = await upstream('remote-settings')
+    const instance = await gateway(inner.port, overrides)
+    const paired = await pair(instance)
+    const headers = { ...browserHeaders(instance), cookie: `${SESSION_COOKIE}=${paired.session}` }
+    return { inner, instance, paired, headers }
+  }
+
+  it('is off by default and changes nothing about the response', async () => {
+    const inner = await upstream('remote-settings')
+    const instance = await gateway(inner.port)
+    const paired = await pair(instance)
+    const headers = { ...browserHeaders(instance), cookie: `${SESSION_COOKIE}=${paired.session}` }
+
+    const first = await request(instance.address().port, '/api/sessions', { headers })
+    const second = await request(instance.address().port, '/api/sessions', { headers })
+    expect(first.headers['x-dsh-mobile-cache']).toBeUndefined()
+    expect(second.headers['x-dsh-mobile-cache']).toBeUndefined()
+    expect(second.body).toBe(first.body)
+    expect(String(first.headers['cache-control'])).toContain('no-store')
+    expect(inner.observations.filter(entry => entry.url === '/api/sessions')).toHaveLength(2)
+  })
+
+  it('replays an identical read, keeps the browser policy, and honors a no-cache request', async () => {
+    const { inner, instance, headers } = await cachedGateway()
+    const first = await request(instance.address().port, '/api/sessions', { headers })
+    expect(first.status).toBe(200)
+    expect(first.headers['x-dsh-mobile-cache']).toBeUndefined()
+
+    const second = await request(instance.address().port, '/api/sessions', { headers })
+    expect(second.status).toBe(200)
+    expect(second.headers['x-dsh-mobile-cache']).toBe('hit')
+    expect(second.headers.age).toBe('0')
+    // A gateway replay must not become a browser-cacheable response.
+    expect(String(second.headers['cache-control'])).toContain('no-store')
+    expect(second.body).toBe(first.body)
+    // A cached repeat never reaches DSH.
+    expect(inner.observations.filter(entry => entry.url === '/api/sessions')).toHaveLength(1)
+
+    const bypassed = await request(instance.address().port, '/api/sessions', {
+      headers: { ...headers, 'cache-control': 'no-cache' },
+    })
+    expect(bypassed.headers['x-dsh-mobile-cache']).toBeUndefined()
+    expect(inner.observations.filter(entry => entry.url === '/api/sessions')).toHaveLength(2)
+  })
+
+  it('serves only the allowlisted prefix, never an unrelated or sibling route', async () => {
+    const { inner, instance, headers } = await cachedGateway()
+    for (const path of ['/api/other-read', '/api/sessions-cookie']) {
+      await request(instance.address().port, path, { headers })
+      const repeat = await request(instance.address().port, path, { headers })
+      expect(repeat.headers['x-dsh-mobile-cache']).toBeUndefined()
+      expect(inner.observations.filter(entry => entry.url === path)).toHaveLength(2)
+    }
+  })
+
+  it('clears on a write, so the next read is fresh', async () => {
+    const { inner, instance, paired, headers } = await cachedGateway()
+    await request(instance.address().port, '/api/sessions', { headers })
+    expect((await request(instance.address().port, '/api/sessions', { headers })).headers['x-dsh-mobile-cache']).toBe('hit')
+
+    const mutation = await request(instance.address().port, '/api/sessions/write', {
+      method: 'POST',
+      headers: { ...headers, [CSRF_HEADER]: paired.csrf, 'content-type': 'application/json' },
+      body: '{}',
+    })
+    expect(mutation.status).toBe(200)
+
+    const afterWrite = await request(instance.address().port, '/api/sessions', { headers })
+    expect(afterWrite.headers['x-dsh-mobile-cache']).toBeUndefined()
+    expect(inner.observations.filter(entry => entry.url === '/api/sessions')).toHaveLength(2)
+  })
+
+  it('revalidates a stored etag instead of re-downloading the body', async () => {
+    const { inner, instance, headers } = await cachedGateway({ contentCacheTtlMs: 40 })
+    const first = await request(instance.address().port, '/api/sessions/etag', { headers })
+    expect(first.status).toBe(200)
+
+    await new Promise(resolve => { setTimeout(resolve, 60) })
+    const revalidated = await request(instance.address().port, '/api/sessions/etag', { headers })
+    expect(revalidated.status).toBe(200)
+    expect(revalidated.headers['x-dsh-mobile-cache']).toBe('revalidated')
+    expect(revalidated.body).toBe(first.body)
+    const etagChecks = inner.observations.filter(entry => entry.url === '/api/sessions/etag' && entry.headers['if-none-match'] === '"sessions-v1"')
+    expect(etagChecks).toHaveLength(1)
+  })
+
+  it('refuses a response that sets a cookie', async () => {
+    const { inner, instance, headers } = await cachedGateway()
+    await request(instance.address().port, '/api/sessions/secret', { headers })
+    const repeat = await request(instance.address().port, '/api/sessions/secret', { headers })
+    expect(repeat.headers['x-dsh-mobile-cache']).toBeUndefined()
+    expect(inner.observations.filter(entry => entry.url === '/api/sessions/secret')).toHaveLength(2)
+  })
+
+  it('does not retain a body above the entry limit', async () => {
+    const { inner, instance, headers } = await cachedGateway()
+    const first = await request(instance.address().port, '/api/sessions/large', { headers })
+    expect(first.status).toBe(200)
+    expect(first.rawBody.byteLength).toBeGreaterThan(256 * 1024)
+    const repeat = await request(instance.address().port, '/api/sessions/large', { headers })
+    expect(repeat.headers['x-dsh-mobile-cache']).toBeUndefined()
+    expect(repeat.body).toBe(first.body)
+    expect(inner.observations.filter(entry => entry.url === '/api/sessions/large')).toHaveLength(2)
+  })
+
+  it('replays a compressed client request from the identity copy', async () => {
+    const { inner, instance, headers } = await cachedGateway()
+    const compressedHeaders = { ...headers, 'accept-encoding': 'gzip' }
+    const first = await request(instance.address().port, '/api/sessions/pad', { headers: compressedHeaders })
+    expect(first.headers['content-encoding']).toBe('gzip')
+    const firstBody = gunzipSync(first.rawBody).toString('utf8')
+
+    const second = await request(instance.address().port, '/api/sessions/pad', { headers: compressedHeaders })
+    expect(second.headers['x-dsh-mobile-cache']).toBe('hit')
+    expect(second.headers['content-encoding']).toBe('gzip')
+    expect(gunzipSync(second.rawBody).toString('utf8')).toBe(firstBody)
+    expect(inner.observations.filter(entry => entry.url === '/api/sessions/pad')).toHaveLength(1)
+  })
+
+  it('keeps one device from reading another device\'s body', async () => {
+    const { inner, instance, headers } = await cachedGateway()
+    const other = await pair(instance)
+    const otherHeaders = { ...browserHeaders(instance), cookie: `${SESSION_COOKIE}=${other.session}` }
+
+    await request(instance.address().port, '/api/sessions', { headers })
+    expect((await request(instance.address().port, '/api/sessions', { headers })).headers['x-dsh-mobile-cache']).toBe('hit')
+    const otherRead = await request(instance.address().port, '/api/sessions', { headers: otherHeaders })
+    expect(otherRead.headers['x-dsh-mobile-cache']).toBeUndefined()
+    expect(inner.observations.filter(entry => entry.url === '/api/sessions')).toHaveLength(2)
+  })
+})
+
+describe('content cache configuration', () => {
+  function parse(overrides: Record<string, unknown> = {}) {
+    return parseGatewayConfig({
+      listenHost: '127.0.0.1',
+      listenPort: 0,
+      upstreamOrigin: 'http://127.0.0.1:1',
+      publicAuthorities: ['127.0.0.1'],
+      allowedCidrs: ['127.0.0.0/8'],
+      stateFile: join(tmpdir(), `dsh-mobile-access-${crypto.randomUUID()}.json`),
+      tls: { mode: 'disabled' },
+      ...overrides,
+    })
+  }
+
+  it('is off by default, with the Session list as the only allowlisted path', () => {
+    const resolved = parse()
+    expect(resolved.contentCacheTtlMs).toBe(0)
+    expect(resolved.contentCachePaths).toEqual(['/api/sessions'])
+    expect(resolved.contentCacheMaxBytes).toBe(8 * 1024 * 1024)
+  })
+
+  it('accepts a bounded TTL and keeps custom paths', () => {
+    const resolved = parse({ contentCacheTtlMs: 15_000, contentCachePaths: ['/api/sessions', '/api/workspaces'] })
+    expect(resolved.contentCacheTtlMs).toBe(15_000)
+    expect(resolved.contentCachePaths).toEqual(['/api/sessions', '/api/workspaces'])
+  })
+
+  it('rejects a TTL beyond the documented ceiling and unusable paths', () => {
+    expect(() => parse({ contentCacheTtlMs: 60_001 })).toThrow(/contentCacheTtlMs/u)
+    expect(() => parse({ contentCachePaths: ['/assets/x'] })).toThrow(/begin with \/api\//u)
+    expect(() => parse({ contentCachePaths: ['/api/../etc'] })).toThrow(/plain paths/u)
+  })
+
+  it('lets an operator disable every path while keeping the TTL configured', () => {
+    const resolved = parse({ contentCacheTtlMs: 15_000, contentCachePaths: [] })
+    expect(resolved.contentCachePaths).toEqual([])
   })
 })

@@ -30,7 +30,7 @@ Notable changes are recorded here. GitHub Releases provide the downloadable pack
 
 - Update the build toolchain to AGP 9.4.1 / Gradle 9.8.2 and WebKit integration to 1.18.0, retaining `core-ktx` 1.15.0 for compileSdk 36. Thanks Dependabot for [#304](https://github.com/saya-ch/dsh-mobile/pull/304).
 - Keep the compatibility and full iroh APK variants, the established application ID and signer, and existing pairing data. This is App build 86; plugin 0.8.0's iOS Web Push does not require an Android update.
-
+- Add an **opt-in** short cache for API reads, off by default (`contentCacheTtlMs: 0`). It only serves an explicit path allowlist (`contentCachePaths`, default `/api/sessions`), clears itself on any non-GET/HEAD request, replays an expired entry only after an `If-None-Match` revalidation when the upstream supplied an ETag, and marks replays with `Age` and `X-DSH-Mobile-Cache`. Browser responses keep `Cache-Control: no-store`; uploads, writes, event streams, range requests, `Set-Cookie` responses and oversized bodies are never cached. See [slow connections](docs/SLOW_CONNECTIONS.md#可选的-api-读取缓存090-起).
 ## 0.7.1 - 2026-10-29
 
 - Reorganize **Mobile access** into a compact channel list and configuration pane, stacked on narrow screens. Device management has its own LAN/remote tabs beside Diagnostics; keyboard focus and Escape follow the open panel.

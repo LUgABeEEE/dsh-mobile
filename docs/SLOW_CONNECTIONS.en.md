@@ -124,8 +124,7 @@ Owned static assets of at least 1 KiB use gzip when the client accepts it, maint
 
 Since 0.8.0, the start document names the compatibility bundle by content hash (`/mobile-access/compat-<sha256>.js`) with `private, max-age=31536000, immutable`. A browser retaining its cache can reuse the same revision; changed bytes get a new URL, and a digest that no longer matches returns `404`. The older `/mobile-access/compat.js` retains conditional revalidation. Requests reaching the server still require authorization; a locally cached script contains no credentials and grants no API access.
 
-The Mobile start HTML includes a page identifier bound to the current authenticated Session and remains `no-store`; it does not reuse another page's or Session's start document. Pairing pages and API responses also remain `no-store`. When the gateway applies streaming gzip to an upstream static resource, a valid upstream ETag can remain usable as a weak validator with `Vary: Accept-Encoding`. Identity lengths and range metadata are not reused as compressed-representation metadata. Failed responses are not cached, and API requests receive no new caching policy.
-
+The Mobile start HTML includes a page identifier bound to the current authenticated Session and remains `no-store`; it does not reuse another page's or Session's start document. Pairing pages and API responses also remain `no-store`. When the gateway applies streaming gzip to an upstream static resource, a valid upstream ETag can remain usable as a weak validator with `Vary: Accept-Encoding`. Identity lengths and range metadata are not reused as compressed-representation metadata. Failed responses are not cached. API responses also receive no new caching policy by default; the opt-in read cache below is the single, explicit exception.
 Every compressible text response uses that streaming pipeline: static assets, HTML documents and `/api/` JSON are gzipped when the phone advertises `Accept-Encoding: gzip`, with `Vary` maintained. Static assets under `/plugins/` and `/assets/` **keep their existing decision unchanged**, including paths the upstream already compressed. Outside static assets, `text/event-stream` stays identity so gzip blocks cannot buffer event frames, and a response that declares fewer than 1KB or no length at all stays identity because compressing it costs more than it saves or may be consumed incrementally. Range requests, already encoded responses and 304s keep their previous behavior, and a client that sends no `Accept-Encoding` receives the same bytes as before.
 
 The Mobile start document is assembled by the gateway rather than the proxy compression pipeline. Bodies of at least 1KiB are gzipped when the request accepts gzip; both identity and gzip responses maintain `Vary: Accept-Encoding`. The document retains `no-store` because it contains boot information for the current session and module selection.
@@ -133,6 +132,26 @@ The Mobile start document is assembled by the gateway rather than the proxy comp
 The gateway groups upstream application modules into start batches (`/mobile-access/mobile-boot/<hash>.js`), targeting 3MiB of source per batch. It retains at most 16 merged batches, always including the Mobile layout replacement; overflow modules use their original individual resource URLs instead of rejecting the entire boot graph. A module larger than the target remains whole, and existing per-module and assembly limits still apply. Smaller responses and cache reuse reduce repeated transfers but do not guarantee total startup time or repair every cause of reconnection. Merged batches carry a quoted ETag and `private, max-age=30, must-revalidate`: a quick reload can reuse its local copy. After a layout-file edit, an already cached batch can remain fresh for up to 30 seconds before revalidation. The ETag identifies the body, so changed content produces a new body rather than a 304.
 
 Resources without upstream validators do not automatically acquire a reliable one. Compare the same complete resource URL during ordinary navigation, reload and app cold start: inspect `200`/`304`, cache hits, `If-None-Match`, encoding and actual transfer volume. Do not clear site data first and treat the result as normal cache behavior. Improved HTTP validation does not guarantee cache reuse in every WebView, and these headers alone do not establish a complete fix for [#107](https://github.com/saya-ch/dsh-mobile/issues/107).
+
+## Optional API read cache (plugin 0.9.0+)
+
+Reads stay fresh by default: `contentCacheTtlMs` is `0`, the gateway caches no API response, and behavior is unchanged. On a slow link where reopening the same view means waiting through the same transfer again (for example the Session list), an operator can turn on a bounded short cache instead, accepting an explicit staleness window.
+
+- **Allowlisted paths only**: `contentCachePaths` defaults to `["/api/sessions"]`, matching that path and its subpaths (`/api/sessions/...`), never a sibling such as `/api/sessions-cookie`. Set it to `[]` to cache nothing.
+- **Only replay-safe content**: status 200, a complete JSON body, no `Set-Cookie`, no upstream `no-store`/`private`, and no content encoding. One entry is capped at 256KB; `contentCacheMaxBytes` (8MB by default) is enforced with least-recently-used eviction.
+- **Three freshness gates**: (1) every non-GET/HEAD request clears the whole cache, so the read after a write always reaches DSH; (2) an entry replays directly only within `contentCacheTtlMs` (0–60000, default 0); (3) once expired, if the upstream supplied an `ETag`, the gateway sends `If-None-Match` and only a `304` refreshes the window and replays the body; anything else goes back to the upstream.
+- **No browser-policy change**: responses still carry `Cache-Control: no-store`. A replay carries `Age` and `X-DSH-Mobile-Cache: hit` (or `revalidated` after a conditional check). The gateway re-compresses for the caller's `Accept-Encoding`; the stored copy is identity, so compressed bytes never become a second cache entry.
+- **Never cached**: uploads, writes, `text/event-stream`, range requests, and responses that need re-authentication or set a cookie.
+
+Add these properties to the existing `mobile-access` entry's `config` (a fragment, not a complete profile patch):
+
+```yaml
+contentCacheTtlMs: 15000
+# contentCachePaths: ["/api/sessions", "/api/workspaces"]
+# contentCacheMaxBytes: 8388608
+```
+
+The example uses a 15-second window. A longer window saves more on reopen, but shows what was last read until the window ends; reloading the page or any write returns it to the upstream. To check it works, the second request for the same path carries `X-DSH-Mobile-Cache: hit` (`revalidated` after expiry), and the upstream `/api/` request count stops increasing. This option does not fix start-page size, reconnection, or a bandwidth ceiling.
 
 ## Manual compaction and long-running API requests (0.6.0)
 
