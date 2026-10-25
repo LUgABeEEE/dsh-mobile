@@ -47,6 +47,7 @@ Browser checks consume built client files. Run `npm run build` and `npx playwrig
 | Local extension Worker execution and explicit recovery | `npm run smoke:extension-workers` |
 | Real sidebar rows, short drawers and additive panel/footer/overlay slots | `npm run smoke:mobile-sidebar` |
 | Paired customization, stock ownership and retained-page failure recovery | `npm run smoke:custom-assets` |
+| Upstream picker composition and dedicated Mobile folder selection | `npm run smoke:directory-picker` |
 | Same-origin/Blob media and external-source CSP rejection | `npm run smoke:blob-media` |
 
 These fixtures do not submit a model request or read the normal DSH home. Browser evidence does not establish physical Android keyboard, camera or device-lifecycle behavior.
@@ -91,6 +92,8 @@ For installation changes, run `npm run smoke:plugin-installation` against the sa
 `npm run smoke:draft-transfer` uses the same explicit runtime and packed-tarball inputs. It exercises the public composer state across two owned browser Origins: Unicode/multiline text, matching Session, target conflicts, source changes, IME refusal, conditional rollback and attachment rejection, with no prompt submission. This is limited plain-text protocol evidence, not physical Android network switching, native TLS or complete migration of hidden/in-flight editor state.
 
 `smoke:mobile-sidebar` and `smoke:custom-assets` require explicit `DSH_BOOT_SMOKE_BIN` and `DSH_BOOT_SMOKE_MOBILE_TARBALL` paths. The sidebar fixture uses the real Workspace consumer and additive slots, tests stock/dedicated touch geometry, and verifies a clipped-list negative control with `--negative-control-drawer`. The customization fixture observes executed scripts, computed styles, retained document/editor/draft and event-stream recovery after an injected manifest 401. It distinguishes a paired stock page from an ordinary DSH preview. These are isolated Chromium checks, not arbitrary community-plugin, public reverse-proxy or physical Android acceptance.
+
+`npm run smoke:directory-picker` uses the isolated runtime above through `DSH_BOOT_SMOKE_BIN`; set `DSH_BOOT_SMOKE_MOBILE_TARBALL` to select an exact packed candidate. The stock DSH browser must keep one upstream picker without a competing Mobile picker. On the paired dedicated page, the real Hero and Sidebar actions exercise folder navigation, editable absolute paths, relative-path rejection, cancel/Escape/mask dismissal, routed native-Back events, full-viewport hit testing and real Workspace/Session creation without a model request. Narrow and landscape viewports check localized controls; `DSH_DIRECTORY_PICKER_EVIDENCE_DIRECTORY` optionally saves screenshots of the owned fixture. Held responses check cancellation and stale-result isolation; an injected listing failure checks cancellation and reopening. Folder reads stay inside owned temporary directories. This is packed Chromium evidence, not a native Desktop OS-dialog or physical Android test, a real cross-drive/UNC deployment, or arbitrary third-party skin compatibility.
 
 `npm run smoke:mobile-sidebar -- --footer-only` checks the mounted desktop footer with a controlled neighboring public-slot entry: lone/shared/lone label restoration, adjacent amount containment, both action hit targets and the collapsed rail. It does not run a third-party balance plugin's account or Host code.
 

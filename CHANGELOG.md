@@ -2,6 +2,12 @@
 
 Notable changes are recorded here. GitHub Releases provide the downloadable packages and generated commit notes.
 
+## Unreleased
+
+- Keep DSH's own directory-picker composition instead of registering a second Host service and Client surface. Official Desktop retains its native chooser, **Add workspace** action and `Ctrl+O` shortcut independently of Mobile's in-page picker. Thanks @ChaoPhone for [#257](https://github.com/saya-ch/dsh-mobile/issues/257) and @bvbhu for [#258](https://github.com/saya-ch/dsh-mobile/issues/258).
+- Keep a familiar in-page folder browser on the dedicated, paired Mobile page, with editable paths, parent navigation, retry and cancellation while browsing or loading. Late responses cannot replace a newer selection, and Back closes the picker before the page underneath. Once a directory is submitted, DSH owns workspace creation; it is not reported as cancelled. The mobile flow does not open an OS dialog on the remote computer or change the desktop's picker.
+- Add an authenticated, read-only workspace-directory listing route for the Mobile picker. It lists folders without creating them and rejects unauthorized requests; the existing photo picker and its routes are unchanged.
+
 ## 0.6.16 - 2026-10-22
 
 - Support App 0.6.7's optional same-computer LAN/remote switching with authenticated installation grouping and limited same-Session plain-text draft transfer through public DSH APIs. Independently paired endpoints keep separate credentials and CA pins; conflicts and unsupported editor state are not silently migrated. Stop disposed draft observers from subscribing again. Thanks @abworks-dev for [#252](https://github.com/saya-ch/dsh-mobile/pull/252).

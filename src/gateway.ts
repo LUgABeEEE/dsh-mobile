@@ -78,7 +78,7 @@ import {
 } from './version.js'
 import { addressAllowed, isLoopbackAddress, type ParsedCidr, RequestTrustPolicy } from './network.js'
 import type { DeviceStore } from './storage.js'
-import { listComputerImages, readComputerImage } from './computer-images.js'
+import { listComputerImages, listWorkspaceDirectories, readComputerImage } from './computer-images.js'
 import {
   disposeLateExtensionResponse,
   EXTENSION_LIMITS,
@@ -1188,6 +1188,7 @@ export class MobileAccessGateway {
   private readonly mobileBootBatches = new Map<string, StoredMobileBootBatch>()
   private readonly mobileDocumentViews = new Map<string, MobileDocumentView>()
   private readonly mobileGraphTasks = new Set<Promise<unknown>>()
+  private readonly workspaceDirectoryTasks = new Set<Promise<PromiseSettledResult<void>>>()
   /** Cached upstream bundle byte sizes (HEAD probes), keyed by resource URL. */
   private readonly bootEntrySizeCache = new Map<string, { size: number; at: number }>()
   private readonly extensionEventListeners = new Set<(revision: number) => void>()
@@ -1915,6 +1916,7 @@ export class MobileAccessGateway {
     }
     const computerImages = request.method === 'GET' && target.decodedPathname === `${AUTH_PREFIX}/computer-images`
     const computerImage = request.method === 'GET' && target.decodedPathname === `${AUTH_PREFIX}/computer-image`
+    const workspaceDirectories = request.method === 'GET' && target.decodedPathname === `${AUTH_PREFIX}/workspace-directories`
     const clientModules = target.decodedPathname === `${AUTH_PREFIX}/client-modules`
     const requestedExtension = extensionTarget(target.decodedPathname)
     const requestedMobileBootBatch = mobileBootBatchKey(target.decodedPathname)
@@ -1945,7 +1947,7 @@ export class MobileAccessGateway {
                 }
               : undefined
       : undefined
-    if (customAsset === undefined && requestedMobileBootBatch === undefined && !computerImages && !computerImage && !clientModules
+    if (customAsset === undefined && requestedMobileBootBatch === undefined && !computerImages && !computerImage && !workspaceDirectories && !clientModules
       && extensionTarget(target.decodedPathname) === undefined
       && (target.decodedPathname === AUTH_PREFIX || target.decodedPathname.startsWith(`${AUTH_PREFIX}/`))) {
       throw new HttpError(404, 'not_found')
@@ -2075,6 +2077,36 @@ export class MobileAccessGateway {
       } finally {
         operation.release()
       }
+    }
+    if (workspaceDirectories) {
+      const operation = this.allocateRequest(authorization, response, {})
+      const onClose = (): void => { operation.abort() }
+      response.once('close', onClose)
+      const task = (async (): Promise<void> => {
+        try {
+          const query = new URL(target.raw, this.address().origin).searchParams
+          const listing = await listWorkspaceDirectories(query.get('path'), operation.signal)
+          operation.signal.throwIfAborted()
+          sendJson(response, 200, listing, this.tlsEnabled)
+        } catch (error) {
+          if (operation.signal.aborted && error === operation.signal.reason) return
+          throw error
+        } finally {
+          response.removeListener('close', onClose)
+          operation.release()
+        }
+      })()
+      const completion = task.then(
+        (): PromiseSettledResult<void> => ({ status: 'fulfilled', value: undefined }),
+        (reason: unknown): PromiseSettledResult<void> => ({ status: 'rejected', reason }),
+      )
+      this.workspaceDirectoryTasks.add(completion)
+      try {
+        await task
+      } finally {
+        this.workspaceDirectoryTasks.delete(completion)
+      }
+      return
     }
     if (computerImage) {
       const operation = this.allocateRequest(authorization, response, {})
@@ -3580,6 +3612,8 @@ export class MobileAccessGateway {
 
   private async performClose(): Promise<void> {
     this.closing = true
+    const failures: unknown[] = []
+    const directoryDrain = Promise.all(this.workspaceDirectoryTasks)
     for (const controller of this.clientModuleOperations) controller.abort()
     if (this.extensionChangeTimer !== undefined) clearInterval(this.extensionChangeTimer)
     this.extensionChangeTimer = undefined
@@ -3589,7 +3623,7 @@ export class MobileAccessGateway {
     this.removeSessionListener()
     this.pendingDeviceRevocations.clear()
     for (const view of this.mobileDocumentViews.values()) this.removeMobileDocumentView(view)
-    const accessClose = this.access.close()
+    const accessClose = this.access.close().catch((error: unknown) => { failures.push(error) })
     for (const stored of this.mobileBootBatches.values()) stored.assembly?.controller.abort()
     for (const request of this.activeRequests.values()) {
       clearTimeout(request.timer)
@@ -3602,17 +3636,24 @@ export class MobileAccessGateway {
     for (const socket of this.connectedSockets) socket.destroy()
     if (this.discoveryTimer !== undefined) clearInterval(this.discoveryTimer)
     this.discoveryTimer = undefined
-    await this.closeBonjour()
+    // Closing sockets withdraws callers, not their outstanding filesystem work.
+    // Drain the new route before releasing its listener and instance state.
+    for (const result of await directoryDrain) {
+      if (result.status === 'rejected') failures.push(result.reason)
+    }
+    await this.closeBonjour().catch((error: unknown) => { failures.push(error) })
     const discoverySocket = this.discoverySocket
     this.discoverySocket = undefined
     if (discoverySocket !== undefined) {
-      await new Promise<void>(resolve => { discoverySocket.close(() => resolve()) })
+      await new Promise<void>(resolve => { discoverySocket.close(() => resolve()) }).catch((error: unknown) => { failures.push(error) })
     }
     const server = this.server
     this.server = undefined
     if (server !== undefined && server.listening) {
-      server.closeAllConnections()
-      await new Promise<void>(resolve => { server.close(() => resolve()) })
+      try {
+        server.closeAllConnections()
+        await new Promise<void>((resolve, reject) => { server.close(error => { if (error) reject(error); else resolve() }) })
+      } catch (error) { failures.push(error) }
     }
     await accessClose
     await Promise.allSettled(this.clientModuleTasks)
@@ -3623,6 +3664,7 @@ export class MobileAccessGateway {
     this.connectedSockets.clear()
     this.policy = undefined
     this.listenerPort = undefined
+    if (failures.length > 0) throw new AggregateError(failures, 'mobile gateway cleanup failed')
   }
 
   /** Safe metadata helper for direct loopback integrations. */
