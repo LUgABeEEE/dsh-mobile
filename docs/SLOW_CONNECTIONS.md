@@ -133,8 +133,8 @@ websocketCompression:
 
 上游未提供校验标识的资源不会因此自动得到一个可靠标识。检查重复下载时，比较同一完整资源 URL 在普通打开、重新加载和 App 冷启动中的 `200`/`304`、缓存命中、`If-None-Match`、编码与实际传输量；不要先清除站点数据再把结果当作正常缓存行为。HTTP 校验语义改善不保证每个 WebView 都会复用缓存，也不能仅凭这些响应头认定 [#107](https://github.com/saya-ch/dsh-mobile/issues/107) 已完全解决。
 
-## 可选的缓存：数据读与静态资源（0.9.0 起）
-默认仍保持「读到的都是新鲜的」：两个缓存组默认都关闭，网关不缓存任何响应，行为与之前完全一致。慢链路上可以按需分别开启，代价是各自明确的陈旧窗口。
+## 可选的缓存：数据读、静态资源与历史页（0.9.0 起）
+默认仍保持「读到的都是新鲜的」：三个缓存组默认都关闭，网关不缓存任何响应，行为与之前完全一致。慢链路上可以按需分别开启，代价是各自明确的陈旧窗口。
 
 ### 数据读缓存（`contentCacheTtlMs`，默认 `0`）
 
@@ -150,13 +150,24 @@ websocketCompression:
 - **写请求不会清空这一组**：它们与清单/会话状态无关，只随内容变化。
 - 单条上限 2MB；两组各有自己的字节预算与条目上限，取值同为 `contentCacheMaxBytes`（默认 8MB）与 `contentCacheMaxEntries`（默认 256）。
 
-两组的共同保证：响应仍是 `Cache-Control: no-store`（不改浏览器策略）；重放带 `Age` 与 `X-DSH-Mobile-Cache: hit`，校验后重放为 `revalidated`；重放按调用方 `Accept-Encoding` 重新压缩，存储的是 identity 正文；上传、写请求、事件流、范围请求、带 `Set-Cookie` 或需要重新认证的响应永不缓存。
+所有缓存组的共同保证：响应仍是 `Cache-Control: no-store`（不改浏览器策略）；重放带 `Age` 与 `X-DSH-Mobile-Cache: hit`，校验后重放为 `revalidated`；重放按调用方 `Accept-Encoding` 重新压缩，存储的是 identity 正文；上传、写请求、事件流、范围请求、带 `Set-Cookie` 或需要重新认证的响应永不缓存。
+
+### 对话历史页缓存（`contentCacheHistoryTtlMs`，默认 `0`）
+
+历史分页是 POST 读方法（`session/page`），不走上面的 GET 缓存，因此单列一组：
+
+- **默认只认一种读**：路径在 `contentCacheHistoryPaths`（默认 `["/api/session"]`），且 JSON 请求体的 `method` 在 `contentCacheHistoryMethods`（默认 `["page"]`）；路径本身以 `/page` 结尾时（如 `POST /api/session/page`）不再要求 body 声明方法。其他方法（`prompt`、`create` 等）永远不缓存，并且会被当作写请求清空本组。
+- **键包含请求体**：设备 + 路径 + body 的 SHA-256。翻页到不同游标就是不同条目，不会把上一页当成下一页重放。
+- **窗口短**（0–60 秒）。任何写请求都会清空整组；历史页读本身不清。
+- **边界**：请求体需带 `content-length`、≤64KB、`content-type` 为 JSON；响应需 200、完整 JSON、无 `Set-Cookie`、上游未标 `no-store`/`private`，单条 ≤256KB，条目数同样受 `contentCacheMaxEntries` 约束。不满足就旁路，行为与未开启一致。
+- **代价**：窗口内重新打开会话，看到的可能是上一次读到的分页；Agent 新产生的事件不经过写请求，因此不会被这道清空拦下。建议 5–15 秒，不要在窗口内期待看到刚发生的消息。
 
 配置片段（放进现有 `mobile-access` 条目的 `config`）：
 
 ```yaml
 contentCacheTtlMs: 15000                 # 数据读：15 秒
 contentCacheAssetTtlMs: 600000           # 静态资源：10 分钟
+contentCacheHistoryTtlMs: 8000           # 历史页：8 秒
 # contentCachePaths: ["/api/sessions", "/api/changes"]
 # contentCacheAssetPaths: ["/plugins", "/assets", "/mobile-access"]
 # contentCacheMaxBytes: 8388608

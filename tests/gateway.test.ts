@@ -340,6 +340,21 @@ async function upstream(
       response.end('{"written":true}')
       return
     }
+    if (incoming.method === 'POST' && incoming.url === '/api/session') {
+      let parsed: { method?: string } = {}
+      try { parsed = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') as { method?: string } } catch { /* invalid JSON is a 400 below */ }
+      if (parsed.method === 'page') {
+        const body = JSON.stringify({ type: 'page', records: [{ seq: 1 }, { seq: 2 }], hasMore: false })
+        response.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'content-length': String(Buffer.byteLength(body)) })
+        response.end(body)
+        return
+      }
+      if (parsed.method === 'prompt') {
+        response.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+        response.end('{"accepted":true}')
+        return
+      }
+    }
     if (incoming.url === '/plugins/cached.js' || incoming.url === '/assets/cached.css') {
       const body = incoming.url.endsWith('.css')
         ? `.cached{color:#111}\n${'.pad{}\n'.repeat(120)}`
@@ -4284,6 +4299,14 @@ describe('content cache configuration', () => {
     expect(resolved.contentCacheMaxBytes).toBe(8 * 1024 * 1024)
   })
 
+  it('defaults the history group to the Session page method, off', () => {
+    const resolved = parse()
+    expect(resolved.contentCacheHistoryTtlMs).toBe(0)
+    expect(resolved.contentCacheHistoryPaths).toEqual(['/api/session'])
+    expect(resolved.contentCacheHistoryMethods).toEqual(['page'])
+    expect(() => parse({ contentCacheHistoryTtlMs: 60_001 })).toThrow(/contentCacheHistoryTtlMs/u)
+  })
+
   it('defaults the static group to plugin, asset and owned-mobile prefixes, off', () => {
     const resolved = parse()
     expect(resolved.contentCacheAssetTtlMs).toBe(0)
@@ -4318,5 +4341,80 @@ describe('content cache configuration', () => {
   it('lets an operator disable every path while keeping the TTL configured', () => {
     const resolved = parse({ contentCacheTtlMs: 15_000, contentCachePaths: [] })
     expect(resolved.contentCachePaths).toEqual([])
+  })
+})
+
+describe('history read cache', () => {
+  async function historyGateway(overrides: Record<string, unknown> = { contentCacheHistoryTtlMs: 60_000 }) {
+    const inner = await upstream('remote-settings')
+    const instance = await gateway(inner.port, overrides)
+    const paired = await pair(instance)
+    const headers = { ...browserHeaders(instance), cookie: `${SESSION_COOKIE}=${paired.session}`, 'content-type': 'application/json' }
+    const page = (cursor?: string) => request(instance.address().port, '/api/session', {
+      method: 'POST',
+      headers: { ...headers, [CSRF_HEADER]: paired.csrf },
+      body: JSON.stringify({ method: 'page', sessionId: 'session-x', ...(cursor === undefined ? {} : { cursor }) }),
+    })
+    return { inner, instance, paired, headers, page }
+  }
+
+  it('is off by default: two identical history reads both reach DSH', async () => {
+    const inner = await upstream('remote-settings')
+    const instance = await gateway(inner.port)
+    const paired = await pair(instance)
+    const headers = { ...browserHeaders(instance), cookie: `${SESSION_COOKIE}=${paired.session}`, 'content-type': 'application/json', [CSRF_HEADER]: paired.csrf }
+    const call = () => request(instance.address().port, '/api/session', { method: 'POST', headers, body: JSON.stringify({ method: 'page', sessionId: 's' }) })
+    const first = await call()
+    const second = await call()
+    expect(first.status).toBe(200)
+    expect(second.headers['x-dsh-mobile-cache']).toBeUndefined()
+    expect(inner.observations.filter(entry => entry.url === '/api/session')).toHaveLength(2)
+  })
+
+  it('replays an identical page read and tells a different query apart', async () => {
+    const { inner, page } = await historyGateway()
+    const first = await page()
+    expect(first.status).toBe(200)
+    expect(first.headers['x-dsh-mobile-cache']).toBeUndefined()
+
+    const second = await page()
+    expect(second.headers['x-dsh-mobile-cache']).toBe('hit')
+    expect(second.body).toBe(first.body)
+    expect(inner.observations.filter(entry => entry.url === '/api/session')).toHaveLength(1)
+
+    // A different body is a different representation and must reach DSH.
+    const other = await page('cursor-2')
+    expect(other.headers['x-dsh-mobile-cache']).toBeUndefined()
+    expect(inner.observations.filter(entry => entry.url === '/api/session')).toHaveLength(2)
+  })
+
+  it('clears the group on a write', async () => {
+    const { inner, instance, paired, headers, page } = await historyGateway()
+    await page()
+    expect((await page()).headers['x-dsh-mobile-cache']).toBe('hit')
+
+    const mutation = await request(instance.address().port, '/api/sessions/write', {
+      method: 'POST',
+      headers: { ...headers, [CSRF_HEADER]: paired.csrf, 'content-type': 'application/json' },
+      body: '{}',
+    })
+    expect(mutation.status).toBe(200)
+
+    const afterWrite = await page()
+    expect(afterWrite.headers['x-dsh-mobile-cache']).toBeUndefined()
+    expect(inner.observations.filter(entry => entry.url === '/api/session').length).toBeGreaterThanOrEqual(2)
+  })
+
+  it('never caches a method outside the allowlist', async () => {
+    const { inner, instance, paired, headers } = await historyGateway()
+    const prompt = () => request(instance.address().port, '/api/session', {
+      method: 'POST',
+      headers: { ...headers, [CSRF_HEADER]: paired.csrf, 'content-type': 'application/json' },
+      body: JSON.stringify({ method: 'prompt', sessionId: 's', text: 'hi' }),
+    })
+    await prompt()
+    const repeat = await prompt()
+    expect(repeat.headers['x-dsh-mobile-cache']).toBeUndefined()
+    expect(inner.observations.filter(entry => entry.url === '/api/session')).toHaveLength(2)
   })
 })
