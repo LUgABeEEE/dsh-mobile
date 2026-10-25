@@ -4554,11 +4554,17 @@ export function apply(ctx: ClientContext): void {
       // keeps DSH's adaptive picker (a native OS chooser there), which no remote
       // browser can reach. Only this authenticated entry registers it.
       const removeDirectoryPicker = window.__DSH_MOBILE_FRONTEND__ === 'dedicated'
-        ? installMobileDirectoryPicker(ctx, document) : () => undefined
+        ? installMobileDirectoryPicker(ctx, document) : () => Promise.resolve()
       return async () => {
-        try { await removeDirectoryPicker() } finally {
+        // Start the picker removal synchronously so no new flow can open, but run
+        // the existing teardown in the tick it always used. Awaiting the picker
+        // first would defer composer and queued native-call cancellation to a later
+        // microtask, letting an already-disposed owner reach the device
+        // (smoke:voice-session asserts a cancelled call must not).
+        const removal = removeDirectoryPicker()
+        try {
           disposeClientModuleDialogs(); removeModuleSettings(); removeSettingsAction(); removeCustom(); removeSurface(); removeVoiceSession(); removeDraftTransfer(); localFont.dispose(); style.remove()
-        }
+        } finally { await removal }
       }
     }
     const removeControl = installDshLanguageBoundSurface(() => {
