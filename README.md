@@ -193,7 +193,7 @@ dsh plugin --profile web add dshmarket
 <details>
 <summary>远程通知、服务器运维与安全限制</summary>
 
-> **远程通知说明**：浏览器的 `Notification` 权限按 Origin 分别授权，网页系统通知只显示在运行该网页的设备上。Android App 的任务提醒是独立的 0.4.0 功能，需要在 App 内 DSH 的 **设置 → 通用设置** 中主动开启，且依赖 WebView 页面仍存活；它不是通用的后台推送。需要可靠的后台推送时，请使用你已配置的服务端 webhook 或机器人通道。
+> **远程通知说明**：Android 任务提醒保留原有页面／SSE 路径，须在 App 内 DSH **设置 → 通用设置** 中开启，并保持 WebView 存活。尚未发布的 [iPhone/iPad Declarative Web Push 候选](<docs/WEB_PUSH.md>) 是独立的明确启用功能，面向受信任 HTTPS 下具备能力的主屏幕 App，不提供 Service Worker 降级。真实 iPhone／Apple 及私有 Origin 投递仍未验证，不是保证送达的后台警报；已独立配置的 dsh-ping 等服务端通道保持不变。
 
 Funnel 的运行组件把公开监听生命周期绑定到父进程和受限控制通道；父进程退出、控制通道关闭或显式停止时会结束当前代次并清理资源。中国大陆 VPS 上的未备案域名可能被云厂商拦截，此时可使用公网 IPv4 模式。插件会校验按需下载的固定版本组件；本机托管的配置与程序保存在 `$DSH_HOME/mobile-access/`，可在面板中清理。VPS 侧的文件须按自建连接指南单独清理。
 

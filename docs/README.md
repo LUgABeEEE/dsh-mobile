@@ -29,6 +29,12 @@
 | 为移动页面选择加载模块 | [模块设置](CLIENT_MODULES.md) | [Module settings](CLIENT_MODULES.en.md) | 电脑默认与设备覆盖分别保存，不自动刷新会话 |
 | 允许受控路由网络访问 LAN Gateway | [额外可信网段](TRUSTED_NETWORKS.md) | [Trusted networks](TRUSTED_NETWORKS.en.md) | 不建立 VPN，不自动扩大防火墙规则 |
 
+## 开发候选 / Development candidates
+
+| 功能 | 中文 | English | 验证边界 |
+| --- | --- | --- | --- |
+| iOS/iPadOS 18.4+ 主屏幕 Declarative Web Push | [网页推送](<WEB_PUSH.md>) | [Web Push](<WEB_PUSH.en.md>) | 尚未发布；真实 Apple、既有安装升级及私有 Origin／VPN 投递待真机验收，无 Service Worker 降级 |
+
 ## 开发与安全 / Development and security
 
 0.6.3 的 [扩展 Worker 指南](EXTENSION_WORKERS.md)／[Worker guide](EXTENSION_WORKERS.en.md) 介绍按扩展启用、预算与显式恢复；此功能不迁移普通 Cordis 插件，也不是权限沙箱。

@@ -193,7 +193,7 @@ After selecting the channel in the panel:
 <details>
 <summary>Remote notifications, server maintenance and security limits</summary>
 
-> **Remote notifications**: browser `Notification` permission is granted per Origin, and a web-page system toast appears only on the device running that page. Android task reminders are a separate 0.4.0 feature: enable them under DSH **Settings → General** in the app, and keep the WebView page alive; they are not a general background push service. For reliable background delivery, use a server-side webhook or bot channel you have configured.
+> **Remote notifications**: Android task reminders use the existing page/SSE path: enable them under DSH **Settings → General** in the app and keep its WebView alive. The unreleased [iPhone/iPad Declarative Web Push candidate](<docs/WEB_PUSH.en.md>) is a separate, explicit opt-in for capable Home Screen apps on trusted HTTPS, without a service-worker fallback. Real iPhone/Apple and private-origin delivery remain unverified; it is not a guaranteed background alarm. Independently configured server-side channels such as dsh-ping remain unchanged.
 
 The Funnel runtime ties the public listener to the parent process and a bounded control channel; parent exit, channel closure, or an explicit stop ends the current generation and cleans up its resources. An unregistered domain on a mainland-China VPS may be intercepted by the cloud provider; public IPv4 mode avoids that dependency. The plugin validates pinned on-demand components; locally managed configuration and binaries live under `$DSH_HOME/mobile-access/` and can be cleaned up from the panel. VPS files require separate cleanup through the self-hosted connection guide.
 

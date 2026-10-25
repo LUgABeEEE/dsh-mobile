@@ -35,6 +35,8 @@ Browser checks consume built client files. Run `npm run build` and `npx playwrig
 | Real InputBar with optional left/right/activity controls | `npm run smoke:composer-toolbar` |
 | Dictation lifecycle and focus | `npm run smoke:voice-session` |
 | Browser authentication Cookies | `npm run smoke:browser-auth-cookies` |
+| Passive public question/approval/goal lifetimes for Web Push | `npm run smoke:push-contract` |
+| Packed Declarative Web Push settings, protocol and tap navigation | `npm run smoke:web-push` |
 | Real HTTP/mux recovery and retained document/draft | `npm run smoke:transport-recovery` |
 | Real cross-client pending questions and explicit answer retry | `npm run smoke:transport-recovery -- --interactions` |
 | API fallback on older WebViews | `npm run smoke:mobile-compat` |
@@ -50,6 +52,8 @@ Browser checks consume built client files. Run `npm run build` and `npx playwrig
 | Same-origin/Blob media and external-source CSP rejection | `npm run smoke:blob-media` |
 
 These fixtures do not submit a model request or read the normal DSH home. Browser evidence does not establish physical Android keyboard, camera or device-lifecycle behavior.
+
+Web Push's public-contract lane is pinned to DSH 0.2.1-rc.2 and requires explicit `DSH_BOOT_SMOKE_BIN`. The packed `smoke:web-push` additionally requires the exact `DSH_BOOT_SMOKE_MOBILE_TARBALL`; it uses a marked synthetic page-level PushManager and an owned child-only push-provider transport, not a live Apple subscription or receipt. Keep the normal DSH/profile untouched. Other Mobile boot lanes remain unchanged and do not establish push coverage; real iPhone/iPad installation, permission, locked/closed delivery, private-origin/VPN reachability and warm-navigation effects remain separate acceptance. See the [Web Push guide](<docs/WEB_PUSH.en.md>) and [Chinese guide](<docs/WEB_PUSH.md>).
 
 `smoke:blob-media` serves the current source security headers and generates a small valid silent VP8 WebM in an owned Chromium page. It requires actual decoding and playback for same-origin and Blob sources without user activation, while Gateway-owned pages still reject Blob media and external media/connect attempts never reach their targets. It does not run a community media plugin, bypass autoplay policy or establish physical WebView/codec support.
 
