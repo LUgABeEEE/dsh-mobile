@@ -137,7 +137,6 @@ Thanks [@xhwxt](https://github.com/xhwxt) for the document-picker proposal in [#
 | [@abworks-dev](https://github.com/abworks-dev) | [#174](https://github.com/saya-ch/dsh-mobile/issues/174) |
 | [@Ann-luo](https://github.com/Ann-luo) | [#150](https://github.com/saya-ch/dsh-mobile/issues/150) |
 | [@Anyways366](https://github.com/Anyways366) | [#223](https://github.com/saya-ch/dsh-mobile/issues/223) |
-| [@azri57806-design](https://github.com/azri57806-design) | [#97](https://github.com/saya-ch/dsh-mobile/issues/97) |
 | [@BrainZombie](https://github.com/BrainZombie) | [#128](https://github.com/saya-ch/dsh-mobile/issues/128) |
 | [@bvbhu](https://github.com/bvbhu) | [#258](https://github.com/saya-ch/dsh-mobile/issues/258) |
 | [@CESAEREE](https://github.com/CESAEREE) | [#1](https://github.com/saya-ch/dsh-mobile/issues/1) |
@@ -160,6 +159,7 @@ Thanks [@xhwxt](https://github.com/xhwxt) for the document-picker proposal in [#
 | [@KMGTPEZY](https://github.com/KMGTPEZY) | [#95](https://github.com/saya-ch/dsh-mobile/issues/95) |
 | [@luoyangchan](https://github.com/luoyangchan) | [#187](https://github.com/saya-ch/dsh-mobile/issues/187) |
 | [@LWping](https://github.com/LWping) | [#94](https://github.com/saya-ch/dsh-mobile/issues/94) |
+| [@miqian-nomad](https://github.com/miqian-nomad) | [#97](https://github.com/saya-ch/dsh-mobile/issues/97) |
 | [@MLYR](https://github.com/MLYR) | [#193](https://github.com/saya-ch/dsh-mobile/issues/193) |
 | [@oliverwan97](https://github.com/oliverwan97) | [#26](https://github.com/saya-ch/dsh-mobile/issues/26) |
 | [@optttt](https://github.com/optttt) | [#111](https://github.com/saya-ch/dsh-mobile/issues/111) |
