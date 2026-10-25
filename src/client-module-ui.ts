@@ -2,7 +2,7 @@
 import { createElement, type ReactElement } from 'react'
 import { localAdminRequestHeaders } from './local-admin-host.js'
 import type { MobileControlLocale } from './client-messages.js'
-import { ClientModuleDraft, clientModuleDisplayName, clientModuleGroup, type ClientModuleFilter, type ClientModuleGroup, type ClientModuleRow } from './client-module-presentation.js'
+import { ClientModuleDraft, clientModuleDisplayName, clientModuleGroup, formatClientModuleSize, type ClientModuleFilter, type ClientModuleGroup, type ClientModuleRow } from './client-module-presentation.js'
 
 export type { ClientModuleRow } from './client-module-presentation.js'
 
@@ -16,7 +16,7 @@ export const CLIENT_MODULE_COPY = {
     resetConfirm: '恢复默认模块选择？仅下次打开生效，不会重新加载当前会话。', discardConfirm: '放弃未保存的模块选择并关闭？', reloadConfirm: '重新读取会替换未保存的选择。继续吗？', savingCloseConfirm: '保存结果尚未确认。现在关闭不会撤销可能已完成的保存，确定关闭吗？',
     search: '搜索模块', searchPlaceholder: '搜索名称或模块 ID', filter: '加载选择', all: '全部', loaded: '加载', excluded: '不加载', empty: '没有符合条件的模块。', clearFilters: '清除筛选',
     extensions: '可选扩展', extensionsHint: '可选择不加载的前端模块；一项模块不一定等于一个完整插件。', advanced: 'DSH 可选组件（高级）', advancedHint: 'DSH 的可选前端组件。只修改你了解的项目。', requiredGroup: '启动必需项', requiredHint: '这些模块保证页面启动，不能关闭。',
-    changes: '未保存：{count} 项改动', unchanged: '没有未保存的改动', results: '匹配 {visible} / {total} 项', retry: '重新读取', saving: '正在保存…', readTimeout: '读取超时。当前页面和已保存设置未变，请重试。', writeTimeout: '保存超时，结果尚未确认。保留了你的选择；请重新读取确认，不会自动重试保存。', nextOpen: '仅下次打开生效',
+    changes: '未保存：{count} 项改动', unchanged: '没有未保存的改动', results: '匹配 {visible} / {total} 项', sizeHint: '按传输体积从大到小排列；数字为 gzip 后的字节。说明取自插件包自身的描述字段，不代表上游认证。', total: '勾选合计约 {size}', totalUnknown: '勾选合计：部分模块未测到体积', minimal: '仅必需（最小加载）', minimalConfirm: '把除了启动必需项及其依赖之外全部设为不加载？保存后下次打开生效。', retry: '重新读取', saving: '正在保存…', readTimeout: '读取超时。当前页面和已保存设置未变，请重试。', writeTimeout: '保存超时，结果尚未确认。保留了你的选择；请重新读取确认，不会自动重试保存。', nextOpen: '仅下次打开生效',
     invalidSelections: '失效的旧选择', invalidHint: '这些旧排除已与当前模块目录不符。移除后仍需保存选择。', invalidMissing: '当前模块目录中不存在。', invalidRequired: '当前已是启动必需项，不能排除。', clearInvalid: '移除旧排除',
   },
   en: {
@@ -28,7 +28,7 @@ export const CLIENT_MODULE_COPY = {
     resetConfirm: 'Restore default selections for the next open? The current conversation will not reload.', discardConfirm: 'Discard unsaved module choices and close?', reloadConfirm: 'Rereading replaces unsaved choices. Continue?', savingCloseConfirm: 'Saving is not confirmed. Closing will not undo a save that may have completed. Close anyway?',
     search: 'Search modules', searchPlaceholder: 'Search name or module ID', filter: 'Loading selection', all: 'All', loaded: 'Load', excluded: 'Do not load', empty: 'No modules match these filters.', clearFilters: 'Clear filters',
     extensions: 'Optional extensions', extensionsHint: 'Optional frontend modules; one module is not necessarily a complete plugin.', advanced: 'DSH optional components (advanced)', advancedHint: 'Optional DSH frontend components. Change only entries you understand.', requiredGroup: 'Required for boot', requiredHint: 'These modules keep the page bootable and cannot be disabled.',
-    changes: 'Unsaved: {count} changes', unchanged: 'No unsaved changes', results: 'Matching {visible} / {total}', retry: 'Reread settings', saving: 'Saving…', readTimeout: 'Reading timed out. This page and saved settings are unchanged; try again.', writeTimeout: 'Saving timed out and its result is unconfirmed. Your choices are kept. Reread to confirm; saving is not retried automatically.', nextOpen: 'Applies on next open only',
+    changes: 'Unsaved: {count} changes', unchanged: 'No unsaved changes', results: 'Matching {visible} / {total}', sizeHint: 'Sorted by transfer size; numbers are gzipped bytes. Descriptions come from each plugin package; this is not an upstream endorsement.', total: 'Selection ≈ {size}', totalUnknown: 'Selection total: some sizes are unknown', minimal: 'Required only (minimal load)', minimalConfirm: 'Mark everything except required modules and their dependencies as not loaded? Applies on the next open after saving.', retry: 'Reread settings', saving: 'Saving…', readTimeout: 'Reading timed out. This page and saved settings are unchanged; try again.', writeTimeout: 'Saving timed out and its result is unconfirmed. Your choices are kept. Reread to confirm; saving is not retried automatically.', nextOpen: 'Applies on next open only',
     invalidSelections: 'Outdated selections', invalidHint: 'These old exclusions no longer match the module catalog. Save your choices after removing them.', invalidMissing: 'Not present in the current module catalog.', invalidRequired: 'Now required for boot and cannot be excluded.', clearInvalid: 'Remove old exclusion',
   },
   it: {
@@ -40,7 +40,7 @@ export const CLIENT_MODULE_COPY = {
     resetConfirm: 'Ripristinare i predefiniti per la prossima apertura? La conversazione attuale non verrà ricaricata.', discardConfirm: 'Scartare le scelte non salvate e chiudere?', reloadConfirm: 'Rileggere sostituisce le scelte non salvate. Continuare?', savingCloseConfirm: 'Salvataggio non confermato. Chiudere non annulla un salvataggio già completato. Chiudere comunque?',
     search: 'Cerca moduli', searchPlaceholder: 'Cerca nome o ID modulo', filter: 'Selezione caricamento', all: 'Tutti', loaded: 'Carica', excluded: 'Non caricare', empty: 'Nessun modulo corrisponde ai filtri.', clearFilters: 'Cancella filtri',
     extensions: 'Estensioni facoltative', extensionsHint: 'Moduli frontend facoltativi; un modulo non è necessariamente un plugin completo.', advanced: 'Componenti DSH facoltativi (avanzate)', advancedHint: 'Componenti frontend DSH facoltativi. Modifica solo quelli che conosci.', requiredGroup: 'Moduli obbligatori', requiredHint: 'Questi moduli permettono l’avvio e non possono essere disattivati.',
-    changes: 'Non salvate: {count} modifiche', unchanged: 'Nessuna modifica non salvata', results: 'Corrispondenti {visible} / {total}', retry: 'Rileggi impostazioni', saving: 'Salvataggio…', readTimeout: 'Lettura scaduta. Pagina e impostazioni salvate non cambiano; riprova.', writeTimeout: 'Salvataggio scaduto e non confermato. Le scelte restano. Rileggi per confermare; nessun tentativo automatico.', nextOpen: 'Solo alla prossima apertura',
+    changes: 'Non salvate: {count} modifiche', unchanged: 'Nessuna modifica non salvata', results: 'Corrispondenti {visible} / {total}', sizeHint: 'Ordinati per dimensione trasferita; i numeri sono byte gzip. Le descrizioni provengono dal pacchetto del plugin; non sono un’approvazione upstream.', total: 'Selezione ≈ {size}', totalUnknown: 'Totale selezione: alcune dimensioni sono sconosciute', minimal: 'Solo obbligatori (caricamento minimo)', minimalConfirm: 'Impostare come non caricati tutti i moduli tranne gli obbligatori e le loro dipendenze? Vale alla prossima apertura dopo il salvataggio.', retry: 'Rileggi impostazioni', saving: 'Salvataggio…', readTimeout: 'Lettura scaduta. Pagina e impostazioni salvate non cambiano; riprova.', writeTimeout: 'Salvataggio scaduto e non confermato. Le scelte restano. Rileggi per confermare; nessun tentativo automatico.', nextOpen: 'Solo alla prossima apertura',
     invalidSelections: 'Scelte obsolete', invalidHint: 'Queste esclusioni precedenti non corrispondono più al catalogo. Salva le scelte dopo averle rimosse.', invalidMissing: 'Assente dal catalogo attuale dei moduli.', invalidRequired: 'Ora obbligatorio per l’avvio e non può essere escluso.', clearInvalid: 'Rimuovi esclusione precedente',
   },
 } as const
@@ -78,7 +78,19 @@ export function parseClientModuleView(value: unknown): ClientModuleView {
       return dependency
     })
     if (entry.id.trim() === '') throw new Error('invalid_module_catalog')
-    return { id: entry.id, required: entry.required, dependencies }
+    const sizes: { bytes?: number; gzipBytes?: number; description?: string } = {}
+    for (const field of ['bytes', 'gzipBytes'] as const) {
+      if (!(field in entry)) continue
+      const measured = (entry as Record<string, unknown>)[field]
+      if (typeof measured !== 'number' || !Number.isSafeInteger(measured) || measured < 0) throw new Error('invalid_module_catalog')
+      sizes[field] = measured
+    }
+    if ('description' in entry) {
+      const description = (entry as Record<string, unknown>).description
+      if (typeof description !== 'string' || description.trim() === '' || description.length > 240) throw new Error('invalid_module_catalog')
+      sizes.description = description
+    }
+    return { id: entry.id, required: entry.required, dependencies, ...sizes }
   })
   if (new Set(entries.map(entry => entry.id)).size !== entries.length) throw new Error('invalid_module_catalog')
   const excludedClientModules = value.excludedClientModules.map((id: unknown): string => {
@@ -141,6 +153,8 @@ export const CLIENT_MODULE_STYLES = `
 .dsh-module-dialog[open]{display:flex;flex-direction:column}.dsh-module-dialog::backdrop{background:rgb(15 23 42 / 40%)}
 .dsh-module-header{display:flex;align-items:center;gap:12px;padding:12px 16px;border-bottom:1px solid var(--dsw-alias-border-l2);flex:none}
 .dsh-module-header h2{flex:1;min-width:0;font-size:20px;line-height:1.4;margin:0;overflow-wrap:anywhere}.dsh-module-header .dsh-module-button{flex:none}
+.dsh-module-description{grid-column:1/-1;margin:2px 0 0;color:var(--dsh-color-text-secondary,#6b7280);font-size:12px;line-height:1.4;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.dsh-module-description-full{margin:4px 0;color:var(--dsh-color-text-secondary,#6b7280);font-size:12px;line-height:1.45}
 .dsh-module-body{min-height:0;overflow:auto;overscroll-behavior:contain;padding:16px;scroll-padding:12px}.dsh-module-dialog p{margin:0 0 12px;overflow-wrap:anywhere}
 .dsh-module-hint,.dsh-module-source,.dsh-module-choice small,.dsh-module-groupHint,.dsh-module-results{font-size:13px;line-height:20px;color:var(--dsw-alias-label-secondary,var(--dsw-alias-label-tertiary))}
 .dsh-module-tools{display:grid;grid-template-columns:minmax(0,1fr) minmax(100px,.45fr);gap:12px;margin:16px 0 8px}.dsh-module-field{display:flex;flex-direction:column;gap:4px;min-width:0;font-size:13px}
@@ -210,8 +224,8 @@ export function openClientModuleSettings(scope: 'computer' | 'device', locale: M
   const footer = document.createElement('div'); footer.className = 'dsh-module-footer'
   const changes = paragraph(copy.unchanged); changes.setAttribute('role', 'status'); changes.setAttribute('aria-live', 'polite')
   const actions = document.createElement('div'); actions.className = 'dsh-module-actions'
-  const save = button(copy.save); save.classList.add('dsh-module-save'); const reset = button(copy.reset); const reread = button(copy.retry)
-  actions.append(save, reset, reread); footer.append(changes, status, actions)
+  const save = button(copy.save); save.classList.add('dsh-module-save'); const minimal = button(copy.minimal); const reset = button(copy.reset); const reread = button(copy.retry)
+  actions.append(save, minimal, reset, reread); footer.append(changes, status, actions)
   body.append(intro, source, tools, results, list, help); dialog.append(header, body, footer)
   let disposed = false
   let busy: 'read' | 'write' | undefined
@@ -224,10 +238,15 @@ export function openClientModuleSettings(scope: 'computer' | 'device', locale: M
   const filterValue = (): ClientModuleFilter => filter.value === 'loaded' ? 'loaded' : filter.value === 'excluded' ? 'excluded' : 'all'
   const updateControls = (): void => {
     const changed = draft?.changeCount ?? 0
-    save.disabled = busy !== undefined || changed === 0; reset.disabled = busy !== undefined || draft === undefined
+    save.disabled = busy !== undefined || changed === 0; reset.disabled = busy !== undefined || draft === undefined; minimal.disabled = busy !== undefined || draft === undefined
     reread.disabled = busy !== undefined; search.disabled = busy !== undefined || draft === undefined; filter.disabled = search.disabled
     save.textContent = busy === 'write' ? copy.saving : copy.save
-    changes.textContent = `${changed === 0 ? copy.unchanged : copy.changes.replace('{count}', String(changed))} · ${copy.nextOpen}`
+    const loadedBytes = draft?.loadedTransferBytes() ?? 0
+    const unknownSizes = draft !== undefined && draft.entries.some(entry => draft!.isLoaded(entry.id) && entry.gzipBytes === undefined && entry.bytes === undefined)
+    const total = loadedBytes === 0 && unknownSizes
+      ? copy.totalUnknown
+      : copy.total.replace('{size}', formatClientModuleSize({ id: '', required: false, dependencies: [], gzipBytes: loadedBytes }) ?? '0 KB')
+    changes.textContent = `${changed === 0 ? copy.unchanged : copy.changes.replace('{count}', String(changed))} · ${total} · ${copy.nextOpen}`
     list.setAttribute('aria-busy', String(busy !== undefined))
     for (const input of choices.values()) input.disabled = busy !== undefined || input.dataset.required === 'true'
     for (const action of invalidActions.values()) action.disabled = busy !== undefined
@@ -280,11 +299,21 @@ export function openClientModuleSettings(scope: 'computer' | 'device', locale: M
         const input = document.createElement('input'); input.type = 'checkbox'; input.checked = draft.isLoaded(entry.id); if (entry.required) input.dataset.required = 'true'
         const name = document.createElement('span'); const shortName = document.createElement('span'); shortName.className = 'dsh-module-choiceName'; shortName.textContent = clientModuleDisplayName(entry.id)
         const selected = document.createElement('small'); selected.textContent = entry.required ? copy.required : input.checked ? copy.loaded : copy.excluded
-        name.append(shortName, selected); label.append(input, name); row.append(label)
+        const size = formatClientModuleSize(entry)
+        const sizeLabel = document.createElement('small'); sizeLabel.className = 'dsh-module-size'; sizeLabel.textContent = size ?? ''
+        if (size !== undefined) sizeLabel.dataset.clientModuleSize = 'true'
+        name.append(shortName, selected, sizeLabel); label.append(input, name); row.append(label)
+        if (entry.description !== undefined) {
+          const summary = paragraph(entry.description, 'dsh-module-description')
+          summary.dataset.clientModuleDescription = 'true'
+          row.append(summary)
+        }
         const detail = document.createElement('details'); detail.className = 'dsh-module-entryDetails'
         const detailSummary = document.createElement('summary'); detailSummary.textContent = copy.details
         const id = paragraph(`${copy.moduleId}: `); const code = document.createElement('code'); code.textContent = entry.id; id.append(code)
-        detail.append(detailSummary, id, paragraph(entry.dependencies.length === 0 ? copy.noDependencies : `${copy.dependencies}${entry.dependencies.join(', ')}`)); row.append(detail)
+        detail.append(detailSummary, id)
+        if (entry.description !== undefined) detail.append(paragraph(entry.description, 'dsh-module-description-full'))
+        detail.append(paragraph(entry.dependencies.length === 0 ? copy.noDependencies : `${copy.dependencies}${entry.dependencies.join(', ')}`)); row.append(detail)
         input.addEventListener('change', () => {
           if (busy !== undefined || draft === undefined) return
           draft.setLoaded(entry.id, input.checked); input.checked = draft.isLoaded(entry.id); selected.textContent = entry.required ? copy.required : input.checked ? copy.loaded : copy.excluded
@@ -329,6 +358,11 @@ export function openClientModuleSettings(scope: 'computer' | 'device', locale: M
   search.addEventListener('input', renderList); filter.addEventListener('change', renderList)
   save.addEventListener('click', () => { if ((draft?.changeCount ?? 0) > 0) runRequest({ excludedClientModules: draft?.excludedIds }) })
   reset.addEventListener('click', () => { if (busy === undefined && draft !== undefined && window.confirm(copy.resetConfirm)) runRequest({ reset: true }) })
+  minimal.addEventListener('click', () => {
+    if (busy !== undefined || draft === undefined || !window.confirm(copy.minimalConfirm)) return
+    if (draft.applyMinimalSelection()) { renderList(); search.focus({ preventScroll: true }) }
+    updateControls()
+  })
   reread.addEventListener('click', () => { if (busy === undefined && ((draft?.changeCount ?? 0) === 0 || window.confirm(copy.reloadConfirm))) runRequest() })
   const dispose = (): void => {
     if (disposed) return

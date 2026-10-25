@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ClientModuleDraft, clientModuleDisplayName, clientModuleGroup, clientModuleMatches, type ClientModuleRow } from '../src/client-module-presentation.js'
+import { ClientModuleDraft, clientModuleDisplayName, clientModuleGroup, clientModuleMatches, clientModuleMinimalExclusion, formatClientModuleSize, type ClientModuleRow } from '../src/client-module-presentation.js'
 
 const rows: readonly ClientModuleRow[] = [
   { id: 'skin-client', required: false, dependencies: [] },
@@ -121,5 +121,50 @@ describe('frontend module catalog presentation', () => {
     const saved = new ClientModuleDraft(rows, draft.excludedIds)
     expect(saved.changeCount).toBe(0)
     expect(saved.invalidExclusions).toEqual([])
+  })
+})
+
+describe('module transfer sizes and the minimal selection', () => {
+  const sized: readonly ClientModuleRow[] = [
+    { id: 'required-core', required: true, dependencies: [] },
+    { id: 'needed-by-core', required: false, dependencies: [] },
+    { id: 'heavy-optional', required: false, dependencies: [], bytes: 3_355_443, gzipBytes: 2_478_000 },
+    { id: 'small-optional', required: false, dependencies: [], gzipBytes: 41_000 },
+    { id: 'unmeasured-optional', required: false, dependencies: [] },
+    { id: 'dependent-optional', required: false, dependencies: ['needed-by-core'] },
+  ]
+  const withDependency: readonly ClientModuleRow[] = [
+    ...sized.filter(row => row.id !== 'required-core'),
+    { id: 'required-core', required: true, dependencies: ['needed-by-core'] },
+  ]
+
+  it('formats measured transfer size and stays silent when nothing was measured', () => {
+    expect(formatClientModuleSize({ id: 'a', required: false, dependencies: [], gzipBytes: 41_000 })).toBe('40 KB')
+    expect(formatClientModuleSize({ id: 'a', required: false, dependencies: [], bytes: 512 })).toBe('1 KB')
+    expect(formatClientModuleSize({ id: 'a', required: false, dependencies: [], gzipBytes: 2_478_000 })).toBe('2.4 MB')
+    expect(formatClientModuleSize({ id: 'a', required: false, dependencies: [] })).toBeUndefined()
+    expect(formatClientModuleSize({ id: 'a', required: false, dependencies: [], gzipBytes: 0 })).toBeUndefined()
+  })
+
+  it('keeps dependencies of required entries when minimizing', () => {
+    const excluded = clientModuleMinimalExclusion(withDependency)
+    expect(excluded).toEqual(['heavy-optional', 'small-optional', 'unmeasured-optional', 'dependent-optional'])
+    expect(excluded).not.toContain('needed-by-core')
+    expect(excluded).not.toContain('required-core')
+  })
+
+  it('totals only the loaded transfer bytes and prefers gzip', () => {
+    const draft = new ClientModuleDraft(sized, [])
+    expect(draft.loadedTransferBytes()).toBe(2_478_000 + 41_000)
+    draft.setLoaded('heavy-optional', false)
+    expect(draft.loadedTransferBytes()).toBe(41_000)
+  })
+
+  it('applies the minimal selection as a draft change, not a save', () => {
+    const draft = new ClientModuleDraft(withDependency, [])
+    expect(draft.applyMinimalSelection()).toBe(true)
+    expect(new Set(draft.excludedIds)).toEqual(new Set(['heavy-optional', 'small-optional', 'unmeasured-optional', 'dependent-optional']))
+    expect(draft.changeCount).toBe(4)
+    expect(draft.applyMinimalSelection()).toBe(false)
   })
 })

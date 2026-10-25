@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { ClientModuleConflictError, MobileAccessGateway } from '../src/gateway.js'
+import { ClientModuleConflictError, MobileAccessGateway, sanitizeModuleDescription } from '../src/gateway.js'
 import { ClientModulePreferenceStore, type ClientModulePreferenceView } from '../src/client-module-preferences.js'
 import { parseGatewayConfig } from '../src/config.js'
 import { MemoryDeviceStore } from '../src/storage.js'
@@ -124,6 +124,18 @@ function boot(body: string): { entries: Array<{ id: string }>; batches: Array<{ 
   return JSON.parse(match[1]) as { entries: Array<{ id: string }>; batches: Array<{ url: string; entries: string[] }> }
 }
 
+describe('installed module descriptions', () => {
+  it('keeps one readable line and drops control characters and URLs', () => {
+    expect(sanitizeModuleDescription('  Manage\nDeepSeek login\tand billing  ')).toBe('Manage DeepSeek login and billing')
+    expect(sanitizeModuleDescription('See https://example.com/path for details')).toBe('See for details')
+    expect(sanitizeModuleDescription('')).toBeUndefined()
+    expect(sanitizeModuleDescription(42)).toBeUndefined()
+    const truncated = sanitizeModuleDescription('x'.repeat(400))
+    expect(truncated?.length).toBeLessThanOrEqual(200)
+    expect(truncated?.endsWith('…')).toBe(true)
+  })
+})
+
 describe('authenticated client module selection', () => {
   it('lists only module ids, installed dependencies and required flags without URL or credential metadata', async () => {
     const setup = await fixture()
@@ -131,8 +143,19 @@ describe('authenticated client module selection', () => {
     expect(view).toMatchObject({ source: 'plugin', excludedClientModules: [], defaultExcludedClientModules: [], reloadRequired: true })
     expect(view.entries.find(entry => entry.id === layoutId)?.required).toBe(true)
     expect(view.entries.find(entry => entry.id === core[0])?.required).toBe(true)
-    expect(view.entries.find(entry => entry.id === 'dependent')).toEqual({ id: 'dependent', required: false, dependencies: ['base'] })
+    expect(view.entries.find(entry => entry.id === 'dependent')).toMatchObject({ id: 'dependent', required: false, dependencies: ['base'] })
     expect(view.entries.find(entry => entry.id === 'feature')?.required).toBe(false)
+    // The panel exists to choose what the phone loads, so measured entries report
+    // both source and gzipped bytes; a failed probe leaves both fields absent.
+    const sized = view.entries.filter(entry => entry.bytes !== undefined)
+    expect(sized.length).toBeGreaterThan(0)
+    for (const entry of sized) expect(entry.gzipBytes).toBeGreaterThan(0)
+    for (const entry of view.entries.filter(entry => entry.bytes === undefined)) expect(entry.gzipBytes).toBeUndefined()
+    for (const entry of view.entries) {
+      if (entry.description === undefined) continue
+      expect(entry.description.length).toBeLessThanOrEqual(200)
+      expect(entry.description).not.toMatch(/[\u0000-\u001f\u007f]/u)
+    }
     const body = JSON.stringify(view)
     expect(body).not.toContain('/plugins/')
     expect(body).not.toContain('127.0.0.1')
