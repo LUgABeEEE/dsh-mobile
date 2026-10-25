@@ -233,6 +233,8 @@ const MIN_COMPRESSIBLE_DOCUMENT_BYTES = 1024
 const MOBILE_BOOT_SEPARATOR_BYTES = 3
 /** Largest single API response the opt-in read cache may retain. */
 const CONTENT_CACHE_MAX_ENTRY_BYTES = 256 * 1024
+/** Assets are files, not JSON: allow the larger end while the total budget still bounds them. */
+const CONTENT_CACHE_MAX_ASSET_BYTES = 2 * 1024 * 1024
 /** Freshness window for cached upstream bundle byte sizes. */
 /** Catalog sizes change only on a plugin rebuild or host restart. */
 const CLIENT_MODULE_SIZE_TTL_MS = 10 * 60_000
@@ -1438,6 +1440,8 @@ export class MobileAccessGateway {
   private readonly probeInFlight = new Set<string>()
   private readonly clientModulePreferences: ClientModulePreferenceStore
   private readonly contentCache: ContentCache
+  /** Second group: plugin bundles and owned static files. Never dropped by a write. */
+  private readonly assetCache: ContentCache
   private readonly clientModuleSizeCache = new Map<string, { at: number; bytes: number; gzipBytes: number }>()
   private readonly clientModuleDescriptionCache = new Map<string, { at: number; description: string }>()
   private clientModuleMetadataRevision: string | undefined
@@ -1474,6 +1478,9 @@ export class MobileAccessGateway {
     )
     this.contentCache = new ContentCache(
       config.contentCacheTtlMs, config.contentCacheMaxBytes, config.contentCachePaths, CONTENT_CACHE_MAX_ENTRY_BYTES,
+    )
+    this.assetCache = new ContentCache(
+      config.contentCacheAssetTtlMs, config.contentCacheMaxBytes, config.contentCacheAssetPaths, CONTENT_CACHE_MAX_ASSET_BYTES,
     )
     this.listenerTlsEnabled = config.tls.mode === 'provided'
     this.tlsEnabled = config.publicTls
@@ -3643,24 +3650,35 @@ export class MobileAccessGateway {
   }
 
   /**
-   * Decide whether a request may be served from, or stored into, the read cache.
+   * Pick the cache a request may be served from, if any.
    *
-   * Eligibility is deliberately narrow: a GET on an allowlisted `/api/` prefix, no
-   * Range, and no client `no-cache`/`no-store`. The key scopes a body to one paired
-   * device, so two phones never share a representation, and it keeps the query
-   * string because two queries are two representations.
+   * Two groups with separate windows: the API read cache (dropped by every write) and
+   * the asset cache (files, never dropped by a write). Eligibility is narrow in both:
+   * a GET on an allowlisted prefix, no Range, and no client `no-cache`/`no-store`. The
+   * key scopes a body to one paired device and keeps the query string, because two
+   * queries are two representations.
    */
-  private contentCacheKey(request: IncomingMessage, authorization: SessionAuthorization): string | undefined {
+  private contentCacheTarget(
+    request: IncomingMessage,
+    authorization: SessionAuthorization,
+  ): { readonly cache: ContentCache; readonly key: string } | undefined {
     if (request.method !== 'GET') return undefined
     if (request.headers.range !== undefined) return undefined
-    if (!this.contentCache.matches(request.url)) return undefined
     const requestCache = headerValue(request.headers, 'cache-control')?.toLowerCase() ?? ''
     if (requestCache.includes('no-cache') || requestCache.includes('no-store')) return undefined
-    return `${authorization.deviceId}\u0000${request.url ?? ''}`
+    const url = request.url ?? ''
+    const key = `${authorization.deviceId}\u0000${url}`
+    if (this.contentCache.matches(url)) return { cache: this.contentCache, key }
+    if (this.assetCache.matches(url)) return { cache: this.assetCache, key }
+    return undefined
   }
 
-  /** @returns Whether a complete, identity-encoded JSON body may be retained for replay. */
-  private isCacheableContentResponse(response: IncomingMessage, statusCode: number): boolean {
+  /**
+   * @param asset - Whether the response belongs to the static group, whose media types
+   *   are scripts and styles rather than JSON.
+   * @returns Whether a complete, identity-encoded body may be retained for replay.
+   */
+  private isCacheableContentResponse(response: IncomingMessage, statusCode: number, asset: boolean): boolean {
     if (statusCode !== 200) return false
     if (response.headers['set-cookie'] !== undefined) return false
     // The stored copy must be the identity representation: a replayed body is re-compressed
@@ -3671,6 +3689,11 @@ export class MobileAccessGateway {
     const contentType = response.headers['content-type']
     const raw = Array.isArray(contentType) ? contentType[0] : contentType
     const mediaType = raw?.split(';', 1)[0]?.trim().toLowerCase() ?? ''
+    if (asset) {
+      if (mediaType === 'text/event-stream' || mediaType === 'application/octet-stream') return false
+      return mediaType.startsWith('text/') || mediaType === 'application/javascript'
+        || mediaType === 'application/json' || mediaType.endsWith('+json') || mediaType === 'image/svg+xml'
+    }
     return mediaType === 'application/json' || mediaType.endsWith('+json') || mediaType === 'text/plain'
   }
 
@@ -3728,10 +3751,12 @@ export class MobileAccessGateway {
     }
     // Freshness first: a write clears every device's replay, so a read after a
     // mutation cannot be served a pre-mutation body inside the TTL window.
+    // Only the API read cache is freshness-bound to writes; assets are validated by
+    // their own content and survive.
     if (request.method !== 'GET' && request.method !== 'HEAD') this.contentCache.clear()
-    const contentCacheKey = this.contentCacheKey(request, authorization)
-    if (contentCacheKey !== undefined) {
-      const hit = this.contentCache.lookup(contentCacheKey, Date.now())
+    const cacheTarget = this.contentCacheTarget(request, authorization)
+    if (cacheTarget !== undefined) {
+      const hit = cacheTarget.cache.lookup(cacheTarget.key, Date.now())
       if (hit !== undefined) {
         this.replayContentCache(request, response, hit, 'hit')
         return
@@ -3773,7 +3798,7 @@ export class MobileAccessGateway {
       for (let attempt = 1; attempt <= attempts; attempt++) {
         operation.signal.throwIfAborted()
         try {
-          await this.proxyHttpOnce(request, response, holder, operation.signal, replayable, contentCacheKey, documentView)
+          await this.proxyHttpOnce(request, response, holder, operation.signal, replayable, cacheTarget, documentView)
           return
         } catch (error) {
           if (operation.signal.aborted || response.destroyed) return
@@ -3803,19 +3828,19 @@ export class MobileAccessGateway {
     holder: { request?: ClientRequest },
     signal: AbortSignal,
     replayable: boolean,
-    contentCacheKey: string | undefined,
+    cacheTarget: { readonly cache: ContentCache; readonly key: string } | undefined,
     documentView?: MobileDocumentView,
   ): Promise<void> {
     let bodyDone: Promise<void> | undefined
     const projections = new Set<Promise<unknown>>()
     try {
       const pathname = parseRequestTarget(request.url).decodedPathname
-      const stale = contentCacheKey === undefined ? undefined : this.contentCache.stale(contentCacheKey, Date.now())
-      const cacheGeneration = this.contentCache.generation
+      const stale = cacheTarget === undefined ? undefined : cacheTarget.cache.stale(cacheTarget.key, Date.now())
+      const cacheGeneration = cacheTarget?.cache.generation ?? 0
       const upstreamHeaders = sanitizeRequestHeaders(request, this.config.upstreamOrigin)
       delete upstreamHeaders[MOBILE_DOCUMENT_VIEW_HEADER]
       if (documentView !== undefined) upstreamHeaders['accept-encoding'] = 'identity'
-      if (contentCacheKey !== undefined) {
+      if (cacheTarget !== undefined) {
         // The stored copy is identity-encoded so it can be replayed and re-compressed
         // per client. A client's own validators are dropped: a `304` may only answer
         // our question about our copy, never stand in for the client's own cache.
@@ -3860,11 +3885,11 @@ export class MobileAccessGateway {
         }
       })
       const proxied = await upstreamResponse
-      if (contentCacheKey !== undefined && stale !== undefined && proxied.statusCode === 304) {
+      if (cacheTarget !== undefined && stale !== undefined && proxied.statusCode === 304) {
         // Unchanged upstream: the stored body is current, so restart its window and
         // replay it instead of asking the phone to re-download it.
         proxied.resume()
-        const replay = this.contentCache.refresh(contentCacheKey, Date.now())
+        const replay = cacheTarget.cache.refresh(cacheTarget.key, Date.now())
         if (replay !== undefined) {
           this.replayContentCache(request, response, replay, 'revalidated')
           return
@@ -3906,8 +3931,8 @@ export class MobileAccessGateway {
       this.httpFailures.recordUpstream(request.method, request.url?.split('?', 1)[0] ?? '', statusCode)
       const cacheControl = graphEvents ? undefined : revisionedStaticCacheControl(request, statusCode)
       if (cacheControl !== undefined) headers['cache-control'] = cacheControl
-      const contentCacheCandidate = contentCacheKey !== undefined && documentView === undefined
-        && this.isCacheableContentResponse(proxied, statusCode)
+      const contentCacheCandidate = cacheTarget !== undefined && documentView === undefined
+        && this.isCacheableContentResponse(proxied, statusCode, cacheTarget.cache === this.assetCache)
       // Snapshot before compression rewrites these headers: the stored copy is identity.
       const contentCacheHeaders = contentCacheCandidate ? replayableResponseHeaders(headers) : undefined
       if (contentCacheHeaders !== undefined) {
@@ -3941,10 +3966,10 @@ export class MobileAccessGateway {
         addVaryAcceptEncoding(headers)
       }
       response.writeHead(statusCode, headers)
-      if (contentCacheCandidate && contentCacheHeaders !== undefined && contentCacheKey !== undefined) {
+      if (contentCacheCandidate && contentCacheHeaders !== undefined && cacheTarget !== undefined) {
         // Stream the body through while keeping one bounded copy. A body over the entry
         // limit is forwarded in full and simply not retained.
-        const entryLimit = this.contentCache.entryLimit
+        const entryLimit = cacheTarget.cache.entryLimit
         const collected: Buffer[] = []
         let collectedBytes = 0
         let overflow = false
@@ -3965,9 +3990,9 @@ export class MobileAccessGateway {
         ])
         // A write that landed while this body was streaming has already cleared the
         // cache; storing a pre-write representation would resurrect it.
-        if (!overflow && response.writableEnded && this.contentCache.current(cacheGeneration)) {
-          this.contentCache.store(
-            contentCacheKey,
+        if (!overflow && response.writableEnded && cacheTarget.cache.current(cacheGeneration)) {
+          cacheTarget.cache.store(
+            cacheTarget.key,
             contentCacheHeaders,
             Buffer.concat(collected),
             typeof proxied.headers.etag === 'string' ? proxied.headers.etag : undefined,

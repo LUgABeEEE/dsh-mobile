@@ -50,13 +50,13 @@ export interface ContentCacheReplay {
  * Whether `url` falls under one of the allowlisted path prefixes.
  * A prefix matches itself and its subpaths, and never matches a longer sibling
  * (`/api/session` does not match `/api/sessions`).
- * @param paths - Normalized allowlist entries, each beginning with `/api/`.
+ * @param paths - Normalized allowlist entries, each an absolute path.
  * @param url - The raw request target; its query string is ignored.
  */
 export function matchesContentCachePath(paths: readonly string[], url: string | undefined): boolean {
   if (paths.length === 0) return false
   const pathname = url?.split('?', 1)[0] ?? ''
-  if (pathname.startsWith('/api/') !== true) return false
+  if (pathname.startsWith('/') !== true) return false
   for (const prefix of paths) {
     if (pathname === prefix) return true
     if (pathname.startsWith(`${prefix}/`)) return true
@@ -69,8 +69,8 @@ export function normalizeContentCachePaths(paths: readonly string[]): readonly s
   const normalized: string[] = []
   for (const raw of paths) {
     const candidate = raw.trim().replace(/\/+$/u, '')
-    if (candidate.startsWith('/api/') !== true || candidate.length <= '/api/'.length) {
-      throw new Error(`contentCachePaths entries must begin with /api/: ${JSON.stringify(raw)}`)
+    if (candidate.startsWith('/') !== true || candidate.length <= 1) {
+      throw new Error(`cache path prefixes must be absolute: ${JSON.stringify(raw)}`)
     }
     if (/[?#\s]/u.test(candidate) || candidate.includes('..')) {
       throw new Error(`contentCachePaths entries must be plain paths: ${JSON.stringify(raw)}`)

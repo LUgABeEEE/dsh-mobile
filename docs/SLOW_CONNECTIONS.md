@@ -133,25 +133,36 @@ websocketCompression:
 
 上游未提供校验标识的资源不会因此自动得到一个可靠标识。检查重复下载时，比较同一完整资源 URL 在普通打开、重新加载和 App 冷启动中的 `200`/`304`、缓存命中、`If-None-Match`、编码与实际传输量；不要先清除站点数据再把结果当作正常缓存行为。HTTP 校验语义改善不保证每个 WebView 都会复用缓存，也不能仅凭这些响应头认定 [#107](https://github.com/saya-ch/dsh-mobile/issues/107) 已完全解决。
 
-## 可选的 API 读取缓存（0.9.0 起）
+## 可选的缓存：数据读与静态资源（0.9.0 起）
+默认仍保持「读到的都是新鲜的」：两个缓存组默认都关闭，网关不缓存任何响应，行为与之前完全一致。慢链路上可以按需分别开启，代价是各自明确的陈旧窗口。
 
-默认仍然保持「API 读到的是新鲜的」：`contentCacheTtlMs` 为 `0`，网关不缓存任何 API 响应，行为与之前完全一致。慢链路上反复打开同一个视图（例如重新进入会话列表要重新等待十几秒）时，可以显式开启一个有界短缓存，代价是**明确可见的陈旧窗口**。
+### 数据读缓存（`contentCacheTtlMs`，默认 `0`）
 
-- **只缓存白名单路径**：`contentCachePaths` 默认 `["/api/sessions"]`，按前缀匹配自身与子路径（`/api/sessions/...`），不会命中 `/api/sessions-cookie`；设为 `[]` 表示不缓存任何路径。
-- **只缓存可安全重放的内容**：状态 200、完整 JSON 正文、无 `Set-Cookie`、上游未标 `no-store`/`private`、未编码。单条上限 256KB，总量 `contentCacheMaxBytes`（默认 8MB）按最近最少使用淘汰。
-- **新鲜度三道闸**：① 任何非 GET/HEAD 请求都会清空整张缓存，写入后的下一次读一定回源；② 条目只在 `contentCacheTtlMs`（0–60000，默认 0）内直接重放；③ 过期后若上游带 `ETag`，网关发 `If-None-Match` 校验，只有 `304` 才刷新窗口并重放，否则回源。
-- **不改浏览器策略**：响应仍是 `Cache-Control: no-store`；重放带 `Age` 与 `X-DSH-Mobile-Cache: hit`，校验后重放为 `revalidated`。网关按调用方的 `Accept-Encoding` 重新压缩，存储的是 identity 正文，不会把压缩字节当成第二份缓存。
-- **不缓存**：上传、写请求、`text/event-stream`、范围请求、需要重新认证或携带 `Set-Cookie` 的响应。
+- **只缓存白名单路径**：`contentCachePaths` 默认 `["/api/sessions"]`，按前缀匹配自身与子路径，不命中 `/api/sessions-cookie`；设为 `[]` 表示不缓存。
+- **只缓存可安全重放的内容**：状态 200、完整 JSON 正文、无 `Set-Cookie`、上游未标 `no-store`/`private`、未编码；单条 256KB。
+- **新鲜度三道闸**：任何非 GET/HEAD 请求清空整组；条目只在窗口内直接重放；过期后若上游带 `ETag`，发 `If-None-Match` 校验，只有 `304` 才刷新并重放，否则回源。
+- 进度的写入发生在请求途中的情况由代际计数拦下：写入已清空的旧正文不会被回存。
 
-把下面的属性放进现有 `mobile-access` 条目的 `config`（片段，不是完整 profile 补丁）：
+### 静态资源缓存（`contentCacheAssetTtlMs`，默认 `0`）
+
+- **白名单**：`contentCacheAssetPaths` 默认 `["/plugins", "/assets", "/mobile-access"]`——插件脚本、接口资源与网关自有文件；只缓存 GET 的脚本/样式/JSON/SVG，不含 `text/event-stream` 与二进制。
+- **窗口可以长**（上限 1 小时）：这些文件要么内容寻址、要么带 ETag；过期后同样先条件校验，`304` 才重放，编辑后最多等一个窗口。
+- **写请求不会清空这一组**：它们与清单/会话状态无关，只随内容变化。
+- 单条上限 2MB；两组各有自己的字节预算，取值同为 `contentCacheMaxBytes`（默认 8MB）。
+
+两组的共同保证：响应仍是 `Cache-Control: no-store`（不改浏览器策略）；重放带 `Age` 与 `X-DSH-Mobile-Cache: hit`，校验后重放为 `revalidated`；重放按调用方 `Accept-Encoding` 重新压缩，存储的是 identity 正文；上传、写请求、事件流、范围请求、带 `Set-Cookie` 或需要重新认证的响应永不缓存。
+
+配置片段（放进现有 `mobile-access` 条目的 `config`）：
 
 ```yaml
-contentCacheTtlMs: 15000
-# contentCachePaths: ["/api/sessions", "/api/workspaces"]
+contentCacheTtlMs: 15000                 # 数据读：15 秒
+contentCacheAssetTtlMs: 600000           # 静态资源：10 分钟
+# contentCachePaths: ["/api/sessions", "/api/changes"]
+# contentCacheAssetPaths: ["/plugins", "/assets", "/mobile-access"]
 # contentCacheMaxBytes: 8388608
 ```
 
-示例为 15 秒窗口。窗口越大，重开越省流量；但在窗口内看到的是上一次读到的内容，刷新页面或任何写操作会让它回源。判断是否生效：同一路径第二次请求应出现 `X-DSH-Mobile-Cache: hit`（过期校验后为 `revalidated`），上游 `/api/` 请求计数不再增加。这个选项不会修复首屏体积、重连或带宽上限问题。
+判断是否生效：同一路径第二次请求出现 `X-DSH-Mobile-Cache: hit`（过期校验后为 `revalidated`），上游对应请求计数不再增加。数据组越大越省流量，但窗口内看到的是上一次读到的内容；刷新页面或任何写操作会让它回源。
 
 ## 手动压缩会话与长时间 API 请求（0.6.0）
 

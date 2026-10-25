@@ -133,25 +133,35 @@ The gateway groups upstream application modules into start batches (`/mobile-acc
 
 Resources without upstream validators do not automatically acquire a reliable one. Compare the same complete resource URL during ordinary navigation, reload and app cold start: inspect `200`/`304`, cache hits, `If-None-Match`, encoding and actual transfer volume. Do not clear site data first and treat the result as normal cache behavior. Improved HTTP validation does not guarantee cache reuse in every WebView, and these headers alone do not establish a complete fix for [#107](https://github.com/saya-ch/dsh-mobile/issues/107).
 
-## Optional API read cache (plugin 0.9.0+)
+## Optional caches: API reads and static resources (plugin 0.9.0+)
+Reads stay fresh by default: both groups are off, the gateway caches nothing, and behavior is unchanged. On a slow link an operator can enable either one, each with its own explicit staleness window.
 
-Reads stay fresh by default: `contentCacheTtlMs` is `0`, the gateway caches no API response, and behavior is unchanged. On a slow link where reopening the same view means waiting through the same transfer again (for example the Session list), an operator can turn on a bounded short cache instead, accepting an explicit staleness window.
+### API read cache (`contentCacheTtlMs`, default `0`)
 
-- **Allowlisted paths only**: `contentCachePaths` defaults to `["/api/sessions"]`, matching that path and its subpaths (`/api/sessions/...`), never a sibling such as `/api/sessions-cookie`. Set it to `[]` to cache nothing.
-- **Only replay-safe content**: status 200, a complete JSON body, no `Set-Cookie`, no upstream `no-store`/`private`, and no content encoding. One entry is capped at 256KB; `contentCacheMaxBytes` (8MB by default) is enforced with least-recently-used eviction.
-- **Three freshness gates**: (1) every non-GET/HEAD request clears the whole cache, so the read after a write always reaches DSH; (2) an entry replays directly only within `contentCacheTtlMs` (0–60000, default 0); (3) once expired, if the upstream supplied an `ETag`, the gateway sends `If-None-Match` and only a `304` refreshes the window and replays the body; anything else goes back to the upstream.
-- **No browser-policy change**: responses still carry `Cache-Control: no-store`. A replay carries `Age` and `X-DSH-Mobile-Cache: hit` (or `revalidated` after a conditional check). The gateway re-compresses for the caller's `Accept-Encoding`; the stored copy is identity, so compressed bytes never become a second cache entry.
-- **Never cached**: uploads, writes, `text/event-stream`, range requests, and responses that need re-authentication or set a cookie.
+- **Allowlisted paths only**: `contentCachePaths` defaults to `["/api/sessions"]`, matching that path and its subpaths, never a sibling such as `/api/sessions-cookie`. `[]` caches nothing.
+- **Replay-safe content only**: status 200, complete JSON, no `Set-Cookie`, no upstream `no-store`/`private`, identity encoded; 256KB per entry.
+- **Three freshness gates**: every non-GET/HEAD request clears this group; an entry replays directly only inside the window; once expired, an upstream `ETag` is revalidated with `If-None-Match` and only a `304` refreshes and replays, otherwise the body is fetched again. A write landing mid-stream cannot resurrect the body it cleared (generation counter).
 
-Add these properties to the existing `mobile-access` entry's `config` (a fragment, not a complete profile patch):
+### Static resource cache (`contentCacheAssetTtlMs`, default `0`)
+
+- **Allowlist**: `contentCacheAssetPaths` defaults to `["/plugins", "/assets", "/mobile-access"]` — plugin scripts, interface assets and gateway-owned files. Only GET scripts, styles, JSON and SVG are eligible; `text/event-stream` and binary bodies are not.
+- **The window can be long** (up to one hour): these files are content-addressed or ETag-validated, and expiry still revalidates before replaying, so an edit costs at most one window.
+- **A write never clears this group**: it is unrelated to list or Session state and only changes with the files themselves.
+- 2MB per entry; each group has its own byte budget, both taken from `contentCacheMaxBytes` (8MB default).
+
+Both groups share the same guarantees: responses keep `Cache-Control: no-store`, so browser policy is unchanged; replays carry `Age` and `X-DSH-Mobile-Cache: hit` (`revalidated` after a conditional check); the stored copy is identity and replays are re-compressed for the caller's `Accept-Encoding`; uploads, writes, event streams, range requests, cookie-setting or auth-dependent responses are never cached.
+
+Configuration fragment for the existing `mobile-access` entry:
 
 ```yaml
-contentCacheTtlMs: 15000
-# contentCachePaths: ["/api/sessions", "/api/workspaces"]
+contentCacheTtlMs: 15000                 # API reads: 15 seconds
+contentCacheAssetTtlMs: 600000           # static resources: 10 minutes
+# contentCachePaths: ["/api/sessions", "/api/changes"]
+# contentCacheAssetPaths: ["/plugins", "/assets", "/mobile-access"]
 # contentCacheMaxBytes: 8388608
 ```
 
-The example uses a 15-second window. A longer window saves more on reopen, but shows what was last read until the window ends; reloading the page or any write returns it to the upstream. To check it works, the second request for the same path carries `X-DSH-Mobile-Cache: hit` (`revalidated` after expiry), and the upstream `/api/` request count stops increasing. This option does not fix start-page size, reconnection, or a bandwidth ceiling.
+To check it works, the second request for the same path carries `X-DSH-Mobile-Cache: hit` (`revalidated` after expiry) and the upstream request count stops increasing. A longer API window saves more bandwidth but shows the last read until it expires; reloading the page or any write returns it to the upstream.
 
 ## Manual compaction and long-running API requests (0.6.0)
 

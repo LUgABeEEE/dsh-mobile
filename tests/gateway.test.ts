@@ -340,6 +340,17 @@ async function upstream(
       response.end('{"written":true}')
       return
     }
+    if (incoming.url === '/plugins/cached.js' || incoming.url === '/assets/cached.css') {
+      const body = incoming.url.endsWith('.css')
+        ? `.cached{color:#111}\n${'.pad{}\n'.repeat(120)}`
+        : `export const cached = '${'x'.repeat(2048)}'\n`
+      response.writeHead(200, {
+        'content-type': incoming.url.endsWith('.css') ? 'text/css; charset=utf-8' : 'application/javascript; charset=utf-8',
+        'content-length': String(Buffer.byteLength(body)),
+      })
+      response.end(body)
+      return
+    }
     if (incoming.url === '/api/sessions/pad') {
       // Above the gateway's compressible threshold, so the replay path is exercised.
       const body = JSON.stringify({ sessions: [{ id: 'a', note: 'y'.repeat(4096) }] })
@@ -4188,6 +4199,38 @@ describe('opt-in API read cache', () => {
     expect(inner.observations.filter(entry => entry.url === '/api/sessions/pad')).toHaveLength(1)
   })
 
+  it('caches plugin and static files for the long window, and a write does not drop them', async () => {
+    const { inner, instance, paired, headers } = await cachedGateway({
+      contentCacheAssetTtlMs: 600_000,
+    })
+    const first = await request(instance.address().port, '/plugins/cached.js', { headers })
+    expect(first.status).toBe(200)
+    const second = await request(instance.address().port, '/plugins/cached.js', { headers })
+    expect(second.headers['x-dsh-mobile-cache']).toBe('hit')
+    expect(second.body).toBe(first.body)
+
+    const mutation = await request(instance.address().port, '/api/sessions/write', {
+      method: 'POST',
+      headers: { ...headers, [CSRF_HEADER]: paired.csrf, 'content-type': 'application/json' },
+      body: '{}',
+    })
+    expect(mutation.status).toBe(200)
+    const afterWrite = await request(instance.address().port, '/plugins/cached.js', { headers })
+    expect(afterWrite.headers['x-dsh-mobile-cache']).toBe('hit')
+    expect(inner.observations.filter(entry => entry.url === '/plugins/cached.js')).toHaveLength(1)
+
+    const css = await request(instance.address().port, '/assets/cached.css', { headers })
+    expect(css.status).toBe(200)
+    expect((await request(instance.address().port, '/assets/cached.css', { headers })).headers['x-dsh-mobile-cache']).toBe('hit')
+  })
+
+  it('keeps the static group off while the API group is on', async () => {
+    const { instance, headers } = await cachedGateway({ contentCacheTtlMs: 60_000 })
+    await request(instance.address().port, '/plugins/cached.js', { headers })
+    const repeat = await request(instance.address().port, '/plugins/cached.js', { headers })
+    expect(repeat.headers['x-dsh-mobile-cache']).toBeUndefined()
+  })
+
   it('keeps one device from reading another device\'s body', async () => {
     const { inner, instance, headers } = await cachedGateway()
     const other = await pair(instance)
@@ -4222,6 +4265,18 @@ describe('content cache configuration', () => {
     expect(resolved.contentCacheMaxBytes).toBe(8 * 1024 * 1024)
   })
 
+  it('defaults the static group to plugin, asset and owned-mobile prefixes, off', () => {
+    const resolved = parse()
+    expect(resolved.contentCacheAssetTtlMs).toBe(0)
+    expect(resolved.contentCacheAssetPaths).toEqual(['/plugins', '/assets', '/mobile-access'])
+  })
+
+  it('accepts a bounded static window and rejects one beyond the ceiling', () => {
+    const resolved = parse({ contentCacheAssetTtlMs: 600_000 })
+    expect(resolved.contentCacheAssetTtlMs).toBe(600_000)
+    expect(() => parse({ contentCacheAssetTtlMs: 3_600_001 })).toThrow(/contentCacheAssetTtlMs/u)
+  })
+
   it('accepts a bounded TTL and keeps custom paths', () => {
     const resolved = parse({ contentCacheTtlMs: 15_000, contentCachePaths: ['/api/sessions', '/api/workspaces'] })
     expect(resolved.contentCacheTtlMs).toBe(15_000)
@@ -4230,7 +4285,7 @@ describe('content cache configuration', () => {
 
   it('rejects a TTL beyond the documented ceiling and unusable paths', () => {
     expect(() => parse({ contentCacheTtlMs: 60_001 })).toThrow(/contentCacheTtlMs/u)
-    expect(() => parse({ contentCachePaths: ['/assets/x'] })).toThrow(/begin with \/api\//u)
+    expect(() => parse({ contentCachePaths: ['relative/x'] })).toThrow(/absolute/u)
     expect(() => parse({ contentCachePaths: ['/api/../etc'] })).toThrow(/plain paths/u)
   })
 

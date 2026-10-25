@@ -35,8 +35,10 @@ describe('content cache path allowlist', () => {
   it('normalizes configured prefixes and rejects unusable ones', () => {
     expect(normalizeContentCachePaths([' /api/sessions/ ', '/api/sessions'])).toEqual([PATH])
     expect(normalizeContentCachePaths(['/api/workspaces'])).toEqual(['/api/workspaces'])
-    expect(() => normalizeContentCachePaths(['/api/'])).toThrow(/begin with \/api\//u)
-    expect(() => normalizeContentCachePaths(['/sessions'])).toThrow(/begin with \/api\//u)
+    // The same validator serves the static group, whose prefixes are not /api.
+    expect(normalizeContentCachePaths(['/plugins/', '/assets'])).toEqual(['/plugins', '/assets'])
+    expect(() => normalizeContentCachePaths(['relative/path'])).toThrow(/absolute/u)
+    expect(() => normalizeContentCachePaths(['/'])).toThrow(/absolute/u)
     expect(() => normalizeContentCachePaths(['/api/../etc'])).toThrow(/plain paths/u)
     expect(() => normalizeContentCachePaths(['/api/sessions?q=1'])).toThrow(/plain paths/u)
   })
