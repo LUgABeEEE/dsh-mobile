@@ -25,6 +25,10 @@ import { createMobileAssetLoadReporter, ownsMobileCustomization, readMobileAsset
 import { EXTENSION_LIMITS, LEGACY_CUSTOM_ASSET_LIMIT } from './extension-limits.js'
 import { installMobileConnectionRecovery, type MobileConnectionState } from './client-recovery.js'
 import { installMobileUiLocalePersistence } from './mobile-ui-locale.js'
+import { createMobilePushBrowserApi, type MobilePushBrowserApi } from './mobile-push/browser-api.js'
+import { browserPushEnvironment, createMobilePushController, type MobilePushEnvironment } from './mobile-push/client.js'
+import { MobilePushSettings } from './mobile-push/settings.js'
+import { installPushNavigation } from './mobile-push/navigation.js'
 
 export { shouldNudgeReconnect, shouldRenewSession } from './client-recovery.js'
 export type { MobileConnectionState } from './client-recovery.js'
@@ -4492,6 +4496,95 @@ export const CONTROL_STYLES = `
 .dsh-mobile-control__origin-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,140px),1fr));gap:12px}.dsh-mobile-control__origin-fields>.dsh-mobile-control__field{min-width:0;grid-column:auto;font-size:12px}.dsh-mobile-control__origin-fields>.dsh-mobile-control__field--full{grid-column:1/-1}.dsh-mobile-control__origin-fields select{box-sizing:border-box;width:100%;min-height:44px;padding:9px 10px;border:1px solid var(--dsw-alias-border-l3,#cfd5dd);border-radius:10px;background:var(--dsw-alias-bg-layer-2,#fff);color:var(--dsw-alias-label-primary,#16181d);font:16px/1.4 system-ui}.dsh-mobile-control__origin-fields select:disabled{cursor:not-allowed;opacity:.55}.dsh-mobile-control__caddy-form{display:grid;gap:12px}.dsh-mobile-control__caddy-form>.dsh-mobile-control__component-note,.dsh-mobile-control__caddy-form>.dsh-mobile-control__component-status,.dsh-mobile-control__caddy-form>.dsh-mobile-control__origin-feedback{margin:0;overflow-wrap:anywhere}.dsh-mobile-control__origin-setup .dsh-mobile-control__actions.dsh-mobile-control__caddy-actions{grid-template-columns:minmax(0,1fr);margin:0}.dsh-mobile-control__caddy-actions button{box-sizing:border-box;min-width:0;min-height:44px;padding:10px 12px;border-radius:10px;font:600 12px/1.4 system-ui;cursor:pointer}.dsh-mobile-control__origin-warning{margin:12px 0;padding:10px 12px;border-left:3px solid var(--dsw-alias-state-warn-primary,#a56810);border-radius:4px;background:var(--dsw-alias-bg-layer-1,#f3f5f8);color:var(--dsw-alias-label-primary,#384152);font-size:12px;line-height:1.6}.dsh-mobile-control__origin-feedback{font-size:12px;line-height:1.6;overflow-wrap:anywhere}.dsh-mobile-control__origin-feedback.is-error{color:var(--dsw-alias-state-error-primary,#bc3030)}.dsh-mobile-control__origin-fields input[aria-invalid=true]{border-color:var(--dsw-alias-state-error-primary,#bc3030)}.dsh-mobile-control__origin-backend{display:flex;min-width:0;flex-direction:column;align-items:stretch;gap:8px;margin-top:12px;padding-top:12px;border-top:1px solid var(--dsw-alias-border-l2,#dbe1e8)}.dsh-mobile-control__origin-backend button{align-self:flex-start;min-height:44px}.dsh-mobile-control__self-hosted-body .is-origin{margin-top:8px}
 ` + EXTENSION_RECOVERY_STYLES
 
+interface MobilePushEntryRuntime {
+  readonly page: Document
+  readonly view: Window
+  readonly api?: MobilePushBrowserApi
+  readonly environment?: MobilePushEnvironment
+  /** Optional notice sink for isolated tests; production uses the accessible page notice. */
+  readonly notify?: (key: 'session-unavailable' | 'session-resolved') => void
+}
+
+/** Resolve safe, locale-owned copy for tap-navigation results. */
+export function mobilePushNavigationNotice(locale: MobileControlLocale, key: 'session-unavailable' | 'session-resolved'): string {
+  const messages: Record<MobileControlLocale, Record<typeof key, string>> = {
+    en: { 'session-unavailable': 'This conversation is no longer available.', 'session-resolved': 'Opened the conversation.' },
+    it: { 'session-unavailable': 'Questa conversazione non è più disponibile.', 'session-resolved': 'Conversazione aperta.' },
+    zh: { 'session-unavailable': '此会话已不可用。', 'session-resolved': '已打开会话。' },
+  }
+  return messages[locale][key]
+}
+
+function mobilePushNavigationServicesAvailable(ctx: ClientContext): boolean {
+  const sessions = ctx.get('sessions') as { list?: { getSnapshot?: unknown; subscribe?: unknown } } | undefined
+  const workspaces = ctx.get('workspaces') as { list?: { getSnapshot?: unknown; subscribe?: unknown } } | undefined
+  const uiWorkspace = ctx.get('uiWorkspace') as { openSession?: unknown } | undefined
+  return typeof sessions?.list?.getSnapshot === 'function' && typeof sessions.list.subscribe === 'function'
+    && typeof workspaces?.list?.getSnapshot === 'function' && typeof workspaces.list.subscribe === 'function'
+    && typeof uiWorkspace?.openSession === 'function'
+}
+
+function showMobilePushNavigationNotice(page: Document, view: Window, key: 'session-unavailable' | 'session-resolved'): void {
+  const node = page.createElement('div')
+  node.className = 'dsh-mobile-push-navigation-notice'
+  node.setAttribute('role', 'status')
+  node.setAttribute('aria-live', 'polite')
+  node.lang = selectedMobileControlLocale()
+  node.textContent = mobilePushNavigationNotice(selectedMobileControlLocale(), key)
+  node.style.cssText = 'position:fixed;z-index:1201;left:50%;bottom:max(24px,env(safe-area-inset-bottom));transform:translateX(-50%);max-width:calc(100vw - 32px);padding:10px 16px;border-radius:12px;background:var(--dsw-alias-bg-layer-3,#20242b);color:var(--dsw-alias-label-primary,#fff);font:14px/1.45 system-ui,sans-serif;box-shadow:0 8px 24px #0003;pointer-events:none'
+  page.body.append(node)
+  view.setTimeout(() => node.remove(), 3_000)
+}
+
+/** Own the browser-only push controller, settings row, and optional authenticated tap navigation. */
+export function installMobilePushBrowserClient(ctx: ClientContext, runtime: MobilePushEntryRuntime): () => void {
+  const { page, view } = runtime
+  if (view.__DSH_MOBILE_FRONTEND__ !== 'dedicated' || view.__DSH_MOBILE_NATIVE__ !== undefined
+    || page.querySelector('meta[name="dsh-mobile-gateway"][content="authenticated"]') === null) return () => undefined
+
+  const api = runtime.api ?? createMobilePushBrowserApi(mobileRequest)
+  const controller = createMobilePushController(api, runtime.environment ?? browserPushEnvironment(view))
+  controller.start()
+  const removeSettings = ctx.slots.inject('settings.general.item', () => ctx.slots.register({
+    name: 'settings.general.item', id: 'dsh-mobile-push-browser', order: 120,
+  }, () => createElement(MobilePushSettings, { controller, locale: selectedMobileControlLocale() })))
+
+  const refresh = (): void => { controller.refresh() }
+  const onVisible = (): void => { if (page.visibilityState === 'visible') refresh() }
+  view.addEventListener('focus', refresh)
+  page.addEventListener('visibilitychange', onVisible)
+  const connection = ctx.get('connection')
+  const unbindConnection = connection?.state?.subscribe(() => {
+    if (connection.state?.getSnapshot() === 'connected') refresh()
+  }) ?? (() => undefined)
+
+  let removeNavigation = (): void => undefined
+  const reference = new URLSearchParams(view.location.search).get('mobile-push')
+  if (reference !== null && reference !== '' && mobilePushNavigationServicesAvailable(ctx)) {
+    removeNavigation = installPushNavigation(ctx as unknown as Parameters<typeof installPushNavigation>[0], {
+      resolve: value => api.resolve(value),
+      notify: key => {
+        if (key !== 'session-unavailable' && key !== 'session-resolved') return
+        if (runtime.notify) runtime.notify(key)
+        else showMobilePushNavigationNotice(page, view, key)
+      },
+      browser: { location: view.location, history: view.history },
+    })
+  }
+
+  let disposed = false
+  return () => {
+    if (disposed) return
+    disposed = true
+    view.removeEventListener('focus', refresh)
+    page.removeEventListener('visibilitychange', onVisible)
+    unbindConnection()
+    removeNavigation()
+    removeSettings()
+    controller.stop()
+  }
+}
+
 /** Mount the desktop control or mobile feature enhancements. */
 export function apply(ctx: ClientContext): void {
   ctx.effect(() => installMobileUiLocalePersistence(document, window), 'dsh-mobile: browser UI locale persistence')
@@ -4507,6 +4600,8 @@ export function apply(ctx: ClientContext): void {
     if (!ownsMobileCustomization(gatewayPage, window.__DSH_MOBILE_FRONTEND__)) return
     return installMobileConnectionRecovery(() => ctx.get('connection'), window, document)
   }, 'dsh-mobile: connection recovery')
+
+  ctx.effect(() => installMobilePushBrowserClient(ctx, { page: document, view: window }), 'dsh-mobile: authenticated browser push lifecycle')
 
   ctx.effect(() => {
     const desktopAdmin = isDesktopAdminSurface(location.hostname, location.search, window.__DSH_MOBILE_FRONTEND__, location.protocol)

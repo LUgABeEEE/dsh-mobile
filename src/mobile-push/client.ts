@@ -73,7 +73,22 @@ export function createMobilePushController(api: MobilePushApiAdapter, environmen
   let mutationBusy = false
   let attempt = 0
   let ownedSubscription: BrowserPushSubscription | undefined
+  let currentHostSubscription: BrowserPushSubscription | undefined
+  const consentedSubscriptions = new WeakSet<BrowserPushSubscription>()
+  const pendingEnrollments = new WeakMap<BrowserPushSubscription, Set<number>>()
   let nextTestAt = 0
+  const trackPendingEnrollment = (subscription: BrowserPushSubscription, operation: number): void => {
+    let pending = pendingEnrollments.get(subscription)
+    if (!pending) { pending = new Set(); pendingEnrollments.set(subscription, pending) }
+    pending.add(operation)
+  }
+  const finishPendingEnrollment = (subscription: BrowserPushSubscription, operation: number): void => {
+    const pending = pendingEnrollments.get(subscription)
+    pending?.delete(operation)
+    if (pending?.size === 0) pendingEnrollments.delete(subscription)
+  }
+  const mayUnsubscribeCreatedSubscription = (subscription: BrowserPushSubscription): boolean =>
+    !consentedSubscriptions.has(subscription) && (pendingEnrollments.get(subscription)?.size ?? 0) === 0
   const publish = (value: MobilePushSnapshot): void => {
     snapshot = Object.freeze(value)
     for (const listener of listeners) listener()
@@ -97,13 +112,13 @@ export function createMobilePushController(api: MobilePushApiAdapter, environmen
     if (environment.permission === 'denied') return 'denied'
     return undefined
   }
-  const refresh = async (token: number): Promise<void> => {
+  const refresh = async (token: number): Promise<boolean> => {
     const blocked = detect()
-    if (blocked) { if (current(token)) publish({ state: blocked }); return }
+    if (blocked) { if (current(token)) publish({ state: blocked }); return false }
     try {
       const requestedInstallId = getInstallationId()
       const [nextConfig, subscription] = await Promise.all([api.getConfig(requestedInstallId), environment.pushManager!.getSubscription()])
-      if (!current(token)) return
+      if (!current(token)) return false
       config = nextConfig
       existing = subscription
       preparedInstallId = nextConfig.installationId || requestedInstallId
@@ -111,10 +126,23 @@ export function createMobilePushController(api: MobilePushApiAdapter, environmen
       try { environment.storage?.setItem(ID_KEY, preparedInstallId) } catch { /* Canonical identity remains in memory when storage is unavailable. */ }
       preparedKey = nextConfig.publicKey ? decodeKey(nextConfig.publicKey) : undefined
       if (!nextConfig.available || !preparedKey) publish({ state: 'unsupported', preferences: nextConfig.preferences })
-      else if (nextConfig.status === 'enabled') publish({ state: nextConfig.status, preferences: nextConfig.preferences })
-      else if (nextConfig.status === 'suspended') publish({ state: 'suspended', preferences: nextConfig.preferences })
-      else publish({ state: 'ready', preferences: nextConfig.preferences })
-    } catch (error) { if (current(token)) publish({ state: 'failed', error: safeError(error) }) }
+      else if (nextConfig.status === 'enabled') {
+        if (subscription) { currentHostSubscription = subscription; consentedSubscriptions.add(subscription) }
+        publish({ state: nextConfig.status, preferences: nextConfig.preferences })
+      }
+      else if (nextConfig.status === 'suspended') {
+        if (subscription) { currentHostSubscription = subscription; consentedSubscriptions.add(subscription) }
+        publish({ state: 'suspended', preferences: nextConfig.preferences })
+      }
+      else {
+        if (nextConfig.status === 'disabled' && currentHostSubscription) {
+          consentedSubscriptions.delete(currentHostSubscription)
+          currentHostSubscription = undefined
+        }
+        publish({ state: 'ready', preferences: nextConfig.preferences })
+      }
+      return true
+    } catch (error) { if (current(token)) publish({ state: 'failed', error: safeError(error) }); return false }
   }
   const refreshNow = (): void => { if (active) void refresh(generation) }
   return {
@@ -122,22 +150,39 @@ export function createMobilePushController(api: MobilePushApiAdapter, environmen
     stop() { active = false; generation += 1; attempt += 1; mutationBusy = false; config = undefined; preparedKey = undefined; existing = null; ownedSubscription = undefined },
     refresh: refreshNow,
     async enableFromGesture() {
-      if (!active || mutationBusy || (snapshot.state !== 'ready' && snapshot.state !== 'failed') || !config || !preparedKey || !environment.pushManager) return
+      if (!active || mutationBusy || (snapshot.state !== 'ready' && snapshot.state !== 'failed' && snapshot.state !== 'disabled') || !config || !preparedKey || !environment.pushManager) return
       const token = generation, operation = ++attempt, base = config
       mutationBusy = true; publish({ state: 'pending', preferences: base.preferences })
       let subscription = existing
       let created = false
+      let pendingSubscription: BrowserPushSubscription | undefined
       try {
         if (subscription && !sameKey(subscription, preparedKey)) { publish({ state: 'failed', error: 'push.error.subscriptionConflict', preferences: base.preferences }); return }
         if (!subscription) { subscription = await environment.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: preparedKey }); created = true }
-        if (!current(token) || operation !== attempt) { if (created) await subscription.unsubscribe().catch(() => false); return }
-        const result = await api.enroll({ installationId: preparedInstallId || base.installationId, subscription: subscription.toJSON(), locale: environment.locale ?? 'en', preferences: base.preferences ?? defaults, keyFingerprint: base.keyFingerprint ?? '', ownerGeneration: base.ownerGeneration, registrationGeneration: base.registrationGeneration })
+        if (created) ownedSubscription = subscription
         if (!current(token) || operation !== attempt) {
-          if (result.mutationGeneration !== undefined) await api.disable({ installationId: result.registration.installationId, ifGeneration: result.mutationGeneration }).catch(() => undefined)
-          if (created) await subscription.unsubscribe().catch(() => false)
+          if (created && mayUnsubscribeCreatedSubscription(subscription)) {
+            const removed = await subscription.unsubscribe().catch(() => false)
+            if (removed && ownedSubscription === subscription) ownedSubscription = undefined
+          }
           return
         }
-        ownedSubscription = created ? subscription : undefined
+        trackPendingEnrollment(subscription, operation)
+        pendingSubscription = subscription
+        const result = await api.enroll({ installationId: preparedInstallId || base.installationId, subscription: subscription.toJSON(), locale: environment.locale ?? 'en', preferences: base.preferences ?? defaults, keyFingerprint: base.keyFingerprint ?? '', ownerGeneration: base.ownerGeneration, registrationGeneration: base.registrationGeneration })
+        finishPendingEnrollment(subscription, operation)
+        pendingSubscription = undefined
+        if (!current(token) || operation !== attempt) {
+          if (result.mutationGeneration !== undefined) await api.disable({ installationId: result.registration.installationId, ifGeneration: result.mutationGeneration }).catch(() => undefined)
+          if (created && mayUnsubscribeCreatedSubscription(subscription)) {
+            const removed = await subscription.unsubscribe().catch(() => false)
+            if (removed && ownedSubscription === subscription) ownedSubscription = undefined
+          }
+          return
+        }
+        if (created) ownedSubscription = subscription
+        consentedSubscriptions.add(subscription)
+        currentHostSubscription = subscription
         if (result.registration.origin === environment.origin && result.registration.installationId) {
           memoryInstallId = result.registration.installationId
           preparedInstallId = memoryInstallId
@@ -146,7 +191,11 @@ export function createMobilePushController(api: MobilePushApiAdapter, environmen
         config = { ...base, installationId: preparedInstallId || result.registration.installationId, registrationGeneration: result.registration.generation, status: result.registration.health === 'suspended' ? 'suspended' : 'enabled', preferences: result.registration.preferences }
         publish({ state: result.registration.health === 'suspended' ? 'suspended' : 'enabled', preferences: result.registration.preferences })
       } catch (error) {
-        if (created && subscription) await subscription.unsubscribe().catch(() => false)
+        if (pendingSubscription) finishPendingEnrollment(pendingSubscription, operation)
+        if (created && subscription && mayUnsubscribeCreatedSubscription(subscription)) {
+          const removed = await subscription.unsubscribe().catch(() => false)
+          if (removed && ownedSubscription === subscription) ownedSubscription = undefined
+        }
         if (current(token) && operation === attempt) {
           const isStale = safeError(error) === 'push.error.stale'
           publish({ state: 'failed', error: safeError(error), preferences: base.preferences })
@@ -162,9 +211,16 @@ export function createMobilePushController(api: MobilePushApiAdapter, environmen
         await api.disable({ installationId: preparedInstallId || base.installationId })
         if (!current(token) || operation !== attempt) return
         config = { ...base, status: 'disabled' }; publish({ state: 'disabled', preferences: base.preferences })
+        if (currentHostSubscription) consentedSubscriptions.delete(currentHostSubscription)
+        currentHostSubscription = undefined
         const sub = ownedSubscription
-        ownedSubscription = undefined
-        if (sub) await sub.unsubscribe().catch(() => false)
+        if (sub) {
+          const removed = await sub.unsubscribe().catch(() => false)
+          if (removed && ownedSubscription === sub) ownedSubscription = undefined
+        }
+        if (await refresh(token) && current(token) && operation === attempt && config?.status === 'disabled') {
+          publish({ state: 'disabled', preferences: config.preferences })
+        }
       } catch (error) {
         if (current(token) && operation === attempt) { publish({ state: 'failed', error: safeError(error), preferences: base.preferences }); if (safeError(error) === 'push.error.stale') void refresh(token) }
       } finally { if (current(token) && operation === attempt) mutationBusy = false }
@@ -199,10 +255,14 @@ export function browserPushEnvironment(view: Window = window): MobilePushEnviron
   const nav = view.navigator as Navigator & { standalone?: boolean }
   const pushManager = (view as Window & { readonly pushManager?: BrowserPushManager }).pushManager
   const storage = (() => { try { return view.localStorage } catch { return undefined } })()
+  const isInstalled = (): boolean => {
+    try { return nav.standalone === true || view.matchMedia('(display-mode: standalone)').matches || view.matchMedia('(display-mode: fullscreen)').matches }
+    catch { return nav.standalone === true }
+  }
   return {
     secureContext: view.isSecureContext, isTopLevel: view.top === view.self,
-    standalone: nav.standalone === true || view.matchMedia('(display-mode: standalone)').matches || view.matchMedia('(display-mode: fullscreen)').matches,
-    permission: 'Notification' in view ? (view as Window & { readonly Notification: typeof Notification }).Notification.permission : 'unsupported',
+    get standalone() { return isInstalled() },
+    get permission() { return 'Notification' in view ? (view as Window & { readonly Notification: typeof Notification }).Notification.permission : 'unsupported' },
     pushManager, storage, origin: view.location.origin, randomUUID: () => view.crypto.randomUUID(),
     locale: view.document.documentElement.lang.toLowerCase().startsWith('zh') ? 'zh-CN' : view.document.documentElement.lang.toLowerCase().startsWith('it') ? 'it' : 'en',
   }

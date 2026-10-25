@@ -36,7 +36,7 @@ export function MobilePushSettings({ controller, locale }: MobilePushSettingsPro
     ),
     createElement('div', { className: 'dsh-mobile-push-actions', style: { display: 'flex', flexWrap: 'wrap', gap: 8 } },
       snapshot.state === 'enabled' ? createElement('button', { type: 'button', className: 'dsh-mobile-settings_selector', onClick: () => void controller.sendTest() }, copy.test) : null,
-      snapshot.state === 'enabled' || snapshot.state === 'suspended' ? createElement('button', { type: 'button', className: 'dsh-mobile-settings_selector', onClick: () => void controller.disable() }, copy.disable) : snapshot.state === 'ready' || snapshot.state === 'failed' ? createElement('button', { type: 'button', className: 'dsh-mobile-settings_selector', onClick: () => void controller.enableFromGesture() }, copy.enable) : createElement('button', { type: 'button', className: 'dsh-mobile-settings_selector', disabled: true }, copy.busy),
+      snapshot.state === 'enabled' || snapshot.state === 'suspended' ? createElement('button', { type: 'button', className: 'dsh-mobile-settings_selector', onClick: () => void controller.disable() }, copy.disable) : snapshot.state === 'ready' || snapshot.state === 'failed' || snapshot.state === 'disabled' ? createElement('button', { type: 'button', className: 'dsh-mobile-settings_selector', onClick: () => void controller.enableFromGesture() }, copy.enable) : createElement('button', { type: 'button', className: 'dsh-mobile-settings_selector', disabled: true }, copy.busy),
     ),
   )
 }

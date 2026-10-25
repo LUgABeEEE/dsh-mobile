@@ -27,6 +27,7 @@ import {
   handleMissingExtensionManifest,
   installDshLanguageBoundSurface,
   installMobileNativeBack,
+  installMobilePushBrowserClient,
   MOBILE_CONTROL_MESSAGES,
   mobileBackBlockedMessage,
   normalizeDiagnosticOverall,
@@ -163,6 +164,170 @@ function composerModelBackFixture(role: 'menu' | 'group' = 'menu'): {
 afterEach(() => {
   vi.useRealTimers()
   vi.unstubAllGlobals()
+})
+
+describe('dedicated browser push client entry', () => {
+  function fixture(search = '') {
+    const config = { available: true, installationId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', publicKey: 'AQID', keyFingerprint: 'fp', ownerGeneration: 1, registrationGeneration: 0, status: 'disabled' as const, preferences: { question: true, plan: true, approval: true, response: true, goal: true, failure: true } }
+    const api = {
+      getConfig: vi.fn(async () => config), enroll: vi.fn(async () => ({ registration: {} })),
+      disable: vi.fn(async () => undefined), updatePreferences: vi.fn(async () => undefined),
+      sendTest: vi.fn(async () => undefined), resolve: vi.fn(async () => ({ sessionId: 's1', interaction: 'resolved' as const })),
+    }
+    const manager = { getSubscription: vi.fn(async () => null), subscribe: vi.fn(async () => { throw new Error('unexpected permission prompt') }) }
+    const environment = { secureContext: true, isTopLevel: true, standalone: true, permission: 'default' as const, pushManager: manager, origin: 'https://example.test', randomUUID: () => config.installationId }
+    const page = new EventTarget() as Document & { visibilityState: DocumentVisibilityState; querySelector: (selector: string) => Element | null }
+    Object.defineProperty(page, 'visibilityState', { value: 'visible', writable: true })
+    page.querySelector = (selector: string) => selector.includes('dsh-mobile-gateway') ? ({}) as Element : null
+    const history = { replaceState: vi.fn() }
+    const view = new EventTarget() as Window & { location: Location; history: History }
+    Object.defineProperty(view, 'location', { value: { search, pathname: '/', hash: '' } })
+    Object.defineProperty(view, 'history', { value: history })
+    view.__DSH_MOBILE_FRONTEND__ = 'dedicated'
+    const slotRegistrations: Array<{ options: unknown; component: (props: unknown) => unknown }> = []
+    const serviceQueries: string[] = []
+    const sessions = { list: { getSnapshot: () => ({ phase: 'ready', byId: { s1: {} }, ids: ['s1'] }), subscribe: () => () => undefined } }
+    const workspaces = { list: { getSnapshot: () => ({ phase: 'ready', items: [] }), subscribe: () => () => undefined } }
+    const uiWorkspace = { openSession: vi.fn() }
+    const context: { sessions: typeof sessions; workspaces: typeof workspaces; uiWorkspace: { openSession(id: string): void }; get(name: string): unknown; slots: { inject(key: string, callback: () => () => void): ReturnType<typeof vi.fn>; register(options: unknown, component: (props: unknown) => unknown): ReturnType<typeof vi.fn> } } = {
+      sessions, workspaces, uiWorkspace,
+      get(name: string): unknown {
+        serviceQueries.push(name)
+        if (name === 'sessions') return sessions
+        if (name === 'workspaces') return workspaces
+        if (name === 'uiWorkspace') return uiWorkspace
+        return undefined
+      },
+      slots: {
+        inject(key: string, callback: () => () => void) { expect(key).toBe('settings.general.item'); callback(); return vi.fn() },
+        register(options: unknown, component: (props: unknown) => unknown) { slotRegistrations.push({ options, component }); return vi.fn() },
+      },
+    }
+    return { api, manager, environment, page, view, history, context, slotRegistrations, serviceQueries }
+  }
+
+  it.each(['stock', 'native', 'unauthenticated'] as const)('leaves %s contexts inert', contextKind => {
+    const test = fixture()
+    if (contextKind === 'native') test.view.__DSH_MOBILE_NATIVE__ = { capabilities: () => [], invoke: async () => undefined }
+    if (contextKind === 'stock') delete test.view.__DSH_MOBILE_FRONTEND__
+    if (contextKind === 'unauthenticated') test.page.querySelector = () => null
+    const dispose = installMobilePushBrowserClient(test.context as never, { view: test.view, page: test.page, api: test.api as never, environment: test.environment })
+    expect(test.api.getConfig).not.toHaveBeenCalled()
+    expect(test.slotRegistrations).toHaveLength(0)
+    expect(test.manager.subscribe).not.toHaveBeenCalled()
+    dispose()
+  })
+
+  it('starts without prompting, mounts the separate order-120 row, refreshes on focus and disposes without opting out', async () => {
+    const test = fixture()
+    const dispose = installMobilePushBrowserClient(test.context as never, { view: test.view, page: test.page, api: test.api as never, environment: test.environment })
+    await Promise.resolve()
+    expect(test.api.getConfig).toHaveBeenCalledExactlyOnceWith('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa')
+    expect(test.manager.subscribe).not.toHaveBeenCalled()
+    expect(test.slotRegistrations).toHaveLength(1)
+    expect(test.slotRegistrations[0]?.options).toMatchObject({ id: 'dsh-mobile-push-browser', order: 120 })
+    test.view.dispatchEvent(new Event('focus'))
+    await Promise.resolve()
+    expect(test.api.getConfig).toHaveBeenCalledTimes(2)
+    dispose()
+    test.view.dispatchEvent(new Event('focus'))
+    await Promise.resolve()
+    expect(test.api.getConfig).toHaveBeenCalledTimes(2)
+    expect(test.api.disable).not.toHaveBeenCalled()
+  })
+
+  it('routes default browser mutations through the existing one-shot CSRF mobileRequest transport', async () => {
+    const test = fixture()
+    const page = test.page as Document & { cookie: string }
+    page.cookie = 'dsh_ma_csrf=csrf-token'
+    Object.defineProperty(page, 'documentElement', { value: { lang: 'en' } })
+    vi.stubGlobal('document', page)
+    vi.stubGlobal('navigator', { language: 'en', languages: ['en'] })
+    vi.stubGlobal('location', { href: 'https://example.test/', origin: 'https://example.test' })
+    const fetch = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify({}), { status: 200, headers: { 'content-type': 'application/json' } }))
+    vi.stubGlobal('fetch', fetch)
+    const dispose = installMobilePushBrowserClient(test.context as never, { view: test.view, page: test.page, environment: test.environment })
+    for (let turn = 0; turn < 4; turn++) await new Promise(resolve => setTimeout(resolve, 0))
+    const row = test.slotRegistrations[0]?.component({}) as { props?: { controller?: { disable(): Promise<void> } } } | undefined
+    expect(row?.props?.controller).toBeDefined()
+    await row?.props?.controller?.disable()
+    expect(fetch).toHaveBeenCalledTimes(3)
+    const [, post] = fetch.mock.calls[1]!
+    const headers = new Headers(post?.headers)
+    expect(headers.get('x-dsh-mobile-csrf')).toBe('csrf-token')
+    expect(headers.get('content-type')).toBe('application/json')
+    expect(post).toMatchObject({ method: 'POST', credentials: 'same-origin', cache: 'no-store', redirect: 'error' })
+    dispose()
+  })
+
+  it('owns browser push once through apply effects and disposes its single lifecycle', async () => {
+    const test = fixture()
+    const effects: Array<{ label?: string; run: () => void | (() => void) }> = []
+    const application = Object.assign(test.context, { effect: (run: () => void | (() => void), label?: string) => { effects.push(label === undefined ? { run } : { run, label }) } })
+    const page = test.page as Document & { cookie: string }
+    page.cookie = 'dsh_ma_csrf=csrf-token'
+    Object.defineProperty(page, 'documentElement', { value: { lang: 'en' } })
+    vi.stubGlobal('document', page)
+    vi.stubGlobal('window', test.view)
+    vi.stubGlobal('location', { href: 'https://example.test/', origin: 'https://example.test' })
+    Object.defineProperty(test.view, 'navigator', { value: { standalone: true } })
+    Object.defineProperty(test.view, 'isSecureContext', { value: true })
+    Object.defineProperty(test.view, 'self', { value: test.view })
+    Object.defineProperty(test.view, 'top', { value: test.view })
+    Object.defineProperty(test.view, 'crypto', { value: { randomUUID: () => 'fresh-install-id' } })
+    Object.defineProperty(test.view, 'pushManager', { value: test.manager })
+    Object.defineProperty(test.view, 'Notification', { value: { permission: 'default' } })
+    Object.defineProperty(test.view, 'matchMedia', { value: () => ({ matches: true }) })
+    Object.defineProperty(test.view, 'document', { value: page })
+    const configFetch = vi.fn()
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes('/mobile-access/push/config')) configFetch()
+      return new Response(JSON.stringify({ available: true, publicKey: 'AQID', installationId: 'fresh-install-id', ownerGeneration: 1, registrationGeneration: 0, status: 'disabled' }), { status: 200, headers: { 'content-type': 'application/json' } })
+    }))
+    apply(application as Parameters<typeof apply>[0])
+    const pushEffect = effects.filter(effect => effect.label === 'dsh-mobile: authenticated browser push lifecycle')
+    expect(pushEffect).toHaveLength(1)
+    const disposePush = pushEffect[0]!.run()
+    expect(configFetch).toHaveBeenCalledTimes(1)
+    expect(test.slotRegistrations.filter(entry => (entry.options as { id?: string }).id === 'dsh-mobile-push-browser')).toHaveLength(1)
+    ;(disposePush as () => void)()
+    test.view.dispatchEvent(new Event('focus'))
+    expect(configFetch).toHaveBeenCalledTimes(1)
+  })
+
+  it('installs tap resolution only for a non-empty query and available public navigation services', async () => {
+    const test = fixture('?mobile-push=opaque-ref')
+    expect(test.context.get('sessions')).toBe(test.context.sessions)
+    expect(test.context.get('workspaces')).toBe(test.context.workspaces)
+    expect(test.context.get('uiWorkspace')).toBe(test.context.uiWorkspace)
+    const opened: string[] = []
+    test.context.uiWorkspace = { openSession: (id: string) => { opened.push(id) } }
+    test.context.get = (name: string): unknown => {
+      test.serviceQueries.push(name)
+      if (name === 'sessions') return test.context.sessions
+      if (name === 'workspaces') return test.context.workspaces
+      if (name === 'uiWorkspace') return test.context.uiWorkspace
+      return undefined
+    }
+    const notices: string[] = []
+    const dispose = installMobilePushBrowserClient(test.context as never, { view: test.view, page: test.page, api: test.api as never, environment: test.environment, notify: key => notices.push(key) })
+    await Promise.resolve(); await Promise.resolve()
+    expect(test.api.resolve).toHaveBeenCalledExactlyOnceWith('opaque-ref')
+    expect(opened).toEqual(['s1'])
+    expect(notices).toEqual(['session-resolved'])
+    expect(test.history.replaceState).toHaveBeenCalledOnce()
+    dispose()
+  })
+
+  it('does not query public navigation services or install neutral navigation without a tap reference', () => {
+    const test = fixture()
+    const dispose = installMobilePushBrowserClient(test.context as never, { view: test.view, page: test.page, api: test.api as never, environment: test.environment })
+    expect(test.serviceQueries).not.toContain('sessions')
+    expect(test.serviceQueries).not.toContain('workspaces')
+    expect(test.serviceQueries).not.toContain('uiWorkspace')
+    expect(test.api.resolve).not.toHaveBeenCalled()
+    dispose()
+  })
 })
 
 describe('mobile native Back before layout navigation', () => {
