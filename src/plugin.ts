@@ -592,6 +592,7 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
       entry => { logger.warn('auth failure %s', JSON.stringify(entry)) },
       entry => { logger.warn('http failure %s', JSON.stringify(entry)) },
       entry => { logger.info('upstream auth %s', JSON.stringify(entry)) },
+      entry => { logger.warn('slow api %s', JSON.stringify(entry)) },
     )
     await candidate.start()
     lanGateway = candidate
@@ -677,6 +678,7 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
         entry => { logger.warn('auth failure %s', JSON.stringify(entry)) },
         entry => { logger.warn('http failure %s', JSON.stringify(entry)) },
         entry => { logger.info('upstream auth %s', JSON.stringify(entry)) },
+        entry => { logger.warn('slow api %s', JSON.stringify(entry)) },
       )
       await candidate.start()
       return candidate
@@ -705,6 +707,7 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
       entry => { logger.warn('auth failure %s', JSON.stringify(entry)) },
       entry => { logger.warn('http failure %s', JSON.stringify(entry)) },
       entry => { logger.info('upstream auth %s', JSON.stringify(entry)) },
+      entry => { logger.warn('slow api %s', JSON.stringify(entry)) },
     )
     try { await candidate.start() } catch (error) {
       await candidate.close()
@@ -720,6 +723,7 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
       entry => { logger.warn('auth failure %s', JSON.stringify(entry)) },
       entry => { logger.warn('http failure %s', JSON.stringify(entry)) },
       entry => { logger.info('upstream auth %s', JSON.stringify(entry)) },
+      entry => { logger.warn('slow api %s', JSON.stringify(entry)) },
     )
     try { await candidate.start() } catch (error) {
       await candidate.close()

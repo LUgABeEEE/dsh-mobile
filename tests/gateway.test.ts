@@ -17,7 +17,7 @@ import { connect, Socket, type AddressInfo } from 'node:net'
 import { gunzipSync, gzipSync } from 'node:zlib'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { parseGatewayConfig } from '../src/config.js'
-import { MobileAccessGateway, type AuthFailureEntry } from '../src/gateway.js'
+import { MobileAccessGateway, type ApiLatencyEntry, type AuthFailureEntry } from '../src/gateway.js'
 import { BlockedUpgradePathLog } from '../src/websocket-paths.js'
 import { CSRF_COOKIE, CSRF_HEADER, DEVICE_COOKIE, SESSION_COOKIE } from '../src/http-security.js'
 import { HOST_CSRF_COOKIE, HOST_DEVICE_COOKIE, HOST_SESSION_COOKIE } from '../src/browser-auth-cookies.js'
@@ -295,11 +295,43 @@ async function upstream(
       response.end('authentication required')
       return
     }
+    if (incoming.url?.startsWith('/plugins/sse-fixture') === true || incoming.url?.startsWith('/api/sse-fixture') === true) {
+      // Same media type on a static and a non-static path: the static contract is
+      // unchanged, while a non-static event stream must stay incremental.
+      response.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8' })
+      response.write('data: probe\n\n')
+      response.end()
+      return
+    }
     if (incoming.url === '/api/stream-hold') {
       response.writeHead(200, { 'content-type': 'text/plain' })
       response.write('first')
       response.once('close', () => { closedHolds.push(incoming.url!) })
       held.push(() => { response.end('last') })
+      return
+    }
+    if (incoming.url?.startsWith('/api/payload') === true) {
+      const body = JSON.stringify({
+        items: Array.from({ length: 400 }, (_, index) => ({ id: index, label: 'payload-row'.repeat(6) })),
+      })
+      response.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'content-length': Buffer.byteLength(body) })
+      response.end(body)
+      return
+    }
+    if (incoming.url?.startsWith('/api/slow-latency') === true) {
+      await new Promise(resolve => { setTimeout(resolve, 3_200) })
+      const body = JSON.stringify({ ok: true })
+      response.writeHead(200, { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) })
+      response.end(body)
+      return
+    }
+    if (incoming.url?.startsWith('/api/chunked') === true) {
+      // No declared length: the gateway must not assume a complete representation.
+      response.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+      for (let index = 0; index < 8; index++) {
+        response.write(`{"row":${String(index)},"label":"${'chunk-row-'.repeat(20)}"}\n`)
+      }
+      response.end()
       return
     }
     if (incoming.url === '/hold' || incoming.url === '/api' || incoming.url === '/api/hold') {
@@ -506,6 +538,7 @@ async function gateway(
   onDiscoveryDegraded?: (source: 'broadcast' | 'mdns', code: string) => void,
   startForTest?: (instance: MobileAccessGateway) => Promise<void>,
   authFailureLog?: (entry: AuthFailureEntry) => void,
+  apiLatencyLog?: (entry: ApiLatencyEntry) => void,
 ): Promise<MobileAccessGateway> {
   const resolved = parseGatewayConfig({
     listenHost: '127.0.0.1',
@@ -522,7 +555,7 @@ async function gateway(
   const instance = new MobileAccessGateway(
     effective, new MemoryDeviceStore(), undefined, upstreamAuthenticatedUrl,
     { has: (pathname: string) => extra.has(pathname) }, blockedUpgradeLog, onDiscoveryDegraded,
-    undefined, authFailureLog,
+    undefined, authFailureLog, undefined, undefined, apiLatencyLog,
   )
   if (startForTest === undefined) await instance.start()
   else await startForTest(instance)
@@ -3419,5 +3452,89 @@ describe('auth failure recording', () => {
     expect(rejected.status).toBe(403)
     expect(entries[0]).toMatchObject({ csrfCookies: 3, csrfHeader: false, sessionCookie: true })
     expect(JSON.stringify(entries)).not.toContain(paired.csrf)
+  })
+})
+
+describe('compressible proxied text and slow API diagnostics', () => {
+  it('compresses oversized API JSON and keeps tiny responses identity', async () => {
+    const inner = await upstream('remote-settings')
+    const instance = await gateway(inner.port)
+    const paired = await pair(instance)
+    const headers = { ...browserHeaders(instance), cookie: `${SESSION_COOKIE}=${paired.session}` }
+
+    const plain = await request(instance.address().port, '/api/payload', { headers })
+    expect(plain.status).toBe(200)
+    expect(plain.headers['content-encoding']).toBeUndefined()
+    expect(plain.rawBody.byteLength).toBeGreaterThan(1_024)
+
+    const compressed = await request(instance.address().port, '/api/payload', {
+      headers: { ...headers, 'accept-encoding': 'gzip' },
+    })
+    expect(compressed.status).toBe(200)
+    expect(compressed.headers['content-encoding']).toBe('gzip')
+    expect(compressed.headers.vary).toBe('Accept-Encoding')
+    expect(compressed.rawBody.byteLength).toBeLessThan(plain.rawBody.byteLength)
+    expect(gunzipSync(compressed.rawBody)).toEqual(plain.rawBody)
+
+    // A tiny body costs more to gzip than it saves on the wire, so it stays identity.
+    const tiny = await request(instance.address().port, '/api/sessions', {
+      headers: { ...headers, 'accept-encoding': 'gzip' },
+    })
+    expect(tiny.status).toBe(200)
+    expect(tiny.headers['content-encoding']).toBeUndefined()
+
+    // An unknown-length stream may be consumed incrementally, so it is not compressed.
+    const chunked = await request(instance.address().port, '/api/chunked', {
+      headers: { ...headers, 'accept-encoding': 'gzip' },
+    })
+    expect(chunked.status).toBe(200)
+    expect(chunked.headers['content-encoding']).toBeUndefined()
+    expect(chunked.rawBody.byteLength).toBeGreaterThan(1_024)
+  })
+
+  it('samples one slow API request without retaining its query string', async () => {
+    const samples: ApiLatencyEntry[] = []
+    const inner = await upstream('remote-settings')
+    const instance = await gateway(
+      inner.port, {}, undefined, undefined, [], undefined, undefined, undefined, undefined,
+      entry => samples.push(entry),
+    )
+    const paired = await pair(instance)
+    const headers = { ...browserHeaders(instance), cookie: `${SESSION_COOKIE}=${paired.session}` }
+
+    const slow = await request(instance.address().port, '/api/slow-latency?sessionId=secret-session', { headers })
+    expect(slow.status).toBe(200)
+    // Fast traffic stays out of the log entirely.
+    await request(instance.address().port, '/api/sessions', { headers })
+    await vi.waitFor(() => { expect(samples).toHaveLength(1) }, { timeout: 2_000 })
+
+    expect(samples[0]).toMatchObject({
+      kind: 'api', method: 'GET', path: '/api/slow-latency', status: 200,
+    })
+    expect(samples[0]!.durationMs).toBeGreaterThanOrEqual(3_000)
+    expect(JSON.stringify(samples)).not.toContain('secret-session')
+  })
+})
+
+describe('compression contract boundaries', () => {
+  it('keeps the static contract and leaves non-static event streams uncompressed', async () => {
+    const inner = await upstream('remote-settings')
+    const instance = await gateway(inner.port)
+    const paired = await pair(instance)
+    const headers = {
+      ...browserHeaders(instance),
+      cookie: `${SESSION_COOKIE}=${paired.session}`,
+      'accept-encoding': 'gzip',
+    }
+
+    // `/plugins/` handled the same media type before this change; a regression here
+    // broke DSH 0.1.7 boot ordering in CI, so the contract is pinned explicitly.
+    const staticStream = await request(instance.address().port, '/plugins/sse-fixture', { headers })
+    expect(staticStream.status).toBe(200)
+    expect(staticStream.headers['content-encoding']).toBe('gzip')
+
+    const apiStream = await request(instance.address().port, '/api/sse-fixture', { headers })
+    expect(apiStream.status).toBe(200)
+    expect(apiStream.headers['content-encoding']).toBeUndefined()
   })
 })
