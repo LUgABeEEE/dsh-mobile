@@ -1214,6 +1214,14 @@ describe('stock DSH lifecycle', () => {
     expect(await readFile(join(first.directory, 'installation-id'), 'utf8')).toMatch(/^[a-f0-9]{64}\n$/u)
   })
 
+  it('rewrites a stale managed upstream snapshot to the active DSH port', async () => {
+    const setupFile = await managedSetupFile('http://127.0.0.1:11111')
+    await mount(false, 57_725, { setupFile })
+    const rewritten = JSON.parse(await readFile(setupFile, 'utf8')) as { upstreamOrigin: string; listenPort: number }
+    expect(rewritten.upstreamOrigin).toBe('http://127.0.0.1:57725')
+    expect(rewritten.listenPort).toBe(3443)
+  })
+
   it('keeps the FRP proxy name when an unconfigured setup becomes managed after restart', async () => {
     const setupDirectory = await mkdtemp(join(tmpdir(), 'dsh-mobile-frp-setup-'))
     temporaryDirectories.push(setupDirectory)
