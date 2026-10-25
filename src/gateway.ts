@@ -3,7 +3,7 @@ import { createSocket, type Socket as DatagramSocket } from 'node:dgram'
 import { lstat, readFile, stat } from 'node:fs/promises'
 import { hostname } from 'node:os'
 import { basename, dirname, extname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { createRequire } from 'node:module'
 import {
   STATUS_CODES,
   createServer as createHttpServer,
@@ -131,25 +131,22 @@ const MOBILE_DOCUMENT_VIEW_HEADER = 'x-dsh-mobile-view'
 const MAX_MOBILE_BOOT_BATCH_BYTES = 32 * 1024 * 1024
 const MAX_MOBILE_BOOT_ENTRY_BYTES = 8 * 1024 * 1024
 /**
- * Per-merged-batch byte budget. One upstream application batch can carry dozens
- * of client bundles whose combined size exceeds the hard batch cap; the layout
- * batch is therefore chunked into multiple merged batches, each kept safely
- * below {@link MAX_MOBILE_BOOT_BATCH_BYTES} so assembly can never reject it.
- *
- * The budget also bounds what one phone request has to fetch. A single 16 MB
- * merged batch gzips to several megabytes, which cannot finish inside the App's
- * 15-second first-load budget on a slow link; the aborted response then has no
- * cache entry, so every retry downloads it again. 3 MB of source bytes stays
- * under a megabyte gzipped, so each merged batch can complete and be revalidated.
+ * Target source-byte size for merged batches. A module larger than this target
+ * remains whole, subject to the separate per-entry and assembly limits. Excess
+ * merged batches use the original individual module URLs instead of rejecting
+ * an otherwise loadable graph. Smaller responses do not guarantee a page-load
+ * deadline: transfer time also depends on the complete graph and connection.
  */
 const MOBILE_BOOT_CHUNK_BYTES = 3 * 1024 * 1024
-/** Bytes the assembly emits after each entry (`body` plus `\n;\n`). */
 /** Bodies below this size cost more to gzip than they save on the wire. */
 const MIN_COMPRESSIBLE_DOCUMENT_BYTES = 1024
+/** Bytes the assembly emits after each entry (`body` plus `\n;\n`). */
 const MOBILE_BOOT_SEPARATOR_BYTES = 3
 /** Freshness window for cached upstream bundle byte sizes. */
 /** Catalog sizes change only on a plugin rebuild or host restart. */
 const CLIENT_MODULE_SIZE_TTL_MS = 10 * 60_000
+/** Explicit metadata measurement is optional and must fit one short UI operation. */
+export const CLIENT_MODULE_MEASUREMENT_BUDGET_MS = 5_000
 const MOBILE_BOOT_SIZE_CACHE_TTL_MS = 30_000
 /** Marker header distinguishing size probes from ordinary proxied bundle fetches. */
 const MOBILE_BOOT_SIZE_PROBE_HEADER = 'x-dsh-mobile-size-probe'
@@ -695,6 +692,38 @@ export function splitMobileBootBatch(
   return { plans, rows }
 }
 
+/**
+ * Retain the layout replacement while bounding the graph's stored merged batches.
+ * @param splits - Application batches already partitioned against the byte target.
+ * @returns The same module coverage, with overflow served by valid upstream URLs.
+ */
+export function limitMobileBootBatches(splits: readonly SplitMobileBootBatch[]): readonly SplitMobileBootBatch[] {
+  const layoutPlan = splits.flatMap(split => split.plans)
+    .find(plan => plan.entries.some(entry => entry.id === MOBILE_LAYOUT_MODULE))
+  let remaining = MAX_MOBILE_BOOT_BATCHES - (layoutPlan === undefined ? 0 : 1)
+  const upstreamOrigin = new URL('http://dsh-mobile.invalid')
+  return splits.map(split => {
+    const byPath = new Map(split.plans.map(plan => [plan.path, plan]))
+    const plans: MobileBootBatchPlan[] = []
+    const rows = split.rows.flatMap((row): BootGraphBatch[] => {
+      const plan = byPath.get(row.url)
+      if (plan === undefined) return [row]
+      if (plan === layoutPlan || remaining > 0) {
+        if (plan !== layoutPlan) remaining -= 1
+        plans.push(plan)
+        return [row]
+      }
+      return plan.entries.map((entry): BootGraphBatch => {
+        if (upstreamPluginBundleUrl(entry.url, upstreamOrigin) === undefined) {
+          throw new Error('upstream DSH mobile boot has no valid module URL for an overflow batch')
+        }
+        return { phase: 'application', url: entry.url, rev: entry.rev, entries: [entry.id] }
+      })
+    })
+    return { plans, rows }
+  })
+}
+
 function escapeMobilePreloadAttribute(value: string): string {
   return value.replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
 }
@@ -743,13 +772,10 @@ function projectMobileBootGraph(
   let batches: readonly MobileBootBatchPlan[] = []
   let preloadReplacements = new Map<string, string>()
   if (plan.batches !== undefined && plan.rewrittenBatchEntries !== undefined) {
-    const rewrites = plan.rewrittenBatchEntries.map(({ batch, entries }) => ({
-      batch,
-      split: splitMobileBootBatch(entries, options.sizes ?? new Map(), options.passThrough ?? new Set()),
-    }))
-    if (rewrites.reduce((count, item) => count + item.split.plans.length, 0) > MAX_MOBILE_BOOT_BATCHES) {
-      throw new Error(`upstream DSH mobile boot requires more than ${String(MAX_MOBILE_BOOT_BATCHES)} merged batches`)
-    }
+    const splits = limitMobileBootBatches(plan.rewrittenBatchEntries.map(({ entries }) => (
+      splitMobileBootBatch(entries, options.sizes ?? new Map(), options.passThrough ?? new Set())
+    )))
+    const rewrites = plan.rewrittenBatchEntries.map(({ batch }, index) => ({ batch, split: splits[index]! }))
     for (const { batch, split } of rewrites) {
       const at = plan.batches.indexOf(batch)
       if (at < 0) throw new Error('upstream DSH boot manifest lost an application batch')
@@ -1272,7 +1298,9 @@ export class MobileAccessGateway {
   private readonly probeInFlight = new Set<string>()
   private readonly clientModulePreferences: ClientModulePreferenceStore
   private readonly clientModuleSizeCache = new Map<string, { at: number; bytes: number; gzipBytes: number }>()
-  private readonly clientModuleDescriptionCache = new Map<string, string | undefined>()
+  private readonly clientModuleDescriptionCache = new Map<string, { at: number; description: string }>()
+  private clientModuleMetadataRevision: string | undefined
+  private clientModuleMeasurementActive = false
   private readonly clientModuleOperations = new Set<AbortController>()
   private readonly clientModuleTasks = new Set<Promise<ClientModulePreferenceView>>()
   private readonly clientModuleRevocations = new Set<Promise<void>>()
@@ -2058,13 +2086,14 @@ export class MobileAccessGateway {
       const onClose = (): void => { operation.abort(); operation.release() }
       response.once('close', onClose)
       try {
-        let kind: 'describe' | 'configure' | 'reset' = 'describe'
+        let kind: 'describe' | 'configure' | 'reset' | 'measure' = 'describe'
         let excluded: unknown
         if (request.method === 'POST') {
           const body = await readJsonObject(request, this.config.maxBodyBytes)
           const keys = Object.keys(body)
           if (keys.length !== 1) throw new HttpError(400, 'bad_request')
           if (keys[0] === 'reset' && body.reset === true) kind = 'reset'
+          else if (keys[0] === 'measure' && body.measure === true) kind = 'measure'
           else if (keys[0] === 'excludedClientModules') { kind = 'configure'; excluded = body.excludedClientModules }
           else throw new HttpError(400, 'bad_request')
         }
@@ -2107,22 +2136,17 @@ export class MobileAccessGateway {
           body = Buffer.from(customAsset.fallback)
         }
         if (body.byteLength > LEGACY_CUSTOM_ASSET_LIMIT) throw new HttpError(413, 'payload_too_large')
+        operation.signal.throwIfAborted()
         const etag = `"${createHash('sha256').update(body).digest('hex')}"`
         const responseHeaders: Record<string, string | number> = { ETag: etag }
         if (mtime !== undefined) responseHeaders['Last-Modified'] = mtime.toUTCString()
-        // `no-store` from setSecurityHeaders would stop the client from even
-        // asking again, so an owned asset with a strong ETag would still be
-        // re-downloaded on every reload. Revalidation keeps the bytes local.
-        this.allowRevalidation(response)
+        setSecurityHeaders(response, this.tlsEnabled)
+        response.setHeader('Cache-Control', 'private, no-cache')
         if (matchesIfNoneMatch(headerValue(request.headers, 'if-none-match'), etag)) {
-          setSecurityHeaders(response, this.tlsEnabled)
-          this.allowRevalidation(response)
           response.writeHead(304, responseHeaders)
           response.end()
           return
         }
-        setSecurityHeaders(response, this.tlsEnabled)
-        this.allowRevalidation(response)
         response.writeHead(200, {
           ...responseHeaders,
           'Content-Type': customAsset.contentType,
@@ -2499,6 +2523,15 @@ export class MobileAccessGateway {
     return this.clientModulePreferenceOperation('describe', undefined, deviceId, callerSignal)
   }
 
+  /** Measure optional catalog metadata without changing saved module selections.
+   * @param deviceId - Authenticated device identity, or computer defaults when omitted.
+   * @param callerSignal - Cancels measurement and drains its admitted requests.
+   * @returns Current selections with the measurements completed within the budget.
+   */
+  measureClientModules(deviceId?: string, callerSignal?: AbortSignal): Promise<ClientModulePreferenceView> {
+    return this.clientModulePreferenceOperation('measure', undefined, deviceId, callerSignal)
+  }
+
   /** Persist a validated device override or computer default.
    * @param excluded - Untrusted module IDs to validate against the current boot graph.
    * @param deviceId - Authenticated device identity; omitted for computer defaults.
@@ -2518,66 +2551,77 @@ export class MobileAccessGateway {
     return this.clientModulePreferenceOperation('reset', undefined, deviceId, callerSignal)
   }
 
-  /**
-   * Add measured transfer sizes to the settings catalog.
-   *
-   * The panel exists to decide what the phone loads, so the byte count is part of
-   * the decision, not a diagnostic extra. A failed measurement simply leaves the
-   * size unknown; it never blocks the catalog.
-   */
-  private async describeMobileModulesWithSizes(
-    html: string,
-    signal?: AbortSignal,
-  ): Promise<readonly ClientModuleEntry[]> {
-    const entries = describeMobileClientModules(html)
-    const urls = new Map(parseMobileBootPlan(html).entries.map(entry => [entry.id, entry.url]))
-    const measured = new Map<string, { bytes: number; gzipBytes: number }>()
-    const queue = entries.filter(entry => urls.get(entry.id) !== undefined)
+  /** Return cached metadata only; catalog reads and saves never start bundle probes. */
+  private describeMobileModulesWithSizes(html: string): readonly ClientModuleEntry[] {
+    const plan = parseMobileBootPlan(html)
+    if (this.clientModuleMetadataRevision !== plan.parsed.rev) {
+      this.clientModuleMetadataRevision = plan.parsed.rev
+      this.clientModuleSizeCache.clear()
+      this.clientModuleDescriptionCache.clear()
+    }
+    const urls = new Map(plan.entries.map(entry => [entry.id, entry.url]))
+    const now = Date.now()
+    return Object.freeze(describeMobileClientModules(html).map(entry => {
+      const source = urls.get(entry.id)!
+      const size = this.clientModuleSizeCache.get(source)
+      const description = this.clientModuleDescriptionCache.get(`${entry.id}\0${source}`)
+      return Object.freeze({ ...entry,
+        ...(size === undefined || now - size.at >= CLIENT_MODULE_SIZE_TTL_MS ? {} : { bytes: size.bytes, gzipBytes: size.gzipBytes }),
+        ...(description === undefined || now - description.at >= CLIENT_MODULE_SIZE_TTL_MS ? {} : { description: description.description }),
+      })
+    }))
+  }
+
+  /** Refresh metadata only after an explicit user action, with bounded concurrency. */
+  private async measureMobileModules(html: string, signal: AbortSignal): Promise<void> {
+    this.describeMobileModulesWithSizes(html)
+    const queue = [...parseMobileBootPlan(html).entries].sort((left, right) => Number(right.id === MOBILE_LAYOUT_MODULE) - Number(left.id === MOBILE_LAYOUT_MODULE))
     let cursor = 0
     const worker = async (): Promise<void> => {
       while (cursor < queue.length) {
-        signal?.throwIfAborted()
+        signal.throwIfAborted()
         const entry = queue[cursor++]!
-        const source = urls.get(entry.id)!
-        const size = await this.upstreamBundleMeasurement(source, signal).catch(() => undefined)
-        if (size !== undefined) measured.set(entry.id, size)
+        await this.upstreamBundleMeasurement(entry.url, signal).catch(error => {
+          if (signal.aborted) throw error
+        })
+        signal.throwIfAborted()
+        await this.installedModuleDescription(entry.id, entry.url, signal)
       }
     }
-    await Promise.allSettled(Array.from({ length: Math.min(6, queue.length) }, worker))
-    signal?.throwIfAborted()
-    const described = await Promise.all(entries.map(async entry => {
-      const size = measured.get(entry.id)
-      const description = await this.installedModuleDescription(entry.id)
-      const fields = {
-        ...(size === undefined ? {} : { bytes: size.bytes, gzipBytes: size.gzipBytes }),
-        ...(description === undefined ? {} : { description }),
-      }
-      return Object.keys(fields).length === 0 ? entry : Object.freeze({ ...entry, ...fields })
-    }))
-    return Object.freeze(described)
+    await Promise.allSettled(Array.from({ length: Math.min(4, queue.length) }, worker))
+    signal.throwIfAborted()
   }
 
   /**
    * Read the installed package description for one catalog module.
    *
-   * DSH ships some client modules inside its own bundle, so a module ID is not
-   * always a resolvable package; those entries simply have no description. The
-   * result is cached because package.json does not change while the host runs.
+   * This is best-effort package metadata lookup from the state directory's Node
+   * resolution context and this plugin's dependencies. Unexported or unavailable
+   * package metadata stays unknown; arbitrary paths and subpaths are not read.
    */
-  private async installedModuleDescription(id: string): Promise<string | undefined> {
-    if (this.clientModuleDescriptionCache.has(id)) return this.clientModuleDescriptionCache.get(id)
-    const base = dirname(fileURLToPath(import.meta.url))
-    const roots = [join(base, '..'), join(base, '..', '..'), join(base, '..', 'node_modules')]
-    let description: string | undefined
-    for (const root of roots) {
+  private async installedModuleDescription(id: string, source: string, signal: AbortSignal): Promise<void> {
+    if (!/^(?:@[a-z\d][a-z\d._-]*\/)?[a-z\d][a-z\d._-]*$/iu.test(id)) return
+    const key = `${id}\0${source}`
+    this.clientModuleDescriptionCache.delete(key)
+    const resolvers = [createRequire(join(dirname(this.config.stateFile), 'package.json')), createRequire(import.meta.url)]
+    for (const resolver of resolvers) {
+      signal.throwIfAborted()
       try {
-        const raw = await readFile(join(root, id, 'package.json'), 'utf8')
-        description = sanitizeModuleDescription((JSON.parse(raw) as { description?: unknown }).description)
-      } catch { description = undefined }
-      if (description !== undefined) break
+        const file = resolver.resolve(`${id}/package.json`)
+        const information = await stat(file)
+        if (!information.isFile() || information.size > 256 * 1024) continue
+        const raw = await readFile(file, { encoding: 'utf8', signal })
+        const description = sanitizeModuleDescription((JSON.parse(raw) as { description?: unknown }).description)
+        signal.throwIfAborted()
+        if (description !== undefined) {
+          this.clientModuleDescriptionCache.set(key, { at: Date.now(), description })
+          return
+        }
+      } catch (error) {
+        if (signal.aborted) throw error
+        // Package exports, missing metadata and unreadable files leave this description unknown.
+      }
     }
-    this.clientModuleDescriptionCache.set(id, description)
-    return description
   }
 
   /**
@@ -2588,23 +2632,29 @@ export class MobileAccessGateway {
    */
   private async upstreamBundleMeasurement(
     source: string,
-    signal?: AbortSignal,
+    signal: AbortSignal,
   ): Promise<{ bytes: number; gzipBytes: number } | undefined> {
-    signal?.throwIfAborted()
-    const cached = this.clientModuleSizeCache.get(source)
-    if (cached !== undefined && Date.now() - cached.at < CLIENT_MODULE_SIZE_TTL_MS) {
-      return { bytes: cached.bytes, gzipBytes: cached.gzipBytes }
+    signal.throwIfAborted()
+    this.clientModuleSizeCache.delete(source)
+    if (source === MOBILE_LAYOUT_PATH) {
+      const information = await stat(this.config.mobileLayoutFile)
+      if (!information.isFile() || information.size > MAX_MOBILE_BOOT_ENTRY_BYTES) return undefined
+      const body = await readFile(this.config.mobileLayoutFile, { signal })
+      if (body.byteLength > MAX_MOBILE_BOOT_ENTRY_BYTES) return undefined
+      const gzipBytes = (await gzipBuffer(body)).byteLength
+      signal.throwIfAborted()
+      this.clientModuleSizeCache.set(source, { at: Date.now(), bytes: body.byteLength, gzipBytes })
+      return { bytes: body.byteLength, gzipBytes }
     }
     const target = upstreamPluginBundleUrl(source, this.config.upstreamOrigin)
     if (target === undefined) return undefined
     let upstreamRequest: ClientRequest | undefined
+    let upstreamClosed: Promise<void> | undefined
     const abort = (): void => { upstreamRequest?.destroy(requestAbortedError()) }
-    signal?.addEventListener('abort', abort, { once: true })
+    signal.addEventListener('abort', abort, { once: true })
     try {
-      const upstreamCookie = signal === undefined
-        ? await this.upstreamCookieHeader()
-        : await waitForRequestTask(this.upstreamCookieHeader(), signal)
-      signal?.throwIfAborted()
+      const upstreamCookie = await waitForRequestTask(this.upstreamCookieHeader(), signal)
+      signal.throwIfAborted()
       const proxied = await new Promise<IncomingMessage>((resolve, reject) => {
         upstreamRequest = requestHttp({
           protocol: 'http:',
@@ -2621,6 +2671,8 @@ export class MobileAccessGateway {
           },
           agent: false,
         })
+        const opened = upstreamRequest
+        upstreamClosed = new Promise<void>(closed => { opened.once('close', () => { closed() }) })
         upstreamRequest.setTimeout(this.config.upstreamTimeoutMs, () => {
           upstreamRequest?.destroy(upstreamTimeoutError())
         })
@@ -2632,35 +2684,39 @@ export class MobileAccessGateway {
         proxied.resume()
         return undefined
       }
-      const body = await new Promise<Buffer | undefined>((resolve, reject) => {
-        const chunks: Buffer[] = []
-        let bytes = 0
-        proxied.on('data', (chunk: Buffer) => {
-          bytes += chunk.length
-          if (bytes > MAX_MOBILE_BOOT_ENTRY_BYTES) {
-            proxied.destroy()
-            resolve(undefined)
-            return
-          }
-          chunks.push(Buffer.from(chunk))
-        })
-        proxied.once('end', () => resolve(Buffer.concat(chunks)))
-        proxied.once('error', reject)
-      })
-      if (body === undefined) return undefined
+      const chunks: Buffer[] = []
+      let bytes = 0
+      for await (const chunk of proxied) {
+        signal.throwIfAborted()
+        const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+        bytes += buffer.byteLength
+        if (bytes > MAX_MOBILE_BOOT_ENTRY_BYTES) return undefined
+        chunks.push(buffer)
+      }
+      const body = Buffer.concat(chunks)
       const gzipBytes = (await gzipBuffer(body)).byteLength
+      signal.throwIfAborted()
       this.clientModuleSizeCache.set(source, { at: Date.now(), bytes: body.byteLength, gzipBytes })
       return { bytes: body.byteLength, gzipBytes }
     } finally {
-      signal?.removeEventListener('abort', abort)
+      signal.removeEventListener('abort', abort)
+      upstreamRequest?.destroy()
+      await upstreamClosed
     }
   }
 
   private async clientModulePreferenceOperation(
-    kind: 'describe' | 'configure' | 'reset', excluded: unknown, deviceId?: string, callerSignal?: AbortSignal,
+    kind: 'describe' | 'configure' | 'reset' | 'measure', excluded: unknown, deviceId?: string, callerSignal?: AbortSignal,
   ): Promise<ClientModulePreferenceView> {
     if (this.closing || !this.started) throw new HttpError(503, 'unavailable')
+    if (kind === 'measure' && this.clientModuleMeasurementActive) throw new HttpError(429, 'busy')
+    if (kind === 'measure') this.clientModuleMeasurementActive = true
     const controller = new AbortController()
+    let measurementExpired = false
+    const measurementTimer = kind === 'measure' ? setTimeout(() => {
+      measurementExpired = true
+      controller.abort()
+    }, CLIENT_MODULE_MEASUREMENT_BUDGET_MS) : undefined
     const abort = (): void => controller.abort()
     if (callerSignal?.aborted === true) controller.abort()
     callerSignal?.addEventListener('abort', abort, { once: true })
@@ -2688,8 +2744,13 @@ export class MobileAccessGateway {
       controller.signal.throwIfAborted()
       try {
         const plan = parseMobileBootPlan(html)
+        if (kind === 'measure') {
+          try { await this.measureMobileModules(html, controller.signal) } catch (error) {
+            if (!measurementExpired || callerSignal?.aborted === true || this.closing) throw error
+          }
+        }
         return Object.freeze({
-          entries: await this.describeMobileModulesWithSizes(html, controller.signal),
+          entries: this.describeMobileModulesWithSizes(html),
           ...selection,
           ...(plan.batches === undefined ? { excludedClientModules: Object.freeze([]), defaultExcludedClientModules: Object.freeze([]) } : {}),
           reloadRequired: true,
@@ -2701,6 +2762,8 @@ export class MobileAccessGateway {
     })()
     this.clientModuleTasks.add(task)
     try { return await task } finally {
+      clearTimeout(measurementTimer)
+      if (kind === 'measure') this.clientModuleMeasurementActive = false
       callerSignal?.removeEventListener('abort', abort)
       this.clientModuleOperations.delete(controller)
       this.clientModuleTasks.delete(task)
@@ -2820,14 +2883,15 @@ export class MobileAccessGateway {
       const documentGzip = body.byteLength >= MIN_COMPRESSIBLE_DOCUMENT_BYTES
         && acceptsGzip(request.headers['accept-encoding'])
       const payload = documentGzip ? await gzipBuffer(body) : body
+      operation.signal.throwIfAborted()
       const documentHeaders: OutgoingHttpHeaders = {
         ...headers,
         'Content-Type': 'text/html; charset=utf-8',
         'Content-Length': payload.byteLength,
       }
+      addVaryAcceptEncoding(documentHeaders)
       if (documentGzip) {
         documentHeaders['Content-Encoding'] = 'gzip'
-        addVaryAcceptEncoding(documentHeaders)
       }
       response.writeHead(200, documentHeaders)
       response.end(payload)
@@ -3013,19 +3077,6 @@ export class MobileAccessGateway {
       upstreamRequest?.destroy()
       await upstreamClosed
     }
-  }
-
-  /**
-   * Let the client revalidate an owned, ETag-validated response.
-   *
-   * setSecurityHeaders defaults every response to `no-store`. That is right for
-   * pairing documents and authenticated API calls, but it also makes an owned
-   * asset with a strong validator unusable: the browser never asks again. A
-   * `no-cache` directive still requires revalidation before reuse, so no stale
-   * bytes are served while a reload costs one 304 instead of the whole body.
-   */
-  private allowRevalidation(response: ServerResponse): void {
-    response.setHeader('Cache-Control', 'private, no-cache')
   }
 
   private async serveMobileBootBatch(

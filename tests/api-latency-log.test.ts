@@ -23,6 +23,8 @@ describe('boundedApiPath', () => {
     expect(boundedApiPath('/api/')).toBe('/api/other')
     expect(boundedApiPath('/api/../secrets')).toBe('/api/other')
     expect(boundedApiPath('/api/%2e%2e/x')).toBe('/api/other')
+    expect(boundedApiPath('/api/private-session-id')).toBe('/api/other')
+    expect(boundedApiPath('/api/abc1234567890def')).toBe('/api/other')
     expect(boundedApiPath('/api')).toBeUndefined()
     expect(boundedApiPath('/plugins/mobile.js?rev=1')).toBeUndefined()
     expect(boundedApiPath(undefined)).toBeUndefined()

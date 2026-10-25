@@ -2,12 +2,13 @@
 import { createElement, type ReactElement } from 'react'
 import { localAdminRequestHeaders } from './local-admin-host.js'
 import type { MobileControlLocale } from './client-messages.js'
-import { ClientModuleDraft, clientModuleDisplayName, clientModuleGroup, formatClientModuleSize, type ClientModuleFilter, type ClientModuleGroup, type ClientModuleRow } from './client-module-presentation.js'
+import { ClientModuleDraft, clientModuleDisplayName, clientModuleGroup, formatClientModuleSize, sortClientModulesBySize, type ClientModuleFilter, type ClientModuleGroup, type ClientModuleRow } from './client-module-presentation.js'
 
 export type { ClientModuleRow } from './client-module-presentation.js'
 
 export const CLIENT_MODULE_COPY = {
   zh: {
+    measure: '测量体积', measuring: '正在测量…', cancelMeasure: '取消测量', measured: '测量结束，未测到的项目保持未知。你的模块选择未变。', measureFailed: '测量未完成，已保留模块选择和已有体积。', totalPartial: '已测合计约 {size}；另有 {count} 项未知',
     title: '移动页面模块', computer: '设置此电脑的移动访问默认项；电脑插件不变。', device: '仅本设备，下次打开生效；电脑插件不变。', open: '管理', help: '加载规则',
     loading: '正在读取模块…', hint: '勾选表示下次打开时加载。启动必需项受保护；依赖冲突会在保存时说明，不会自动取消其他模块。',
     save: '保存选择', reset: '恢复默认', close: '关闭', required: '启动必需', dependencies: '依赖：', noDependencies: '无声明的前端依赖', details: '模块详情', moduleId: '模块 ID',
@@ -20,6 +21,7 @@ export const CLIENT_MODULE_COPY = {
     invalidSelections: '失效的旧选择', invalidHint: '这些旧排除已与当前模块目录不符。移除后仍需保存选择。', invalidMissing: '当前模块目录中不存在。', invalidRequired: '当前已是启动必需项，不能排除。', clearInvalid: '移除旧排除',
   },
   en: {
+    measure: 'Measure sizes', measuring: 'Measuring…', cancelMeasure: 'Cancel measurement', measured: 'Measurement ended; unavailable sizes stay unknown. Your module choices are unchanged.', measureFailed: 'Measurement did not complete. Your choices and known sizes are kept.', totalPartial: 'Measured ≈ {size}; {count} sizes unknown',
     title: 'Mobile page modules', computer: 'Mobile defaults for this computer. Desktop plugins are unchanged.', device: 'For this device’s next open only. Computer plugins are unchanged.', open: 'Manage', help: 'Loading rules',
     loading: 'Reading modules…', hint: 'Checked means load on the next open. Required entries are protected; saving explains dependency conflicts without unchecking other modules.',
     save: 'Save selection', reset: 'Restore defaults', close: 'Close', required: 'Required for boot', dependencies: 'Depends on: ', noDependencies: 'No declared frontend dependencies', details: 'Module details', moduleId: 'Module ID',
@@ -32,6 +34,7 @@ export const CLIENT_MODULE_COPY = {
     invalidSelections: 'Outdated selections', invalidHint: 'These old exclusions no longer match the module catalog. Save your choices after removing them.', invalidMissing: 'Not present in the current module catalog.', invalidRequired: 'Now required for boot and cannot be excluded.', clearInvalid: 'Remove old exclusion',
   },
   it: {
+    measure: 'Misura dimensioni', measuring: 'Misurazione…', cancelMeasure: 'Annulla misurazione', measured: 'Misurazione terminata; le dimensioni non disponibili restano sconosciute. Le scelte non cambiano.', measureFailed: 'Misurazione incompleta. Scelte e dimensioni note conservate.', totalPartial: 'Misurati ≈ {size}; {count} dimensioni sconosciute',
     title: 'Moduli della pagina mobile', computer: 'Predefiniti mobile del computer; i plugin non cambiano.', device: 'Solo alla prossima apertura su questo dispositivo; i plugin del computer non cambiano.', open: 'Gestisci', help: 'Regole di caricamento',
     loading: 'Lettura dei moduli…', hint: 'Selezionato significa caricare alla prossima apertura. I moduli obbligatori sono protetti; il salvataggio mostra i conflitti senza deselezionare altri moduli.',
     save: 'Salva selezione', reset: 'Ripristina predefiniti', close: 'Chiudi', required: 'Obbligatorio', dependencies: 'Dipende da: ', noDependencies: 'Nessuna dipendenza frontend dichiarata', details: 'Dettagli modulo', moduleId: 'ID modulo',
@@ -61,6 +64,16 @@ export class ClientModuleRequestTimeout extends Error {
 }
 
 export const CLIENT_MODULE_REQUEST_TIMEOUT_MS = { read: 15_000, write: 20_000 } as const
+
+/** Describe measured bytes without presenting unmeasured modules as a complete total. */
+export function clientModuleTotalLabel(draft: ClientModuleDraft | undefined, locale: MobileControlLocale): string {
+  const copy = CLIENT_MODULE_COPY[locale]
+  const unknownSizes = draft?.loadedUnknownSizeCount() ?? 0
+  const size = formatClientModuleSize({ id: '', required: false, dependencies: [], gzipBytes: draft?.loadedTransferBytes() ?? 0 }) ?? '0 KB'
+  return unknownSizes > 0
+    ? copy.totalPartial.replace('{size}', size).replace('{count}', String(unknownSizes))
+    : copy.total.replace('{size}', size)
+}
 
 /** Validate catalog response fields before creating interactive controls.
  * @param value - Gateway or computer-admin JSON response.
@@ -113,10 +126,11 @@ export async function requestClientModuleView(scope: 'computer' | 'device', sign
   const cancellation = new Promise<never>((_, reject) => { rejectCancellation = reject })
   const abort = (): void => { controller.abort(); rejectCancellation(new DOMException('Dialog closed', 'AbortError')) }
   signal.addEventListener('abort', abort, { once: true })
+  const mutation = body !== undefined && body.measure !== true
   const timer = setTimeout(() => {
-    rejectCancellation(new ClientModuleRequestTimeout(body !== undefined))
+    rejectCancellation(new ClientModuleRequestTimeout(mutation))
     controller.abort()
-  }, body === undefined ? CLIENT_MODULE_REQUEST_TIMEOUT_MS.read : CLIENT_MODULE_REQUEST_TIMEOUT_MS.write)
+  }, mutation ? CLIENT_MODULE_REQUEST_TIMEOUT_MS.write : CLIENT_MODULE_REQUEST_TIMEOUT_MS.read)
   const operation = async (): Promise<ClientModuleView> => {
     const init: RequestInit = { method: body === undefined ? 'GET' : 'POST', signal: controller.signal, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }
     init.headers = scope === 'computer' ? localAdminRequestHeaders(init, location) : { 'content-type': 'application/json' }
@@ -153,8 +167,8 @@ export const CLIENT_MODULE_STYLES = `
 .dsh-module-dialog[open]{display:flex;flex-direction:column}.dsh-module-dialog::backdrop{background:rgb(15 23 42 / 40%)}
 .dsh-module-header{display:flex;align-items:center;gap:12px;padding:12px 16px;border-bottom:1px solid var(--dsw-alias-border-l2);flex:none}
 .dsh-module-header h2{flex:1;min-width:0;font-size:20px;line-height:1.4;margin:0;overflow-wrap:anywhere}.dsh-module-header .dsh-module-button{flex:none}
-.dsh-module-description{grid-column:1/-1;margin:2px 0 0;color:var(--dsh-color-text-secondary,#6b7280);font-size:12px;line-height:1.4;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
-.dsh-module-description-full{margin:4px 0;color:var(--dsh-color-text-secondary,#6b7280);font-size:12px;line-height:1.45}
+.dsh-module-packageDescription{margin:2px 0 0;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:1.4;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.dsh-module-description-full{margin:4px 0;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:1.45}
 .dsh-module-body{min-height:0;overflow:auto;overscroll-behavior:contain;padding:16px;scroll-padding:12px}.dsh-module-dialog p{margin:0 0 12px;overflow-wrap:anywhere}
 .dsh-module-hint,.dsh-module-source,.dsh-module-choice small,.dsh-module-groupHint,.dsh-module-results{font-size:13px;line-height:20px;color:var(--dsw-alias-label-secondary,var(--dsw-alias-label-tertiary))}
 .dsh-module-tools{display:grid;grid-template-columns:minmax(0,1fr) minmax(100px,.45fr);gap:12px;margin:16px 0 8px}.dsh-module-field{display:flex;flex-direction:column;gap:4px;min-width:0;font-size:13px}
@@ -172,7 +186,7 @@ export const CLIENT_MODULE_STYLES = `
 .dsh-module-footer p{font-size:13px;line-height:20px;margin:0 0 8px}.dsh-module-actions{display:flex;flex-wrap:wrap;gap:8px}.dsh-module-actions .dsh-module-button{flex:1;min-width:0;white-space:normal;line-height:20px;padding:8px 12px}
 .dsh-module-button:disabled{opacity:.5;cursor:default}.dsh-module-save{background:var(--dsw-alias-bg-module-platform);font-weight:600}
 .dsh-module-notice:empty{display:none}.dsh-module-notice{max-height:min(96px,24dvh);overflow:auto;font-size:14px;line-height:22px;overscroll-behavior:contain}.dsh-module-empty{padding:16px 0}
-@media(max-width:420px){.dsh-module-tools{grid-template-columns:minmax(0,1fr)}.dsh-module-body{padding:12px}.dsh-module-header,.dsh-module-footer{padding-left:12px;padding-right:12px}}
+@media(max-width:420px){.dsh-module-tools{grid-template-columns:minmax(0,1fr)}.dsh-module-body{padding:12px}.dsh-module-header,.dsh-module-footer{padding-left:12px;padding-right:12px}.dsh-module-header{flex-wrap:wrap;gap:8px}.dsh-module-header h2{flex:1 1 100%}.dsh-module-header .dsh-module-button{flex:1 1 0;min-width:0;white-space:normal;overflow-wrap:anywhere;line-height:1.4;padding:8px 12px}}
 .dsh-module-error{color:var(--dsw-alias-state-error-primary,#b42318)}
 `
 
@@ -205,11 +219,12 @@ export function openClientModuleSettings(scope: 'computer' | 'device', locale: M
   const paragraph = (text: string, className = ''): HTMLParagraphElement => { const result = document.createElement('p'); result.textContent = text; result.className = className; return result }
   const header = document.createElement('div'); header.className = 'dsh-module-header'
   const title = document.createElement('h2'); title.textContent = copy.title
-  const close = button(copy.close); header.append(title, close)
+  const close = button(copy.close); const measure = button(copy.measure); measure.dataset.clientModuleMeasure = 'true'; header.append(title, measure, close)
   const body = document.createElement('div'); body.className = 'dsh-module-body'
   const intro = paragraph(copy[scope]); const hint = paragraph(copy.hint, 'dsh-module-hint')
   const help = document.createElement('details'); help.className = 'dsh-module-help'
   const helpTitle = document.createElement('summary'); helpTitle.textContent = copy.help; help.append(helpTitle, hint)
+  help.append(paragraph(copy.sizeHint, 'dsh-module-hint'))
   const source = paragraph('', 'dsh-module-source')
   const status = paragraph('', 'dsh-module-notice'); status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite'); status.tabIndex = -1
   const tools = document.createElement('div'); tools.className = 'dsh-module-tools'
@@ -225,10 +240,11 @@ export function openClientModuleSettings(scope: 'computer' | 'device', locale: M
   const changes = paragraph(copy.unchanged); changes.setAttribute('role', 'status'); changes.setAttribute('aria-live', 'polite')
   const actions = document.createElement('div'); actions.className = 'dsh-module-actions'
   const save = button(copy.save); save.classList.add('dsh-module-save'); const minimal = button(copy.minimal); const reset = button(copy.reset); const reread = button(copy.retry)
-  actions.append(save, minimal, reset, reread); footer.append(changes, status, actions)
-  body.append(intro, source, tools, results, list, help); dialog.append(header, body, footer)
+  actions.append(save, reset, reread); footer.append(changes, status, actions)
+  body.append(intro, source, tools, results, minimal, list, help); dialog.append(header, body, footer)
   let disposed = false
-  let busy: 'read' | 'write' | undefined
+  let busy: 'read' | 'write' | 'measure' | undefined
+  let measurementController: AbortController | undefined
   let generation = 0
   let draft: ClientModuleDraft | undefined
   let unconfirmedWrite = false
@@ -239,13 +255,11 @@ export function openClientModuleSettings(scope: 'computer' | 'device', locale: M
   const updateControls = (): void => {
     const changed = draft?.changeCount ?? 0
     save.disabled = busy !== undefined || changed === 0; reset.disabled = busy !== undefined || draft === undefined; minimal.disabled = busy !== undefined || draft === undefined
+    measure.disabled = (busy !== undefined && busy !== 'measure') || draft === undefined
+    measure.textContent = busy === 'measure' ? copy.cancelMeasure : copy.measure
     reread.disabled = busy !== undefined; search.disabled = busy !== undefined || draft === undefined; filter.disabled = search.disabled
     save.textContent = busy === 'write' ? copy.saving : copy.save
-    const loadedBytes = draft?.loadedTransferBytes() ?? 0
-    const unknownSizes = draft !== undefined && draft.entries.some(entry => draft!.isLoaded(entry.id) && entry.gzipBytes === undefined && entry.bytes === undefined)
-    const total = loadedBytes === 0 && unknownSizes
-      ? copy.totalUnknown
-      : copy.total.replace('{size}', formatClientModuleSize({ id: '', required: false, dependencies: [], gzipBytes: loadedBytes }) ?? '0 KB')
+    const total = clientModuleTotalLabel(draft, locale)
     changes.textContent = `${changed === 0 ? copy.unchanged : copy.changes.replace('{count}', String(changed))} · ${total} · ${copy.nextOpen}`
     list.setAttribute('aria-busy', String(busy !== undefined))
     for (const input of choices.values()) input.disabled = busy !== undefined || input.dataset.required === 'true'
@@ -282,7 +296,7 @@ export function openClientModuleSettings(scope: 'computer' | 'device', locale: M
       list.append(section)
     }
     for (const group of ['extensions', 'advanced', 'required'] as const) {
-      const entries = visible.filter(entry => clientModuleGroup(entry) === group)
+      const entries = sortClientModulesBySize(visible.filter(entry => clientModuleGroup(entry) === group))
       if (entries.length === 0) continue
       const section = document.createElement(group === 'extensions' ? 'section' : 'details'); section.className = 'dsh-module-group'; section.dataset.group = group
       section.dataset.clientModuleGroup = group === 'advanced' ? 'system' : group
@@ -304,7 +318,7 @@ export function openClientModuleSettings(scope: 'computer' | 'device', locale: M
         if (size !== undefined) sizeLabel.dataset.clientModuleSize = 'true'
         name.append(shortName, selected, sizeLabel); label.append(input, name); row.append(label)
         if (entry.description !== undefined) {
-          const summary = paragraph(entry.description, 'dsh-module-description')
+          const summary = paragraph(entry.description, 'dsh-module-packageDescription')
           summary.dataset.clientModuleDescription = 'true'
           row.append(summary)
         }
@@ -340,18 +354,25 @@ export function openClientModuleSettings(scope: 'computer' | 'device', locale: M
   }
   const runRequest = (payload?: Record<string, unknown>): void => {
     if (disposed || busy !== undefined || (payload !== undefined && draft === undefined)) return
-    const ownGeneration = ++generation; busy = payload === undefined ? 'read' : 'write'
-    if (payload !== undefined) unconfirmedWrite = true
-    status.classList.remove('dsh-module-error'); status.textContent = payload === undefined ? copy.loading : copy.saving; updateControls()
-    void requestClientModuleView(scope, controller.signal, payload).then(view => {
+    const measuring = payload?.measure === true
+    const mutation = payload !== undefined && !measuring
+    const ownGeneration = ++generation; busy = measuring ? 'measure' : mutation ? 'write' : 'read'
+    if (mutation) unconfirmedWrite = true
+    if (measuring) measurementController = new AbortController()
+    status.classList.remove('dsh-module-error'); status.textContent = measuring ? copy.measuring : mutation ? copy.saving : copy.loading; updateControls()
+    void requestClientModuleView(scope, measuring ? measurementController!.signal : controller.signal, payload).then(view => {
       if (disposed || ownGeneration !== generation) return
-      unconfirmedWrite = false; render(view); status.textContent = payload === undefined ? '' : copy.saved
+      if (measuring && draft !== undefined) { draft.updateMeasurements(view.entries); renderList() }
+      else { unconfirmedWrite = false; render(view) }
+      status.textContent = measuring ? copy.measured : mutation ? copy.saved : ''
     }, error => {
       if (disposed || ownGeneration !== generation) return
+      if (measuring) { status.textContent = copy.measureFailed; return }
       if (error instanceof ClientModuleUiConflict) unconfirmedWrite = false
-      failed(error, payload !== undefined)
+      failed(error, mutation)
     }).finally(() => {
       if (disposed || ownGeneration !== generation) return
+      measurementController = undefined
       busy = undefined; updateControls()
     })
   }
@@ -363,10 +384,14 @@ export function openClientModuleSettings(scope: 'computer' | 'device', locale: M
     if (draft.applyMinimalSelection()) { renderList(); search.focus({ preventScroll: true }) }
     updateControls()
   })
+  measure.addEventListener('click', () => {
+    if (busy === 'measure') measurementController?.abort()
+    else if (busy === undefined && draft !== undefined) runRequest({ measure: true })
+  })
   reread.addEventListener('click', () => { if (busy === undefined && ((draft?.changeCount ?? 0) === 0 || window.confirm(copy.reloadConfirm))) runRequest() })
   const dispose = (): void => {
     if (disposed) return
-    disposed = true; ++generation; controller.abort(); openDialogs.delete(openDialog); window.removeEventListener('dsh-mobile:native-back', onBack, true); window.removeEventListener('keydown', onEscape, true); if (dialog.open) dialog.close(); dialog.remove()
+    disposed = true; ++generation; controller.abort(); measurementController?.abort(); openDialogs.delete(openDialog); window.removeEventListener('dsh-mobile:native-back', onBack, true); window.removeEventListener('keydown', onEscape, true); if (dialog.open) dialog.close(); dialog.remove()
     if (trigger?.isConnected) trigger.focus({ preventScroll: true })
   }
   const requestClose = (): void => {

@@ -747,8 +747,6 @@ describe('HTTP gateway', () => {
 
     const first = await request(instance.address().port, '/mobile-access/custom.css', { headers })
     expect(first.status).toBe(200)
-    // An owned asset with a strong validator must be revalidatable; `no-store`
-    // would forbid the conditional request entirely and re-send the body.
     expect(first.headers['cache-control']).toBe('private, no-cache')
     expect(first.headers.etag).toMatch(/^"[a-f0-9]{64}"$/u)
     expect(first.headers['last-modified']).toBeDefined()
@@ -786,6 +784,13 @@ describe('HTTP gateway', () => {
     expect(script.headers['content-type']).toBe('text/javascript; charset=utf-8')
     expect(script.headers['cache-control']).toBe('private, no-cache')
     expect(script.body).toContain('dshMobile.register')
+    await writeFile(customScriptFile, 'window.dshMobile.register(() => "updated")\n', 'utf8')
+    const updatedScript = await request(instance.address().port, '/mobile-access/custom.js', {
+      headers: { ...headers, 'if-none-match': String(script.headers.etag) },
+    })
+    expect(updatedScript.status).toBe(200)
+    expect(updatedScript.headers.etag).not.toBe(script.headers.etag)
+    expect(updatedScript.body).toContain('"updated"')
 
     const layout = await request(instance.address().port, '/mobile-access/mobile-layout.js', { headers })
     expect(layout.status).toBe(200)
@@ -813,8 +818,11 @@ describe('HTTP gateway', () => {
     expect(updatedCompatibility.body).toContain('__compatibilityProbe = "updated"')
 
     await writeFile(customCssFile, ':root { --preview: second; }\n', 'utf8')
-    const second = await request(instance.address().port, '/mobile-access/custom.css', { headers })
+    const second = await request(instance.address().port, '/mobile-access/custom.css', {
+      headers: { ...headers, 'if-none-match': String(first.headers.etag) },
+    })
     expect(second.status).toBe(200)
+    expect(second.headers.etag).not.toBe(first.headers.etag)
     expect(second.body).toContain('--preview: second')
     expect(inner.observations).toHaveLength(0)
     expect(await instance.access.revokeDevice(paired.deviceId)).toBe(true)
@@ -822,6 +830,86 @@ describe('HTTP gateway', () => {
       headers: { ...headers, 'if-none-match': '*' },
     })
     expect(revoked.status).toBe(401)
+  })
+
+  it.each([
+    ['/mobile-access/custom.css', 'customCssFile'],
+    ['/mobile-access/custom.js', 'customScriptFile'],
+    ['/mobile-access/mobile-layout.js', 'mobileLayoutFile'],
+    ['/mobile-access/compat.js', 'mobileCompatibilityFile'],
+  ])('checks current authorization before GET/HEAD revalidation of %s', async (path, setting) => {
+    const inner = await upstream()
+    const directory = await mkdtemp(join(tmpdir(), 'dsh-mobile-owned-revalidate-'))
+    cleanups.push(() => rm(directory, { recursive: true, force: true }))
+    const file = join(directory, 'asset.txt')
+    await writeFile(file, 'owned content\n', 'utf8')
+    const instance = await gateway(inner.port, { [setting]: file })
+    const paired = await pair(instance)
+    const browser = browserHeaders(instance)
+    const headers = { ...browser, cookie: `${SESSION_COOKIE}=${paired.session}` }
+    const first = await request(instance.address().port, path, { headers })
+    expect(first.status).toBe(200)
+    expect(first.headers.etag).toMatch(/^"[a-f0-9]{64}"$/u)
+    const condition = `"unrelated", W/${String(first.headers.etag)}`
+
+    for (const method of ['GET', 'HEAD']) {
+      const matching = await request(instance.address().port, path, {
+        method, headers: { ...headers, 'if-none-match': condition },
+      })
+      expect(matching.status).toBe(304)
+      expect(matching.rawBody.byteLength).toBe(0)
+      expect(matching.headers['cache-control']).toBe('private, no-cache')
+      expect(matching.headers.etag).toBe(first.headers.etag)
+      const anonymous = await request(instance.address().port, path, {
+        method, headers: { ...browser, 'if-none-match': condition },
+      })
+      expect(anonymous.status).toBe(401)
+      expect(anonymous.headers['cache-control']).toBe('no-store')
+      expect(anonymous.headers.etag).toBeUndefined()
+    }
+
+    expect(await instance.access.revokeDevice(paired.deviceId)).toBe(true)
+    for (const method of ['GET', 'HEAD']) {
+      const revoked = await request(instance.address().port, path, {
+        method, headers: { ...headers, 'if-none-match': condition },
+      })
+      expect(revoked.status).toBe(401)
+      expect(revoked.headers['cache-control']).toBe('no-store')
+      expect(revoked.headers.etag).toBeUndefined()
+    }
+    expect(inner.observations).toHaveLength(0)
+  })
+
+  it('keeps Session-bound start documents non-storable even for conditional requests', async () => {
+    const inner = await upstream('remote-settings')
+    const instance = await gateway(inner.port)
+    const paired = await pair(instance)
+    const headers = {
+      ...browserHeaders(instance), accept: 'text/html',
+      cookie: `${SESSION_COOKIE}=${paired.session}`,
+    }
+    const first = await request(instance.address().port, '/', { headers })
+    expect(first.status).toBe(200)
+    expect(first.headers['cache-control']).toBe('no-store')
+    expect(first.headers.etag).toBeUndefined()
+    const firstView = /headers\.set\("x-dsh-mobile-view","([a-f0-9]{32})"\)/u.exec(first.body)?.[1]
+    expect(firstView).toMatch(/^[a-f0-9]{32}$/u)
+
+    const conditional = await request(instance.address().port, '/', {
+      headers: { ...headers, 'if-none-match': '*', 'if-modified-since': 'Wed, 14 Oct 2026 00:00:00 GMT' },
+    })
+    expect(conditional.status).toBe(200)
+    expect(conditional.headers['cache-control']).toBe('no-store')
+    expect(conditional.headers.etag).toBeUndefined()
+    const nextView = /headers\.set\("x-dsh-mobile-view","([a-f0-9]{32})"\)/u.exec(conditional.body)?.[1]
+    expect(nextView).toMatch(/^[a-f0-9]{32}$/u)
+    expect(nextView).not.toBe(firstView)
+    const pageRequests = inner.observations.filter(entry => entry.url === '/')
+    expect(pageRequests).toHaveLength(2)
+    for (const observed of pageRequests) {
+      expect(observed.headers['if-none-match']).toBeUndefined()
+      expect(observed.headers['if-modified-since']).toBeUndefined()
+    }
   })
 
   it('protects compatibility assets and refuses missing, oversized, or non-GET requests', async () => {
@@ -1267,17 +1355,30 @@ describe('HTTP gateway', () => {
     }
   })
 
-  it('refuses a manifest that would evict one of its own merged boot plans', async () => {
+  it('keeps its merged plans available while overflow modules use individual resources', async () => {
     const inner = await upstream('batched', false, Buffer.alloc(0), [], undefined, undefined, 30)
-    const instance = await gateway(inner.port)
-    const measured = instance as unknown as { upstreamBundleSize(source: string): Promise<number> }
-    measured.upstreamBundleSize = async () => 5 * 1024 * 1024
+    const directory = await mkdtemp(join(tmpdir(), 'dsh-mobile-boot-budget-availability-'))
+    cleanups.push(() => rm(directory, { recursive: true, force: true }))
+    const mobileLayoutFile = join(directory, 'mobile-layout.js')
+    await writeFile(mobileLayoutFile, 'globalThis.__availableMobileLayout = true;\n')
+    const instance = await gateway(inner.port, { mobileLayoutFile })
+    Object.defineProperty(instance, 'upstreamBundleSize', { value: async () => 5 * 1024 * 1024 })
     const paired = await pair(instance)
+    const headers = { ...browserHeaders(instance), accept: 'text/html', cookie: `${SESSION_COOKIE}=${paired.session}` }
     const page = await request(instance.address().port, '/', {
-      headers: { ...browserHeaders(instance), accept: 'text/html', cookie: `${SESSION_COOKIE}=${paired.session}` },
+      headers,
     })
-    expect(page.status).toBe(502)
-    expect(page.body).not.toContain('window.__DSH_BOOT__')
+    expect(page.status).toBe(200)
+    const assignment = /globalThis\["__DSH_BOOT__"\]\s*=\s*(\{.*\});/u.exec(page.body)
+    expect(assignment?.[1]).toBeDefined()
+    const graph = JSON.parse(assignment![1]!) as {
+      entries: Array<{ id: string }>; batches: Array<{ url: string; entries: string[] }>
+    }
+    expect(graph.batches.flatMap(batch => batch.entries).sort()).toEqual(graph.entries.map(entry => entry.id).sort())
+    const merged = graph.batches.filter(batch => batch.url.startsWith('/mobile-access/mobile-boot/'))
+    expect(merged).toHaveLength(16)
+    expect(graph.batches.some(batch => batch.url.startsWith('/plugins/') && batch.entries.length === 1)).toBe(true)
+    for (const batch of merged) expect((await request(instance.address().port, batch.url, { headers })).status).toBe(200)
   })
 
   it('keeps the mobile boot resource and ETag stable when upstream batch entries reorder', async () => {
@@ -3510,7 +3611,7 @@ describe('compressible proxied text and slow API diagnostics', () => {
     await vi.waitFor(() => { expect(samples).toHaveLength(1) }, { timeout: 2_000 })
 
     expect(samples[0]).toMatchObject({
-      kind: 'api', method: 'GET', path: '/api/slow-latency', status: 200,
+      kind: 'api', method: 'GET', path: '/api/other', status: 200,
     })
     expect(samples[0]!.durationMs).toBeGreaterThanOrEqual(3_000)
     expect(JSON.stringify(samples)).not.toContain('secret-session')
@@ -3558,6 +3659,9 @@ describe('mobile document compression', () => {
     const plain = await request(instance.address().port, '/', { headers })
     expect(plain.status).toBe(200)
     expect(plain.headers['content-encoding']).toBeUndefined()
+    expect(plain.headers.vary).toBe('Accept-Encoding')
+    expect(plain.headers['cache-control']).toBe('no-store')
+    expect(plain.headers.etag).toBeUndefined()
 
     const compressed = await request(instance.address().port, '/', {
       headers: { ...headers, 'accept-encoding': 'gzip' },
@@ -3565,7 +3669,17 @@ describe('mobile document compression', () => {
     expect(compressed.status).toBe(200)
     expect(compressed.headers['content-encoding']).toBe('gzip')
     expect(compressed.headers.vary).toBe('Accept-Encoding')
+    expect(compressed.headers['cache-control']).toBe('no-store')
+    expect(compressed.headers.etag).toBeUndefined()
     expect(gunzipSync(compressed.rawBody)).toEqual(plain.rawBody)
     expect(compressed.rawBody.byteLength).toBeLessThan(plain.rawBody.byteLength)
+
+    const conditional = await request(instance.address().port, '/', {
+      headers: { ...headers, 'accept-encoding': 'gzip', 'if-none-match': '*' },
+    })
+    expect(conditional.status).toBe(200)
+    expect(conditional.headers['cache-control']).toBe('no-store')
+    expect(conditional.headers.etag).toBeUndefined()
+    expect(gunzipSync(conditional.rawBody)).toEqual(plain.rawBody)
   })
 })

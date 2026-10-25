@@ -3,7 +3,7 @@
  *
  * A sample never carries a query string, request body, header or credential.
  * The path collapses to its first `/api/` segment, so the recorded key set is
- * bounded by route names rather than by session or turn identifiers, and the
+ * limited to fixed route categories rather than session or turn identifiers, and the
  * same report stays comparable across devices and releases.
  */
 
@@ -14,7 +14,10 @@ const BOUNDED_METHODS = new Set(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'
 export const API_LATENCY_MIN_MS = 3_000
 
 const LOG_INTERVAL_MS = 30_000
-const ROUTE_SEGMENT = /^[a-z][a-z0-9-]{0,31}$/iu
+const ROUTE_SEGMENTS: readonly string[] = Object.freeze([
+  'session', 'sessions', 'workspace', 'workspaces', 'settings', 'llm', 'remote',
+  'mobile-access', 'plugins', 'plugin-manager', 'interactions', 'credentials', 'auth',
+])
 
 /** One sampled API wait; `durationMs` spans the client's request to response close. */
 export type ApiLatencyEntry = {
@@ -28,14 +31,15 @@ export type ApiLatencyEntry = {
 /**
  * Reduce a request target to a bounded diagnostic route.
  * @param url - The raw request target; its query string is ignored entirely.
- * @returns `/api/<segment>` for a recognized segment, `/api/other` for an
+ * @returns `/api/<category>` for a fixed category, `/api/other` for an
  *   unrecognized one, or `undefined` when the target is not an API request.
  */
 export function boundedApiPath(url: string | undefined): string | undefined {
   const pathname = url?.split('?', 1)[0] ?? ''
   if (!pathname.startsWith('/api/')) return undefined
   const segment = pathname.slice('/api/'.length).split('/', 1)[0] ?? ''
-  return ROUTE_SEGMENT.test(segment) ? `/api/${segment.toLowerCase()}` : '/api/other'
+  const category = segment.toLowerCase()
+  return ROUTE_SEGMENTS.includes(category) ? `/api/${category}` : '/api/other'
 }
 
 /** A raw measurement before the recorder applies its threshold and sampling. */

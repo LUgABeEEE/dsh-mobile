@@ -62,11 +62,24 @@ export function clientModuleMatches(entry: ClientModuleRow, excluded: ReadonlySe
  */
 export function formatClientModuleSize(entry: ClientModuleRow): string | undefined {
   const value = entry.gzipBytes ?? entry.bytes
-  if (value === undefined || !Number.isFinite(value) || value <= 0) return undefined
+  if (value === undefined || !Number.isFinite(value) || value < 0) return undefined
+  if (value === 0) return '0 KB'
   const kilobytes = value / 1024
   return kilobytes >= 1024
     ? `${(kilobytes / 1024).toFixed(1)} MB`
     : `${String(Math.max(1, Math.round(kilobytes)))} KB`
+}
+
+/** Sort measured modules largest first, keeping unknown sizes last and ties stable by ID. */
+export function sortClientModulesBySize(entries: readonly ClientModuleRow[]): readonly ClientModuleRow[] {
+  return [...entries].sort((left, right) => {
+    const leftBytes = left.gzipBytes ?? left.bytes
+    const rightBytes = right.gzipBytes ?? right.bytes
+    if (leftBytes === undefined && rightBytes !== undefined) return 1
+    if (rightBytes === undefined && leftBytes !== undefined) return -1
+    const delta = (rightBytes ?? 0) - (leftBytes ?? 0)
+    return delta || (left.id < right.id ? -1 : left.id > right.id ? 1 : 0)
+  })
 }
 
 /**
@@ -99,12 +112,17 @@ export class ClientModuleDraft {
   private readonly initial: Set<string>
   private readonly excluded: Set<string>
   private readonly entriesById: Map<string, ClientModuleRow>
+  private catalogEntries: readonly ClientModuleRow[]
 
-  constructor(readonly entries: readonly ClientModuleRow[], excludedIds: readonly string[]) {
+  constructor(entries: readonly ClientModuleRow[], excludedIds: readonly string[]) {
+    this.catalogEntries = entries
     this.initial = new Set(excludedIds)
     this.excluded = new Set(excludedIds)
     this.entriesById = new Map(entries.map(entry => [entry.id, entry]))
   }
+
+  /** @returns The original catalog with its most recently measured metadata. */
+  get entries(): readonly ClientModuleRow[] { return this.catalogEntries }
 
   /** @returns Number of changed loading choices, including hidden filtered rows. */
   get changeCount(): number {
@@ -160,6 +178,28 @@ export class ClientModuleDraft {
     return total
   }
 
+  /** @returns Number of selected modules whose transfer size is still unknown. */
+  loadedUnknownSizeCount(): number {
+    return this.entries.filter(entry => this.isLoaded(entry.id) && entry.gzipBytes === undefined && entry.bytes === undefined).length
+  }
+
+  /** Refresh metadata without replacing saved or unsaved loading choices. */
+  updateMeasurements(entries: readonly ClientModuleRow[]): void {
+    const measured = new Map(entries.map(entry => [entry.id, entry]))
+    for (const entry of this.entries) {
+      const next = measured.get(entry.id)
+      if (next === undefined) continue
+      const refreshed = { ...entry }
+      delete refreshed.bytes; delete refreshed.gzipBytes; delete refreshed.description
+      this.entriesById.set(entry.id, { ...refreshed,
+        ...(next.bytes === undefined ? {} : { bytes: next.bytes }),
+        ...(next.gzipBytes === undefined ? {} : { gzipBytes: next.gzipBytes }),
+        ...(next.description === undefined ? {} : { description: next.description }),
+      })
+    }
+    this.catalogEntries = this.entries.map(entry => this.entriesById.get(entry.id)!)
+  }
+
   /** Exclude every optional entry except dependencies a required entry still needs.
    * @returns Whether this draft changed; saving remains a separate action.
    */
@@ -182,7 +222,7 @@ export class ClientModuleDraft {
    * @returns Catalog entries in their original stable order.
    */
   matchingEntries(query: string, filter: ClientModuleFilter): readonly ClientModuleRow[] {
-    return this.entries.filter(entry => clientModuleMatches(entry, this.excluded, query, filter))
+    return this.entries.map(entry => this.entriesById.get(entry.id)!).filter(entry => clientModuleMatches(entry, this.excluded, query, filter))
   }
 
   /** Find invalid old exclusions by name or ID, independently from the protected catalog row.

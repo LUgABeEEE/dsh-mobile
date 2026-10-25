@@ -951,8 +951,11 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
             }
             if (request.method !== 'POST') throw new HttpError(405, 'method_not_allowed')
             const body = await readJsonObject(request, template.maxBodyBytes)
-            if (Object.keys(body).length !== 1 || Object.keys(body).some(key => key !== 'reset' && key !== 'excludedClientModules')) throw new HttpError(400, 'bad_request')
-            const view = body.reset === true
+            if (Object.keys(body).length !== 1 || Object.keys(body).some(key => key !== 'reset' && key !== 'excludedClientModules' && key !== 'measure')
+              || ('measure' in body && body.measure !== true)) throw new HttpError(400, 'bad_request')
+            const view = body.measure === true
+              ? await gateway.measureClientModules(undefined, operation.signal)
+              : body.reset === true
               ? await gateway.resetClientModules(undefined, operation.signal)
               : await gateway.configureClientModules(body.excludedClientModules, undefined, operation.signal)
             sendJson(response, 200, view, false)

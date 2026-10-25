@@ -1327,8 +1327,10 @@ describe('mobile boot batch chunking', () => {
     const split = splitMobileBootBatch(plan.planEntries!, sizes, new Set())
     const merged = split.rows.filter(row => row.url.startsWith('/mobile-access/mobile-boot/'))
     expect(merged.length).toBeGreaterThan(1)
-    // Two 2 MB entries per batch plus separators stay under the 3 MB budget.
-    for (const row of merged) expect(row.entries.length).toBeLessThanOrEqual(3)
+    for (const row of merged) {
+      const bytes = row.entries.reduce((total, id) => total + (sizes.get(`/plugins/${id}.js`) ?? 0) + 3, 0)
+      expect(bytes).toBeLessThanOrEqual(3 * 1024 * 1024)
+    }
     expect(split.rows.flatMap(row => row.entries).sort()).toEqual([...ids, layoutId].sort())
   })
 

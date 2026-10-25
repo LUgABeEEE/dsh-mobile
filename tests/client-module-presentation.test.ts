@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ClientModuleDraft, clientModuleDisplayName, clientModuleGroup, clientModuleMatches, clientModuleMinimalExclusion, formatClientModuleSize, type ClientModuleRow } from '../src/client-module-presentation.js'
+import { ClientModuleDraft, clientModuleDisplayName, clientModuleGroup, clientModuleMatches, clientModuleMinimalExclusion, formatClientModuleSize, sortClientModulesBySize, type ClientModuleRow } from '../src/client-module-presentation.js'
 
 const rows: readonly ClientModuleRow[] = [
   { id: 'skin-client', required: false, dependencies: [] },
@@ -143,7 +143,7 @@ describe('module transfer sizes and the minimal selection', () => {
     expect(formatClientModuleSize({ id: 'a', required: false, dependencies: [], bytes: 512 })).toBe('1 KB')
     expect(formatClientModuleSize({ id: 'a', required: false, dependencies: [], gzipBytes: 2_478_000 })).toBe('2.4 MB')
     expect(formatClientModuleSize({ id: 'a', required: false, dependencies: [] })).toBeUndefined()
-    expect(formatClientModuleSize({ id: 'a', required: false, dependencies: [], gzipBytes: 0 })).toBeUndefined()
+    expect(formatClientModuleSize({ id: 'a', required: false, dependencies: [], gzipBytes: 0 })).toBe('0 KB')
   })
 
   it('keeps dependencies of required entries when minimizing', () => {
@@ -166,5 +166,27 @@ describe('module transfer sizes and the minimal selection', () => {
     expect(new Set(draft.excludedIds)).toEqual(new Set(['heavy-optional', 'small-optional', 'unmeasured-optional', 'dependent-optional']))
     expect(draft.changeCount).toBe(4)
     expect(draft.applyMinimalSelection()).toBe(false)
+  })
+
+  it('sorts measured sizes descending, unknowns last and equal sizes by exact id', () => {
+    expect(sortClientModulesBySize([
+      { id: 'unknown', required: false, dependencies: [] },
+      { id: 'b', required: false, dependencies: [], gzipBytes: 10 },
+      { id: 'large', required: false, dependencies: [], gzipBytes: 100 },
+      { id: 'a', required: false, dependencies: [], gzipBytes: 10 },
+      { id: 'zero', required: false, dependencies: [], gzipBytes: 0 },
+    ]).map(entry => entry.id)).toEqual(['large', 'a', 'b', 'zero', 'unknown'])
+  })
+
+  it('refreshes measurements without losing unsaved choices, original counts or stale exclusions', () => {
+    const draft = new ClientModuleDraft(sized, ['missing-old-module'])
+    draft.setLoaded('heavy-optional', false)
+    const changed = draft.changeCount
+    draft.updateMeasurements(sized.map(entry => entry.id === 'small-optional' ? { ...entry, gzipBytes: 1024 } : entry))
+    expect(draft.loadedTransferBytes()).toBe(1024)
+    expect(draft.loadedUnknownSizeCount()).toBe(4)
+    expect(draft.changeCount).toBe(changed)
+    expect(draft.excludedIds).toEqual(['missing-old-module', 'heavy-optional'])
+    expect(draft.matchingEntries('', 'all').find(entry => entry.id === 'small-optional')?.gzipBytes).toBe(1024)
   })
 })

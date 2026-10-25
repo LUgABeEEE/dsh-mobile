@@ -6,6 +6,10 @@ GitHub's Contributors graph counts commits on the default branch; issue reports 
 
 ## 待发布贡献与反馈 / Unreleased contributions and reports
 
+感谢 [@LUgABeEEE](https://github.com/LUgABeEEE) 提供 [#259](https://github.com/saya-ch/dsh-mobile/pull/259)、[#260](https://github.com/saya-ch/dsh-mobile/pull/260)、[#261](https://github.com/saya-ch/dsh-mobile/pull/261)、[#262](https://github.com/saya-ch/dsh-mobile/pull/262) 的慢链路压缩、启动分批、模块体积与最小预设、静态资源校验方案。原始提交已在本地保留，并追加兼容性、生命周期和交互修正。另保留 [#263](https://github.com/saya-ch/dsh-mobile/pull/263) 的 API 短缓存提案与贡献历史，但本版不启用泛 API 响应缓存；这些整合尚未发布。
+
+Thanks [@LUgABeEEE](https://github.com/LUgABeEEE) for the slow-link compression, boot batching, module-size/minimal-preset and static-resource revalidation work in [#259](https://github.com/saya-ch/dsh-mobile/pull/259), [#260](https://github.com/saya-ch/dsh-mobile/pull/260), [#261](https://github.com/saya-ch/dsh-mobile/pull/261) and [#262](https://github.com/saya-ch/dsh-mobile/pull/262). Original commits are retained locally alongside compatibility, lifecycle and interaction corrections. The proposal and original history of [#263](https://github.com/saya-ch/dsh-mobile/pull/263) are also retained, but generic API-response caching is not enabled in this release. This integration is not published.
+
 感谢 [@ChaoPhone](https://github.com/ChaoPhone) 在 [#257](https://github.com/saya-ch/dsh-mobile/issues/257) 提供官方 Desktop 目录选择器重复注册的分析，以及 [@bvbhu](https://github.com/bvbhu) 在 [#258](https://github.com/saya-ch/dsh-mobile/issues/258) 提供停用目录选择界面后工作区入口消失的复现，帮助明确桌面原生选择器与移动页面浏览器应分别管理。本轮修复仍为本地待发布候选。
 
 Thanks [@ChaoPhone](https://github.com/ChaoPhone) for analyzing duplicate directory-picker registration in official Desktop in [#257](https://github.com/saya-ch/dsh-mobile/issues/257), and [@bvbhu](https://github.com/bvbhu) for reproducing missing workspace actions after disabling the picker surface in [#258](https://github.com/saya-ch/dsh-mobile/issues/258). These reports helped separate desktop-native selection from mobile in-page browsing. The related fix remains a local, unreleased candidate.
