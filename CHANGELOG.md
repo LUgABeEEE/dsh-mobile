@@ -2,6 +2,10 @@
 
 Notable changes are recorded here. GitHub Releases provide the downloadable packages and generated commit notes.
 
+## Unreleased
+
+- Offer the device-scoped recovery page to every saved-selection source, not only device and computer ones. A stale entry in the computer default (a profile-level `excludedClientModules` list) used to answer the mobile document with a `409` JSON body, which Android replaces with a generic HTTP-error dialog while the page hosting the module manager stays unreachable, so an upgrade locked the paired App out with no way left to correct the selection. Every source now gets the same owned `200` recovery document, whose action writes a device-level selection and leaves computer defaults, other devices and installed plugins untouched. Thanks @LUgABeEEE for [#276](https://github.com/saya-ch/dsh-mobile/issues/276).
+
 ## 0.6.17 - 2026-10-25
 
 - Keep DSH's own directory-picker composition instead of registering a second Host service and Client surface. Official Desktop retains its native chooser, **Add workspace** action and `Ctrl+O` shortcut independently of Mobile's in-page picker. Thanks @ChaoPhone for [#257](https://github.com/saya-ch/dsh-mobile/issues/257) and @bvbhu for [#258](https://github.com/saya-ch/dsh-mobile/issues/258).

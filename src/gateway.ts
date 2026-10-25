@@ -2855,17 +2855,20 @@ export class MobileAccessGateway {
               this.lastModuleExclusionError = detail
               process.emitWarning(detail, { code: 'DSH_MOBILE_MODULE_EXCLUSION_INVALID' })
             }
-            if (preference.source === 'device' || preference.source === 'computer') {
-              operation.signal.throwIfAborted()
-              const locale = resolveAuthPageLocale(headerValue(request.headers, 'accept-language'))
-              const recovery = Buffer.from(renderClientModuleRecoveryPage(locale))
-              // A valid owned document uses 200 so Android does not replace its recovery action with a generic HTTP-error dialog.
-              setSecurityHeaders(response, this.tlsEnabled)
-              response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Content-Length': recovery.byteLength })
-              response.end(recovery)
-              return
-            }
-            sendJson(response, 409, { error: 'excluded_client_modules_invalid', detail }, this.tlsEnabled)
+            // Every source gets the same owned recovery document, including the
+            // computer default (`source: 'plugin'`). A JSON error here is swapped
+            // for a generic HTTP dialog by Android while the page that hosts the
+            // module manager stays unreachable, so a stale profile-level exclusion
+            // locked a paired App out with no way left to correct it. The recovery
+            // action writes a device-level selection and leaves computer defaults,
+            // other devices and installed plugins untouched, so it resolves any source.
+            operation.signal.throwIfAborted()
+            const locale = resolveAuthPageLocale(headerValue(request.headers, 'accept-language'))
+            const recovery = Buffer.from(renderClientModuleRecoveryPage(locale))
+            // A valid owned document uses 200 so Android does not replace its recovery action with a generic HTTP-error dialog.
+            setSecurityHeaders(response, this.tlsEnabled)
+            response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Content-Length': recovery.byteLength })
+            response.end(recovery)
             return
           }
           throw new HttpError(502, 'upstream_unavailable')

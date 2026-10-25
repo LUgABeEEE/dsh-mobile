@@ -348,6 +348,27 @@ describe('authenticated client module selection', () => {
     expect(reopened.body).not.toContain('id="load-all-modules"')
   })
 
+  it('offers the owned recovery document when a stale plugin-level default cannot boot the graph', async () => {
+    const setup = await fixture(['feature'])
+    expect(await setup.view(setup.first)).toMatchObject({ source: 'plugin', excludedClientModules: ['feature'] })
+    const next = setup.graph()
+    next.entries = next.entries.filter(entry => entry.id !== 'feature')
+    for (const batch of next.batches ?? []) batch.entries = batch.entries.filter(id => id !== 'feature')
+    setup.replaceGraph(next)
+    const recovery = await setup.request('/', setup.first, undefined, { accept: 'text/html' })
+    expect(recovery.status).toBe(200)
+    expect(recovery.headers['content-type']).toContain('text/html')
+    expect(recovery.headers['cache-control']).toBe('no-store')
+    expect(recovery.body).toContain('id="load-all-modules"')
+    expect(recovery.body).not.toContain('__DSH_BOOT__')
+    // The recovery action is device-scoped: the computer default stays as it was, so the
+    // page that hosts the module manager stays reachable without editing that default.
+    expect(await setup.preferences.read()).toMatchObject({ excludedClientModules: ['feature'] })
+    expect((await setup.request(path, setup.first, { excludedClientModules: [] })).status).toBe(200)
+    expect(await setup.preferences.read()).toMatchObject({ excludedClientModules: ['feature'] })
+    expect((await setup.request('/', setup.first, undefined, { accept: 'text/html' })).status).toBe(200)
+  })
+
   it('does not reflect a stale device module id into the owned recovery document', async () => {
     const setup = await fixture()
     const stale = '<img src=x onerror=alert(1)> & "private-module"'
