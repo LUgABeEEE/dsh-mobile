@@ -6,6 +6,7 @@ vi.mock('react', async importOriginal => {
 })
 import { MemoryPushStore } from '../src/mobile-push/store.js'
 import { PushRegistry } from '../src/mobile-push/registry.js'
+import { createMobilePushBrowserApi } from '../src/mobile-push/browser-api.js'
 import { browserPushEnvironment, createMobilePushController, type MobilePushApiAdapter, type MobilePushEnvironment } from '../src/mobile-push/client.js'
 import type { PushConfig, PushEnrollment, PushEnrollmentResult, PushOwner, PushPreferences, PushSubscriptionData, VapidKeys } from '../src/mobile-push/contracts.js'
 import { MOBILE_PUSH_SETTINGS_COPY, MobilePushSettings } from '../src/mobile-push/settings.js'
@@ -183,6 +184,62 @@ describe('mobile push browser controller', () => {
       expect(pushManager.subscribe).not.toHaveBeenCalled()
       controller.stop()
     }
+  })
+
+  it.each([null, 1_800_000])('projects standard PushSubscriptionJSON expirationTime=%s before registry enrollment', async expirationTime => {
+    const keys = registryKeys()
+    const installationId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
+    const owner = { scopeId: 'scope-test', deviceId: 'device-test', origin: 'https://example.test' }
+    const service = new PushRegistry(new MemoryPushStore(), () => keys)
+    await service.initialize()
+    const initial = await service.config(owner, installationId)
+    const browserJson = { endpoint: subscriptionData.endpoint, expirationTime, keys: subscriptionData.keys }
+    const subscription = {
+      endpoint: browserJson.endpoint,
+      options: { applicationServerKey: new Uint8Array(Buffer.from(initial.publicKey!, 'base64url')) },
+      unsubscribe: vi.fn(async () => true), toJSON: () => browserJson,
+    }
+    const pushManager = { getSubscription: vi.fn(async () => null), subscribe: vi.fn(async () => subscription) }
+    const wire: Array<{ path: string; init?: RequestInit }> = []
+    const api = createMobilePushBrowserApi(async (path, init) => {
+      wire.push(init === undefined ? { path } : { path, init })
+      const url = new URL(path, owner.origin)
+      if (init?.method === 'GET') {
+        return new Response(JSON.stringify(await service.config(owner, url.searchParams.get('installationId') ?? '')), { status: 200 })
+      }
+      if (path === '/mobile-access/push/subscription') {
+        const value = JSON.parse(String(init?.body)) as PushEnrollment
+        return new Response(JSON.stringify(await service.upsert(owner, value)), { status: 200 })
+      }
+      throw new Error(`unexpected test request: ${path}`)
+    })
+    const controller = createMobilePushController(api, {
+      secureContext: true, isTopLevel: true, standalone: true, permission: 'default', pushManager,
+      origin: owner.origin, randomUUID: () => installationId,
+    })
+    controller.start()
+    await new Promise<void>(resolve => {
+      let unsubscribe = (): void => undefined
+      const settle = (): void => {
+        if (controller.getSnapshot().state === 'pending') return
+        unsubscribe()
+        resolve()
+      }
+      unsubscribe = controller.subscribe(settle)
+      settle()
+    })
+    expect(controller.getSnapshot().state).toBe('ready')
+    await controller.enableFromGesture()
+    expect(pushManager.subscribe).toHaveBeenCalledTimes(1)
+    expect(controller.getSnapshot().state).toBe('enabled')
+    const enrollmentRequest = wire.find(request => request.path === '/mobile-access/push/subscription')
+    expect(enrollmentRequest).toBeDefined()
+    const payload = JSON.parse(String(enrollmentRequest?.init?.body)) as PushEnrollment
+    expect(payload.subscription).toStrictEqual(subscriptionData)
+    const registration = service.snapshot().registrations.find(row => row.installationId === installationId)
+    expect(registration?.subscription).toStrictEqual(subscriptionData)
+    controller.stop()
+    await service.close()
   })
 
   it('creates a subscription synchronously in the explicit gesture before unrelated awaits', async () => {

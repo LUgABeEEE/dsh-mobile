@@ -169,7 +169,13 @@ export function createMobilePushController(api: MobilePushApiAdapter, environmen
         }
         trackPendingEnrollment(subscription, operation)
         pendingSubscription = subscription
-        const result = await api.enroll({ installationId: preparedInstallId || base.installationId, subscription: subscription.toJSON(), locale: environment.locale ?? 'en', preferences: base.preferences ?? defaults, keyFingerprint: base.keyFingerprint ?? '', ownerGeneration: base.ownerGeneration, registrationGeneration: base.registrationGeneration })
+        const browserSubscription = subscription.toJSON()
+        const result = await api.enroll({
+          installationId: preparedInstallId || base.installationId,
+          subscription: { endpoint: browserSubscription.endpoint, keys: { p256dh: browserSubscription.keys.p256dh, auth: browserSubscription.keys.auth } },
+          locale: environment.locale ?? 'en', preferences: base.preferences ?? defaults, keyFingerprint: base.keyFingerprint ?? '',
+          ownerGeneration: base.ownerGeneration, registrationGeneration: base.registrationGeneration,
+        })
         finishPendingEnrollment(subscription, operation)
         pendingSubscription = undefined
         if (!current(token) || operation !== attempt) {
