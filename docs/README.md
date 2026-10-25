@@ -29,6 +29,14 @@
 | 为移动页面选择加载模块 | [模块设置](CLIENT_MODULES.md) | [Module settings](CLIENT_MODULES.en.md) | 电脑默认与设备覆盖分别保存，不自动刷新会话 |
 | 允许受控路由网络访问 LAN Gateway | [额外可信网段](TRUSTED_NETWORKS.md) | [Trusted networks](TRUSTED_NETWORKS.en.md) | 不建立 VPN，不自动扩大防火墙规则 |
 
+## 插件移动适配 / Plugin mobile adaptation
+
+给插件作者的最小适配清单与验收方式：只要求桌面不变、小屏可用，不要求重做交互。
+
+| 主题 | 中文 | English |
+| --- | --- | --- |
+| 让第三方插件面板在手机上可用 | [移动端插件适配指南](MOBILE_PLUGIN_ADAPTATION.md) | [Mobile plugin adaptation](MOBILE_PLUGIN_ADAPTATION.en.md) |
+
 ## 开发与安全 / Development and security
 
 0.6.3 的 [扩展 Worker 指南](EXTENSION_WORKERS.md)／[Worker guide](EXTENSION_WORKERS.en.md) 介绍按扩展启用、预算与显式恢复；此功能不迁移普通 Cordis 插件，也不是权限沙箱。
