@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url'
 import z from '@deepseek-ai/schemastery'
 import { isIP } from './ip.js'
 import { isLoopbackAddress, parseAuthority, parseCidr, type AuthoritySpec, type ParsedCidr } from './network.js'
+import { normalizeContentCachePaths } from './content-cache.js'
 import { normalizeWebSocketPaths } from './websocket-paths.js'
 import { resolveHostExecution, type HostExecutionConfig, type ResolvedHostExecutionConfig } from './extension-worker-config.js'
 
@@ -108,6 +109,15 @@ export interface PluginConfig {
   upstreamTimeoutMs?: number
   /** Authenticated /api response and established DSH plugin-event stream idle timeout; zero disables it. */
   upstreamApiTimeoutMs?: number
+  /**
+   * Freshness window, in ms, for the opt-in API read cache; `0` keeps it off and is
+   * the default. Only complete JSON GET bodies under `contentCachePaths` are kept.
+   */
+  contentCacheTtlMs?: number
+  /** Total retained bytes across devices; least-recently-used entries are evicted first. */
+  contentCacheMaxBytes?: number
+  /** Exact `/api/` path prefixes the cache may serve; empty keeps every read live. */
+  contentCachePaths?: string[]
   rateLimitWindowMs?: number
   maxPairingAttempts?: number
   maxRateLimitKeys?: number
@@ -153,6 +163,9 @@ export interface ResolvedGatewayConfig {
   readonly maxBodyBytes: number
   readonly upstreamTimeoutMs: number
   readonly upstreamApiTimeoutMs: number
+  readonly contentCacheTtlMs: number
+  readonly contentCacheMaxBytes: number
+  readonly contentCachePaths: readonly string[]
   readonly rateLimitWindowMs: number
   readonly maxPairingAttempts: number
   readonly maxRateLimitKeys: number
@@ -214,6 +227,9 @@ export const Config: z<PluginConfig> = z.object({
   maxBodyBytes: z.natural(),
   upstreamTimeoutMs: z.natural(),
   upstreamApiTimeoutMs: z.natural(),
+  contentCacheTtlMs: z.natural(),
+  contentCacheMaxBytes: z.natural(),
+  contentCachePaths: z.array(String).default(['/api/sessions']),
   rateLimitWindowMs: z.natural(),
   maxPairingAttempts: z.natural(),
   maxRateLimitKeys: z.natural(),
@@ -441,6 +457,11 @@ export function parseGatewayConfig(raw: unknown): ResolvedGatewayConfig {
     maxBodyBytes: integer(value.maxBodyBytes, 'maxBodyBytes', 160 * 1024 * 1024, 1024, 256 * 1024 * 1024),
     upstreamTimeoutMs: integer(value.upstreamTimeoutMs, 'upstreamTimeoutMs', 30_000, 1_000, 300_000),
     upstreamApiTimeoutMs: integer(value.upstreamApiTimeoutMs, 'upstreamApiTimeoutMs', 0, 0, 2_147_483_647),
+    // A minute is already long enough to be surprising on a phone; the point of the
+    // cache is one reopen, not a background mirror of Session state.
+    contentCacheTtlMs: integer(value.contentCacheTtlMs, 'contentCacheTtlMs', 0, 0, 60_000),
+    contentCacheMaxBytes: integer(value.contentCacheMaxBytes, 'contentCacheMaxBytes', 8 * 1024 * 1024, 64 * 1024, 64 * 1024 * 1024),
+    contentCachePaths: Object.freeze(normalizeContentCachePaths(value.contentCachePaths ?? ['/api/sessions'])),
     rateLimitWindowMs: integer(value.rateLimitWindowMs, 'rateLimitWindowMs', 60_000, 1_000, 3_600_000),
     maxPairingAttempts: integer(value.maxPairingAttempts, 'maxPairingAttempts', 8, 1, 100),
     maxRateLimitKeys: integer(value.maxRateLimitKeys, 'maxRateLimitKeys', 256, 1, 4096),
