@@ -7,6 +7,8 @@ export interface ClientModuleRow {
   readonly bytes?: number
   /** Gzipped bytes the phone would receive, when available. */
   readonly gzipBytes?: number
+  /** The plugin package's own one-line description, when available. */
+  readonly description?: string
 }
 
 export type ClientModuleGroup = 'extensions' | 'advanced' | 'required'

@@ -10,6 +10,13 @@ describe('client module settings response', () => {
   it('retains the required marker, exact module ids and dependencies', () => {
     expect(parseClientModuleView(catalog)).toEqual(catalog)
   })
+  it('carries an optional plugin description and rejects unusable ones', () => {
+    const described = { ...catalog, entries: [{ id: 'core', required: true, dependencies: [], description: 'Manage DeepSeek login and open billing pages' }] }
+    expect(parseClientModuleView(described).entries[0]).toMatchObject({ description: 'Manage DeepSeek login and open billing pages' })
+    for (const bad of [{ description: '' }, { description: '   ' }, { description: 42 }, { description: 'x'.repeat(241) }]) {
+      expect(() => parseClientModuleView({ ...catalog, entries: [{ ...catalog.entries[0], ...bad }] })).toThrow('invalid_module_catalog')
+    }
+  })
   it('carries optional measured sizes and rejects malformed ones', () => {
     const sized = { ...catalog, entries: [{ id: 'core', required: true, dependencies: [], bytes: 2048, gzipBytes: 900 }] }
     expect(parseClientModuleView(sized).entries[0]).toMatchObject({ bytes: 2048, gzipBytes: 900 })
