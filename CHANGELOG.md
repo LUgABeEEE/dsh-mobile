@@ -2,6 +2,12 @@
 
 Notable changes are recorded here. GitHub Releases provide the downloadable packages and generated commit notes.
 
+## Unreleased
+
+- Prefer DSH's own directory picker on the dedicated Mobile page. Since DSH 0.2.1 the `directory-picker` row resolves to `@deepseek-ai/dsh-host-directory-picker-auto`, which mounts the Host backend and the Client face together and picks the browse interaction whenever the host is remotely reachable. That surface fills the same directory-flow slots, so the plugin-owned picker shadowed it and took away its folder creation; the plugin now steps aside and DSH's own dialog, including its "New folder" action, serves the phone.
+- Let the remote entry create a folder. An authenticated write route accepts one child name under an existing directory, mirroring the upstream browse contract: a single non-blank path segment, never a separator, a relative marker or an absolute path, never recursive and never replayed. The picker footer offers "New folder", a duplicate name or a permission failure is reported instead of writing again, and a successful creation lists the new directory. The listing flow still issues no write.
+- Match the upstream picker metrics where the plugin keeps its own flow for a host that resolved the native interaction, which a remote browser cannot open: the 680x500 panel, 28px radius, upstream header, list and footer spacing, and 44px touch targets that the upstream desktop density does not need.
+
 ## 0.6.17 - 2026-10-25
 
 - Keep DSH's own directory-picker composition instead of registering a second Host service and Client surface. Official Desktop retains its native chooser, **Add workspace** action and `Ctrl+O` shortcut independently of Mobile's in-page picker. Thanks @ChaoPhone for [#257](https://github.com/saya-ch/dsh-mobile/issues/257) and @bvbhu for [#258](https://github.com/saya-ch/dsh-mobile/issues/258).
