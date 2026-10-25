@@ -264,6 +264,46 @@ describe('public host lifecycle', () => {
     await vi.waitFor(async () => expect(await h.start().eligible(h.emitted[0]!)).toBe(false))
   })
 
+  it('verifies stored Session existence with a disposed read-only observation', async () => {
+    const dispose = vi.fn()
+    const observeSession = vi.fn(async () => ({ source: 'prepared' as const, [Symbol.dispose]: dispose }))
+    const getAgent = vi.fn()
+    const h = context({
+      agents: { get: getAgent, list: () => [], roots: () => [], isOwnedBy: () => false },
+      sessionQuery: { observeSession },
+    })
+    const host = h.start()
+
+    await expect(host.sessionExists('stored-session')).resolves.toBe(true)
+    expect(observeSession).toHaveBeenCalledWith('stored-session', { projectionMode: 'all' })
+    expect(dispose).toHaveBeenCalledTimes(1)
+    expect(getAgent).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['missing session', async () => { throw Object.assign(new Error('not found'), { code: 'SESSION_QUERY_SESSION_NOT_FOUND' }) }],
+    ['observation failure', async () => { throw new Error('query unavailable') }],
+    ['disposal failure', async () => ({ source: 'prepared' as const, [Symbol.dispose]: () => { throw new Error('dispose failed') } })],
+  ])('fails closed on %s while verifying stored Session existence', async (_label, observeSession) => {
+    const h = context({ sessionQuery: { observeSession } })
+    const host = h.start()
+    await expect(host.sessionExists('stored-session')).resolves.toBe(false)
+  })
+
+  it('returns false without querying when the host is closed or its contract unavailable', async () => {
+    const observeSession = vi.fn(async () => ({ source: 'prepared' as const, [Symbol.dispose]: () => undefined }))
+    const closedHost = context({ sessionQuery: { observeSession } }).start()
+    await closedHost.close()
+    await expect(closedHost.sessionExists('stored-session')).resolves.toBe(false)
+    expect(observeSession).not.toHaveBeenCalled()
+
+    const unavailable = context()
+    const unavailableHost = unavailable.start({ ...unavailable.ctx, userQuestions: undefined } as unknown as ContextLike)
+    expect(unavailableHost.available).toBe(false)
+    await expect(unavailableHost.sessionExists('stored-session')).resolves.toBe(false)
+    expect(observeSession).not.toHaveBeenCalled()
+  })
+
   it('distinguishes ordinary forks from owned children and resolves approvals to runtime root', async () => {
     const root = agent('root')
     const fork = agent('fork', 'root')

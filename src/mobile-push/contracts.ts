@@ -60,6 +60,8 @@ export interface PushHost {
   subscribe(onSource: (source: PushSource) => void, onChange: (sessionId: string) => void): () => void
   reconcile(source: PushSource): Promise<PushReconcileResult>
   eligible(source: PushSource): Promise<boolean>
+  /** Checks stored Session existence via a read-only public observation; never creates or wakes an Agent. */
+  sessionExists(sessionId: string): Promise<boolean>
   resolveTarget(source: PushSource): Promise<PushTarget | undefined>
   close(): Promise<void>
 }

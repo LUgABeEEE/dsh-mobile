@@ -1,7 +1,7 @@
 import { RequestLifetimes } from './requests.js'
 import { OutcomeLifetimes } from './outcomes.js'
 import { PushReconciler } from './reconcile.js'
-import type { ContextLike, PublicAgentLike, PushHost, PushReconcileResult, PushSource } from './contracts.js'
+import type { ContextLike, PublicAgentLike, PublicSessionObservation, PushHost, PushReconcileResult, PushSource } from './contracts.js'
 
 function hasContract(ctx: ContextLike): boolean {
   return typeof ctx.on === 'function'
@@ -152,6 +152,19 @@ export function createPushHost(ctx: ContextLike): PushHost {
     },
     reconcile,
     async eligible(source) { return await reconcile(source) === 'eligible' },
+    async sessionExists(sessionId) {
+      if (!available || closed || !sessionId) return false
+      let observation: PublicSessionObservation | undefined
+      let exists = false
+      try {
+        observation = await ctx.sessionQuery?.observeSession?.(sessionId, { projectionMode: 'all' })
+        exists = observation !== undefined
+      } catch { exists = false }
+      finally {
+        try { observation?.[Symbol.dispose]() } catch { exists = false }
+      }
+      return exists && available && !closed
+    },
     async resolveTarget(source) {
       if (!available) return undefined
       const current = ctx.agents?.get?.(source.targetSessionId)
