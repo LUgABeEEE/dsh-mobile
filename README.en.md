@@ -26,13 +26,13 @@
   <a href="#compatibility">Compatibility</a> ·
   <a href="docs/README.md">Documentation</a> ·
   <a href="#contributors">Contributors</a> ·
-  <a href="https://github.com/saya-ch/dsh-mobile/releases/tag/v0.6.16">Release notes</a> ·
+  <a href="https://github.com/saya-ch/dsh-mobile/releases/tag/v0.6.17">Release notes</a> ·
   <a href="README.md">简体中文</a>
 </p>
 
 > DSH Mobile is a DeepSeek Harness community plugin; the native app supports Android only.
 >
-> **Current stable release: 0.6.16**. Add Gallery, remembered browser language and FRP field feedback, and improve foreground reconnection. Independently released Android App **0.6.7** offers optional same-computer LAN/remote switching with eligible plain-text draft transfer. [Plugin release notes and downloads](https://github.com/saya-ch/dsh-mobile/releases/tag/v0.6.16) · [Full changelog](CHANGELOG.md).
+> **Current stable release: 0.6.17**. Fix directory-picker ownership: official Desktop keeps its native chooser, **Add workspace** action and `Ctrl+O`, while the Mobile page uses its own in-page browser. On slow links, compress HTML and API responses, bound boot batches and reuse downloaded resources; module settings gain transfer sizes and a minimal preset. Android App **0.6.7** still applies; this release contains no new APK. [Plugin release notes and downloads](https://github.com/saya-ch/dsh-mobile/releases/tag/v0.6.17) · [Full changelog](CHANGELOG.md).
 >
 > **Version policy**: since plugin **0.6.2**, the Android app and plugin use independent version numbers and releases. Their numbers do not need to match, and a plugin update does not imply an app update. [Compatibility notes](#compatibility).
 

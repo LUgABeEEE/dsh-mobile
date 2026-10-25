@@ -2,14 +2,14 @@
 
 Notable changes are recorded here. GitHub Releases provide the downloadable packages and generated commit notes.
 
-## Unreleased
+## 0.6.17 - 2026-10-25
 
 - Keep DSH's own directory-picker composition instead of registering a second Host service and Client surface. Official Desktop retains its native chooser, **Add workspace** action and `Ctrl+O` shortcut independently of Mobile's in-page picker. Thanks @ChaoPhone for [#257](https://github.com/saya-ch/dsh-mobile/issues/257) and @bvbhu for [#258](https://github.com/saya-ch/dsh-mobile/issues/258).
 - Keep a familiar in-page folder browser on the dedicated, paired Mobile page, with editable paths, parent navigation, retry and cancellation while browsing or loading. Late responses cannot replace a newer selection, and Back closes the picker before the page underneath. Once a directory is submitted, DSH owns workspace creation; it is not reported as cancelled. The mobile flow does not open an OS dialog on the remote computer or change the desktop's picker.
 - Add an authenticated, read-only workspace-directory listing route for the Mobile picker. It lists folders without creating them and rejects unauthorized requests; the existing photo picker and its routes are unchanged.
 - Improve slow-link loading with compression for complete text responses and the assembled start page, smaller merged script batches, and revalidation of owned static resources. Keep Session-bound HTML non-storable and preserve streaming and write behavior. Large valid module graphs fall back to individual resources rather than failing only because the optimization reached its batch count. Thanks @LUgABeEEE for [#259](https://github.com/saya-ch/dsh-mobile/pull/259), [#260](https://github.com/saya-ch/dsh-mobile/pull/260) and [#262](https://github.com/saya-ch/dsh-mobile/pull/262).
 - Add explicit module transfer-size measurement, partial-size feedback and a required-modules preset without applying choices until saved. Measurement must not delay ordinary catalog reads or saving. Thanks @LUgABeEEE for [#261](https://github.com/saya-ch/dsh-mobile/pull/261).
-- Keep fresh API reads and the existing backpressured proxy. The generic short API-cache proposal in [#263](https://github.com/saya-ch/dsh-mobile/pull/263) is not enabled in this release; the author's original contribution remains in the integration history.
+- Keep fresh API reads and the existing backpressured proxy. The generic short API-cache proposal in [#263](https://github.com/saya-ch/dsh-mobile/pull/263) is not enabled in this release; the author's original contribution remains in the integration history. Thanks @LUgABeEEE for [#263](https://github.com/saya-ch/dsh-mobile/pull/263).
 
 ## 0.6.16 - 2026-10-22
 

@@ -26,13 +26,13 @@
   <a href="#兼容性">兼容性</a> ·
   <a href="docs/README.md">文档</a> ·
   <a href="#贡献者">贡献者</a> ·
-  <a href="https://github.com/saya-ch/dsh-mobile/releases/tag/v0.6.16">更新记录</a> ·
+  <a href="https://github.com/saya-ch/dsh-mobile/releases/tag/v0.6.17">更新记录</a> ·
   <a href="README.en.md">English</a>
 </p>
 
 > DSH Mobile 是 DeepSeek Harness 社区插件，原生 App 仅支持 Android。
 >
-> **当前正式版本：0.6.16**。新增相册入口、浏览器语言记忆和 FRP 字段提示，改善前台重连；配合独立发布的 Android App **0.6.7**，可选择同电脑局域网／远程切换，并迁移符合条件的纯文本草稿。[插件更新与下载](https://github.com/saya-ch/dsh-mobile/releases/tag/v0.6.16) · [完整更新记录](CHANGELOG.md)。
+> **当前正式版本：0.6.17**。修正目录选择器归属：官方 Desktop 保留原生选择器、**添加工作区**与 `Ctrl+O`，移动页改用页内目录浏览；慢链路下压缩 HTML 与 API 响应、缩小启动批次并复用已下载资源；模块设置新增传输体积和最小预设。Android App **0.6.7** 继续适用，本版不含新 APK。[插件更新与下载](https://github.com/saya-ch/dsh-mobile/releases/tag/v0.6.17) · [完整更新记录](CHANGELOG.md)。
 >
 > **版本说明**：自插件 **0.6.2** 起，Android App 与插件独立编号、独立发布，版本号无需一致；插件升级不代表 App 需要同步升级。[兼容说明](#兼容性)。
 
