@@ -1,5 +1,6 @@
 import { readFileSync, readdirSync } from 'node:fs'
 import postcss from 'postcss'
+import { Context } from '@deepseek-ai/cordis'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { collectConnectionDiagnostics, type DiagnosticSnapshot } from '../src/diagnostics.js'
 import {
@@ -166,14 +167,13 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-describe('dedicated browser push client entry', () => {
-  function fixture(search = '') {
-    const config = { available: true, installationId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', publicKey: 'AQID', keyFingerprint: 'fp', ownerGeneration: 1, registrationGeneration: 0, status: 'disabled' as const, preferences: { question: true, plan: true, approval: true, response: true, goal: true, failure: true } }
-    const api = {
-      getConfig: vi.fn(async () => config), enroll: vi.fn(async () => ({ registration: {} })),
-      disable: vi.fn(async () => undefined), updatePreferences: vi.fn(async () => undefined),
-      sendTest: vi.fn(async () => undefined), resolve: vi.fn(async () => ({ sessionId: 's1', interaction: 'resolved' as const })),
-    }
+function fixture(search = '') {
+  const config = { available: true, installationId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', publicKey: 'AQID', keyFingerprint: 'fp', ownerGeneration: 1, registrationGeneration: 0, status: 'disabled' as const, preferences: { question: true, plan: true, approval: true, response: true, goal: true, failure: true } }
+  const api = {
+    getConfig: vi.fn(async () => config), enroll: vi.fn(async () => ({ registration: {} })),
+    disable: vi.fn(async () => undefined), updatePreferences: vi.fn(async () => undefined),
+    sendTest: vi.fn(async () => undefined), resolve: vi.fn(async () => ({ sessionId: 's1', interaction: 'resolved' as const })),
+  }
     const manager = { getSubscription: vi.fn(async () => null), subscribe: vi.fn(async () => { throw new Error('unexpected permission prompt') }) }
     const environment = { secureContext: true, isTopLevel: true, standalone: true, permission: 'default' as const, pushManager: manager, origin: 'https://example.test', randomUUID: () => config.installationId }
     const page = new EventTarget() as Document & { visibilityState: DocumentVisibilityState; querySelector: (selector: string) => Element | null }
@@ -181,15 +181,25 @@ describe('dedicated browser push client entry', () => {
     page.querySelector = (selector: string) => selector.includes('dsh-mobile-gateway') ? ({}) as Element : null
     const history = { replaceState: vi.fn() }
     const view = new EventTarget() as Window & { location: Location; history: History }
-    Object.defineProperty(view, 'location', { value: { search, pathname: '/', hash: '' } })
+    Object.defineProperty(view, 'location', { value: { search, pathname: '/', hash: '' }, writable: true, configurable: true })
     Object.defineProperty(view, 'history', { value: history })
     view.__DSH_MOBILE_FRONTEND__ = 'dedicated'
     const slotRegistrations: Array<{ options: unknown; component: (props: unknown) => unknown }> = []
     const serviceQueries: string[] = []
+    const navigationInjections: Array<{ services: string[]; childDisposers: Array<() => void>; dispose: ReturnType<typeof vi.fn> }> = []
     const sessions = { list: { getSnapshot: () => ({ phase: 'ready', byId: { s1: {} }, ids: ['s1'] }), subscribe: () => () => undefined } }
     const workspaces = { list: { getSnapshot: () => ({ phase: 'ready', items: [] }), subscribe: () => () => undefined } }
     const uiWorkspace = { openSession: vi.fn() }
-    const context: { sessions: typeof sessions; workspaces: typeof workspaces; uiWorkspace: { openSession(id: string): void }; get(name: string): unknown; slots: { inject(key: string, callback: () => () => void): ReturnType<typeof vi.fn>; register(options: unknown, component: (props: unknown) => unknown): ReturnType<typeof vi.fn> } } = {
+    // `inject` mirrors the public Cordis child lifecycle with already-active
+    // providers: the callback runs immediately on the declared services.
+    const context: {
+      sessions: typeof sessions
+      workspaces: typeof workspaces
+      uiWorkspace: { openSession(id: string): void }
+      get(name: string): unknown
+      inject(services: readonly string[], callback: (child: unknown) => (() => void) | undefined): { dispose(): unknown }
+      slots: { inject(key: string, callback: () => () => void): ReturnType<typeof vi.fn>; register(options: unknown, component: (props: unknown) => unknown): ReturnType<typeof vi.fn> }
+    } = {
       sessions, workspaces, uiWorkspace,
       get(name: string): unknown {
         serviceQueries.push(name)
@@ -198,14 +208,22 @@ describe('dedicated browser push client entry', () => {
         if (name === 'uiWorkspace') return uiWorkspace
         return undefined
       },
+      inject(services: readonly string[], callback: (child: unknown) => (() => void) | undefined) {
+        const record = { services: [...services], childDisposers: [] as Array<() => void>, dispose: vi.fn() }
+        navigationInjections.push(record)
+        const childDisposer = callback({ sessions, workspaces, uiWorkspace })
+        if (childDisposer !== undefined) record.childDisposers.push(childDisposer)
+        return { dispose: () => { record.dispose(); for (const dispose of record.childDisposers.splice(0)) dispose() } }
+      },
       slots: {
         inject(key: string, callback: () => () => void) { expect(key).toBe('settings.general.item'); callback(); return vi.fn() },
         register(options: unknown, component: (props: unknown) => unknown) { slotRegistrations.push({ options, component }); return vi.fn() },
       },
     }
-    return { api, manager, environment, page, view, history, context, slotRegistrations, serviceQueries }
+    return { api, manager, environment, page, view, history, context, slotRegistrations, serviceQueries, navigationInjections }
   }
 
+describe('dedicated browser push client entry', () => {
   it.each(['stock', 'native', 'unauthenticated'] as const)('leaves %s contexts inert', contextKind => {
     const test = fixture()
     if (contextKind === 'native') test.view.__DSH_MOBILE_NATIVE__ = { capabilities: () => [], invoke: async () => undefined }
@@ -295,38 +313,200 @@ describe('dedicated browser push client entry', () => {
     expect(configFetch).toHaveBeenCalledTimes(1)
   })
 
-  it('installs tap resolution only for a non-empty query and available public navigation services', async () => {
+  it('installs tap resolution only for a non-empty query through the scoped navigation-services lifecycle', async () => {
     const test = fixture('?mobile-push=opaque-ref')
-    expect(test.context.get('sessions')).toBe(test.context.sessions)
-    expect(test.context.get('workspaces')).toBe(test.context.workspaces)
-    expect(test.context.get('uiWorkspace')).toBe(test.context.uiWorkspace)
     const opened: string[] = []
-    test.context.uiWorkspace = { openSession: (id: string) => { opened.push(id) } }
-    test.context.get = (name: string): unknown => {
-      test.serviceQueries.push(name)
-      if (name === 'sessions') return test.context.sessions
-      if (name === 'workspaces') return test.context.workspaces
-      if (name === 'uiWorkspace') return test.context.uiWorkspace
-      return undefined
-    }
+    test.context.uiWorkspace.openSession = (id: string) => { opened.push(id) }
     const notices: string[] = []
     const dispose = installMobilePushBrowserClient(test.context as never, { view: test.view, page: test.page, api: test.api as never, environment: test.environment, notify: key => notices.push(key) })
+    expect(test.navigationInjections).toHaveLength(1)
+    expect(test.navigationInjections[0]?.services).toEqual(['sessions', 'workspaces', 'uiWorkspace'])
     await Promise.resolve(); await Promise.resolve()
     expect(test.api.resolve).toHaveBeenCalledExactlyOnceWith('opaque-ref')
     expect(opened).toEqual(['s1'])
     expect(notices).toEqual(['session-resolved'])
     expect(test.history.replaceState).toHaveBeenCalledOnce()
+    expect(test.navigationInjections[0]?.childDisposers).toHaveLength(1)
     dispose()
+    expect(test.navigationInjections[0]?.dispose).toHaveBeenCalledOnce()
   })
 
-  it('does not query public navigation services or install neutral navigation without a tap reference', () => {
+  it('does not start the navigation-services lifecycle or install neutral navigation without a tap reference', () => {
     const test = fixture()
     const dispose = installMobilePushBrowserClient(test.context as never, { view: test.view, page: test.page, api: test.api as never, environment: test.environment })
-    expect(test.serviceQueries).not.toContain('sessions')
-    expect(test.serviceQueries).not.toContain('workspaces')
-    expect(test.serviceQueries).not.toContain('uiWorkspace')
+    expect(test.navigationInjections).toHaveLength(0)
     expect(test.api.resolve).not.toHaveBeenCalled()
     dispose()
+  })
+})
+
+describe('cold push tap navigation across real scoped public providers', () => {
+  const contexts: Context[] = []
+
+  interface MutableLocation { search: string; pathname: string; hash: string }
+
+  afterEach(async () => {
+    await Promise.all(contexts.splice(0).map(context => context.fiber.dispose()))
+  })
+
+  /** Mount the push client exactly as the packed web client does: a plugin activated by `slots` alone, before any navigation service exists. */
+  function mountColdTapClient(search: string): {
+    test: ReturnType<typeof fixture>
+    location: MutableLocation
+    notices: string[]
+    opened: string[]
+    subscribeCalls: { sessions: number; workspaces: number }
+    unsubscribeCalls: { sessions: number; workspaces: number }
+    clientReady: Promise<unknown>
+    mountProvider(options: { sessionsPhase: 'pending' | 'ready' }): Promise<{ dispose(): Promise<unknown> }>
+    disposePushClient(): void
+  } {
+    const test = fixture(search)
+    const location: MutableLocation = { search, pathname: '/', hash: '' }
+    Object.defineProperty(test.view, 'location', { value: location, writable: true })
+    test.history.replaceState = vi.fn((_data: unknown, _title: string, url: string) => {
+      const at = String(url).indexOf('?')
+      location.search = at >= 0 ? String(url).slice(at) : ''
+    })
+    const notices: string[] = []
+    const opened: string[] = []
+    const subscribeCalls = { sessions: 0, workspaces: 0 }
+    const unsubscribeCalls = { sessions: 0, workspaces: 0 }
+    const context = new Context()
+    contexts.push(context)
+    context.provide('slots', test.context.slots)
+    let disposePushClient: () => void = () => undefined
+    const clientFiber = context.plugin({
+      name: 'dsh-mobile-push-client',
+      inject: ['slots'],
+      apply: pluginContext => {
+        disposePushClient = installMobilePushBrowserClient(pluginContext as never, {
+          view: test.view, page: test.page, api: test.api as never, environment: test.environment,
+          notify: key => { notices.push(key) },
+        })
+      },
+    })
+    let providerSequence = 0
+    const mountProvider = async ({ sessionsPhase }: { sessionsPhase: 'pending' | 'ready' }) => {
+      const ready = sessionsPhase === 'ready'
+      const providerFiber = context.plugin({
+        name: `test-public-navigation-services-${++providerSequence}`,
+        apply: providerContext => {
+          providerContext.provide('sessions', {
+            list: {
+              getSnapshot: () => ({ phase: sessionsPhase, byId: ready ? { s1: {} } : {}, ids: ready ? ['s1'] : [] }),
+              subscribe: () => { subscribeCalls.sessions += 1; return () => { unsubscribeCalls.sessions += 1 } },
+            },
+          } as never)
+          providerContext.provide('workspaces', {
+            list: {
+              getSnapshot: () => ({ phase: 'ready', items: [] }),
+              subscribe: () => { subscribeCalls.workspaces += 1; return () => { unsubscribeCalls.workspaces += 1 } },
+            },
+          } as never)
+          providerContext.provide('uiWorkspace', { openSession: (id: string) => { opened.push(id) } } as never)
+        },
+      })
+      await providerFiber
+      return { dispose: () => providerFiber.dispose() }
+    }
+    return {
+      test, location, notices, opened, subscribeCalls, unsubscribeCalls, clientReady: Promise.resolve(clientFiber), mountProvider,
+      disposePushClient: () => { disposePushClient() },
+    }
+  }
+
+  it('consumes a cold tap reference once public navigation services activate after the push client', async () => {
+    const mounted = mountColdTapClient('?mobile-push=opaque-ref')
+    await mounted.clientReady
+    // Cold boundary: the push client is live while the public navigation
+    // services have not activated yet — nothing may be consumed here.
+    expect(mounted.test.api.resolve).not.toHaveBeenCalled()
+    expect(mounted.location.search).toBe('?mobile-push=opaque-ref')
+    await mounted.mountProvider({ sessionsPhase: 'ready' })
+    await vi.waitFor(() => { expect(mounted.test.api.resolve).toHaveBeenCalledExactlyOnceWith('opaque-ref') })
+    expect(mounted.test.history.replaceState).toHaveBeenCalledExactlyOnceWith(null, '', '/')
+    expect(mounted.location.search).toBe('')
+    await Promise.resolve(); await Promise.resolve()
+    expect(mounted.opened).toEqual(['s1'])
+    expect(mounted.notices).toEqual(['session-resolved'])
+    mounted.disposePushClient()
+  })
+
+  it('retains an unconsumed reference without requests while public navigation services never activate', async () => {
+    const mounted = mountColdTapClient('?mobile-push=opaque-ref')
+    await mounted.clientReady
+    await new Promise(resolve => { setTimeout(resolve, 0) })
+    expect(mounted.test.api.resolve).not.toHaveBeenCalled()
+    expect(mounted.test.history.replaceState).not.toHaveBeenCalled()
+    expect(mounted.location.search).toBe('?mobile-push=opaque-ref')
+    expect(mounted.notices).toEqual([])
+    expect(mounted.subscribeCalls).toEqual({ sessions: 0, workspaces: 0 })
+    mounted.disposePushClient()
+  })
+
+  it('removes listeners synchronously on the outer disposer and never opens or notifies when a held resolve settles afterwards', async () => {
+    const mounted = mountColdTapClient('?mobile-push=opaque-ref')
+    let releaseResolve!: (target: unknown) => void
+    mounted.test.api.resolve.mockImplementation(() => new Promise(resolve => { releaseResolve = resolve as (target: unknown) => void }))
+    await mounted.clientReady
+    await mounted.mountProvider({ sessionsPhase: 'ready' })
+    await vi.waitFor(() => {
+      expect(mounted.test.api.resolve).toHaveBeenCalledExactlyOnceWith('opaque-ref')
+      expect(mounted.subscribeCalls).toEqual({ sessions: 1, workspaces: 1 })
+    })
+    expect(mounted.location.search).toBe('')
+    // The exported outer disposer is synchronous: list listeners must be gone
+    // immediately even though the underlying child Fiber disposal is async.
+    mounted.disposePushClient()
+    expect(mounted.unsubscribeCalls).toEqual({ sessions: 1, workspaces: 1 })
+    releaseResolve({ sessionId: 's1', interaction: 'resolved' })
+    await Promise.resolve(); await Promise.resolve(); await Promise.resolve()
+    expect(mounted.opened).toEqual([])
+    expect(mounted.notices).toEqual([])
+  })
+
+  it('follows provider loss and re-provision before consumption: held readiness, disposed listeners, then one clean consumption', async () => {
+    const mounted = mountColdTapClient('?mobile-push=opaque-ref')
+    await mounted.clientReady
+    const firstProvider = await mounted.mountProvider({ sessionsPhase: 'pending' })
+    // Readiness barrier: the session list is held at `pending`, so the
+    // installed consumer must subscribe but must not consume yet.
+    await vi.waitFor(() => { expect(mounted.subscribeCalls).toEqual({ sessions: 1, workspaces: 1 }) })
+    expect(mounted.test.api.resolve).not.toHaveBeenCalled()
+    expect(mounted.location.search).toBe('?mobile-push=opaque-ref')
+    await firstProvider.dispose()
+    await vi.waitFor(() => { expect(mounted.unsubscribeCalls).toEqual({ sessions: 1, workspaces: 1 }) })
+    expect(mounted.test.api.resolve).not.toHaveBeenCalled()
+    await mounted.mountProvider({ sessionsPhase: 'ready' })
+    await vi.waitFor(() => { expect(mounted.test.api.resolve).toHaveBeenCalledExactlyOnceWith('opaque-ref') })
+    expect(mounted.test.history.replaceState).toHaveBeenCalledExactlyOnceWith(null, '', '/')
+    expect(mounted.location.search).toBe('')
+    await Promise.resolve(); await Promise.resolve()
+    expect(mounted.opened).toEqual(['s1'])
+    expect(mounted.notices).toEqual(['session-resolved'])
+    mounted.disposePushClient()
+  })
+
+  it('does not re-consume or re-notify when providers are replaced after consumption', async () => {
+    const mounted = mountColdTapClient('?mobile-push=opaque-ref')
+    await mounted.clientReady
+    const firstProvider = await mounted.mountProvider({ sessionsPhase: 'ready' })
+    await vi.waitFor(() => { expect(mounted.opened).toEqual(['s1']) })
+    expect(mounted.notices).toEqual(['session-resolved'])
+    await firstProvider.dispose()
+    await vi.waitFor(() => { expect(mounted.unsubscribeCalls).toEqual({ sessions: 1, workspaces: 1 }) })
+    await mounted.mountProvider({ sessionsPhase: 'ready' })
+    // The consumed URL cannot arm a second consumer: settle the replacement
+    // lifecycle, then require that no navigation was installed again.
+    await new Promise(resolve => { setTimeout(resolve, 0) })
+    for (let index = 0; index < 10; index += 1) await Promise.resolve()
+    expect(mounted.subscribeCalls).toEqual({ sessions: 1, workspaces: 1 })
+    expect(mounted.test.api.resolve).toHaveBeenCalledExactlyOnceWith('opaque-ref')
+    expect(mounted.test.history.replaceState).toHaveBeenCalledExactlyOnceWith(null, '', '/')
+    expect(mounted.opened).toEqual(['s1'])
+    expect(mounted.notices).toEqual(['session-resolved'])
+    mounted.disposePushClient()
   })
 })
 

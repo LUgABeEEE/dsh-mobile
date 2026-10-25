@@ -57,10 +57,23 @@ interface ClientContext {
   effect(effect: () => void | (() => void), label?: string): void
   get(name: 'connection'): MobileConnectionHandle | undefined
   get(name: string): unknown
+  /** Public Cordis child lifecycle; optional so minimal harness contexts without the navigation feature stay valid. */
+  inject?(services: readonly MobilePushNavigationService[], callback: (context: ClientNavigationContext) => (() => void) | undefined): { dispose(): unknown }
   slots: {
     inject(key: string, callback: () => (() => void)): () => void
     register<Props>(options: { name: string; id: string; order?: number; priority?: number; label?: string }, component: (props: Props) => unknown): () => void
   }
+}
+
+/** Public client services the authenticated tap consumer follows (scoped child lifecycle, never a required plugin dependency). */
+const mobilePushNavigationServices = ['sessions', 'workspaces', 'uiWorkspace'] as const
+type MobilePushNavigationService = typeof mobilePushNavigationServices[number]
+
+/** Shape of the public navigation services as provided on a scoped child context. */
+interface ClientNavigationContext {
+  readonly sessions: { readonly list: { getSnapshot(): { readonly phase: string; readonly byId: Readonly<Record<string, unknown>>; readonly ids: readonly string[] }; subscribe(listener: () => void): () => void } }
+  readonly workspaces: { readonly list: { getSnapshot(): { readonly phase: string; readonly items: readonly unknown[] }; subscribe(listener: () => void): () => void } }
+  readonly uiWorkspace: { openSession(sessionId: string): void }
 }
 
 interface MobileConnectionHandle {
@@ -4515,15 +4528,6 @@ export function mobilePushNavigationNotice(locale: MobileControlLocale, key: 'se
   return messages[locale][key]
 }
 
-function mobilePushNavigationServicesAvailable(ctx: ClientContext): boolean {
-  const sessions = ctx.get('sessions') as { list?: { getSnapshot?: unknown; subscribe?: unknown } } | undefined
-  const workspaces = ctx.get('workspaces') as { list?: { getSnapshot?: unknown; subscribe?: unknown } } | undefined
-  const uiWorkspace = ctx.get('uiWorkspace') as { openSession?: unknown } | undefined
-  return typeof sessions?.list?.getSnapshot === 'function' && typeof sessions.list.subscribe === 'function'
-    && typeof workspaces?.list?.getSnapshot === 'function' && typeof workspaces.list.subscribe === 'function'
-    && typeof uiWorkspace?.openSession === 'function'
-}
-
 function showMobilePushNavigationNotice(page: Document, view: Window, key: 'session-unavailable' | 'session-resolved'): void {
   const node = page.createElement('div')
   node.className = 'dsh-mobile-push-navigation-notice'
@@ -4558,18 +4562,44 @@ export function installMobilePushBrowserClient(ctx: ClientContext, runtime: Mobi
     if (connection.state?.getSnapshot() === 'connected') refresh()
   }) ?? (() => undefined)
 
-  let removeNavigation = (): void => undefined
+  // The tap consumer follows the public navigation services through a scoped
+  // child lifecycle: on a cold load the plugin activates with `slots` before
+  // sessions/workspaces/uiWorkspace are provided, and a plain effect never
+  // re-runs, so a one-shot availability check would silently drop every
+  // reference-carrying cold load. The child activates once all three services
+  // are active, disposes on provider loss or plugin teardown, and re-runs on
+  // re-provision; each activation re-checks the one-time reference so a
+  // consumed URL can never resolve or notify twice.
+  let removeNavigation: () => void = () => undefined
+  let disposeNavigationLifecycle: () => void = () => undefined
   const reference = new URLSearchParams(view.location.search).get('mobile-push')
-  if (reference !== null && reference !== '' && mobilePushNavigationServicesAvailable(ctx)) {
-    removeNavigation = installPushNavigation(ctx as unknown as Parameters<typeof installPushNavigation>[0], {
-      resolve: value => api.resolve(value),
-      notify: key => {
-        if (key !== 'session-unavailable' && key !== 'session-resolved') return
-        if (runtime.notify) runtime.notify(key)
-        else showMobilePushNavigationNotice(page, view, key)
-      },
-      browser: { location: view.location, history: view.history },
+  if (reference !== null && reference !== '' && ctx.inject !== undefined) {
+    let navigationClosed = false
+    const navigationFiber = ctx.inject(mobilePushNavigationServices, navigationContext => {
+      if (navigationClosed) return () => undefined
+      const pending = new URLSearchParams(view.location.search).get('mobile-push')
+      if (pending === null || pending === '') return () => undefined
+      const remove = installPushNavigation(navigationContext as unknown as Parameters<typeof installPushNavigation>[0], {
+        resolve: value => api.resolve(value),
+        notify: key => {
+          if (key !== 'session-unavailable' && key !== 'session-resolved') return
+          if (runtime.notify) runtime.notify(key)
+          else showMobilePushNavigationNotice(page, view, key)
+        },
+        browser: { location: view.location, history: view.history },
+      })
+      removeNavigation = remove
+      return () => {
+        if (removeNavigation === remove) removeNavigation = () => undefined
+        remove()
+      }
     })
+    disposeNavigationLifecycle = () => {
+      if (navigationClosed) return
+      navigationClosed = true
+      removeNavigation()
+      void navigationFiber.dispose()
+    }
   }
 
   let disposed = false
@@ -4579,7 +4609,7 @@ export function installMobilePushBrowserClient(ctx: ClientContext, runtime: Mobi
     view.removeEventListener('focus', refresh)
     page.removeEventListener('visibilitychange', onVisible)
     unbindConnection()
-    removeNavigation()
+    disposeNavigationLifecycle()
     removeSettings()
     controller.stop()
   }
