@@ -111,6 +111,13 @@ Notable changes are recorded here. GitHub Releases provide the downloadable pack
 - Add bilingual remote-channel selection notes distinguishing the maintainer's long-term network experience from provider limits and conditional self-hosted deployment characteristics.
 - At this plugin release, Android App 0.6.3 was still the published native version; Android 0.6.4 was published independently later on the same day. Its file-picker changes are not part of this plugin fix. Thanks @Yurzi for reporting [#213](https://github.com/saya-ch/dsh-mobile/issues/213).
 
+## Android 0.6.4 - 2026-10-15
+
+- Prefer the system Photo Picker on Android 13+ for supported image requests, with document selection for other requests or an unavailable picker. Preserve multi-selection, MIME filtering and selected URI results without adding storage permission or forcing a vendor gallery.
+- Bind standard file callbacks to the active WebView, Origin and document. Cancel them on navigation or teardown and prevent old results from consuming a newer request. This native update is released independently from plugin 0.6.8 and preserves existing paired records.
+- On WebViews with navigation-listener support, settle file requests before replacing their document and pause new selection until all in-flight document navigations finish, including cancelled and non-committing navigations. This prevents a late cancellation from disabling the new page's file input. Older providers retain their available callbacks; update WebView or reopen the paired computer if selection still fails after changing pages.
+- Retain the package identity, established release signer, permission list and native pairing protocol. Thanks @Void-LifeStream for the attachment report in [#205](https://github.com/saya-ch/dsh-mobile/issues/205), and @xhwxt for the document-picker proposal in [#203](https://github.com/saya-ch/dsh-mobile/pull/203).
+
 ## 0.6.7 - 2026-10-14
 
 - Add optional `cpolarSubdomain` and `cpolarRegion` profile settings for a reserved cpolar address. Omitted or blank values keep provider defaults; only the validated HTTPS origin reported by cpolar is used. Existing pairing and authorization checks are unchanged. [Configuration guide](docs/CPOLAR_SUBDOMAIN.en.md).
@@ -120,13 +127,6 @@ Notable changes are recorded here. GitHub Releases provide the downloadable pack
 - Ignore a cancelled manifest request before it can clear newer extensions. Preserve the existing custom-file and extension size limits, and keep preview Back handling separate from Gateway API loading.
 - Clarify `/mobile` and both READMEs: detected files are not proof of page activation; ordinary DSH login or phone-sized preview does not establish mobile pairing. Thanks @Dantezcx for the detailed reports in [#209](https://github.com/saya-ch/dsh-mobile/issues/209) and [#210](https://github.com/saya-ch/dsh-mobile/issues/210).
 - Thanks @GavinQiEr for the request in [#207](https://github.com/saya-ch/dsh-mobile/issues/207) and implementation in [#208](https://github.com/saya-ch/dsh-mobile/pull/208); the original author commit is retained alongside maintainer corrections.
-
-## Android 0.6.4 - 2026-10-15
-
-- Prefer the system Photo Picker on Android 13+ for supported image requests, with document selection for other requests or an unavailable picker. Preserve multi-selection, MIME filtering and selected URI results without adding storage permission or forcing a vendor gallery.
-- Bind standard file callbacks to the active WebView, Origin and document. Cancel them on navigation or teardown and prevent old results from consuming a newer request. This native update is released independently from plugin 0.6.8 and preserves existing paired records.
-- On WebViews with navigation-listener support, settle file requests before replacing their document and pause new selection until all in-flight document navigations finish, including cancelled and non-committing navigations. This prevents a late cancellation from disabling the new page's file input. Older providers retain their available callbacks; update WebView or reopen the paired computer if selection still fails after changing pages.
-- Retain the package identity, established release signer, permission list and native pairing protocol. Thanks @Void-LifeStream for the attachment report in [#205](https://github.com/saya-ch/dsh-mobile/issues/205), and @xhwxt for the document-picker proposal in [#203](https://github.com/saya-ch/dsh-mobile/pull/203).
 
 ## 0.6.6 - 2026-10-14
 
@@ -179,7 +179,7 @@ Notable changes are recorded here. GitHub Releases provide the downloadable pack
 - Add Android App 0.6.2 (build 78), separately from plugin 0.6.3. Keep web content inside the native system-bar, cutout and keyboard area; add native-only page zoom in General settings, with 80–125% scaling and a 100% reset, without reloading the conversation. Older App versions and browsers do not show this control.
 - Add a nonblocking update reminder for WebViews reporting Chromium below 100. Users may continue; unknown engine versions are not treated as obsolete, and each detected build is warned about once. This does not promise full compatibility with unsupported old engines.
 - Improve bounded Windows retries and rollback for managed Caddy preparation while keeping official managed installation disabled. Thanks @abworks-dev for [PR #190](https://github.com/saya-ch/dsh-mobile/pull/190).
-- Hide the duplicate passive pin marker on narrow mobile session lists while retaining pin actions and desktop presentation. Thanks @chintoleung for [PR #191](https://github.com/saya-ch/dsh-mobile/pull/191).
+- Hide the duplicate passive pin marker on narrow mobile session lists while retaining pin actions and desktop presentation. Thanks @abworks-dev for [PR #191](https://github.com/saya-ch/dsh-mobile/pull/191).
 - Add a repository-local Agent maintenance skill and discovery entrypoint covering compatibility, packaging, runtime/ADB, collaboration and independent releases, with guidance for updating demonstrated reusable lessons.
 
 ## 0.6.2 - 2026-10-08
@@ -384,7 +384,7 @@ Add mobile page module management, Android launcher choices, fixed device orderi
 - Let cpolar choose its default route instead of forcing `cn`: the plugin no longer passes `-region`, so cpolar selects its own tunnel server. No profile or environment setting exposes an explicit region.
 - Add Android task-completion and pending-input reminders through authenticated Host events and the exact-origin native bridge; notification permission is enabled explicitly from the foreground app menu, lock-screen text stays generic, and each completed turn keeps a separate reminder (thanks @qzyqmzn for PR #75).
 - Show and re-copy remote pairing links without invalidating the QR code's active one-time pairing window (thanks @qzyqmzn for PR #75).
-- Detect plugin-market installations that have not completed LAN setup, prevent the loopback-only `127.0.0.1` fallback from being presented as phone access, and provide a localized in-panel network picker that creates private TLS material and LAN-only Windows firewall rules after explicit confirmation. The configured gateway starts after one DSH restart (thanks @cangming99 for #72).
+- Detect plugin-market installations that have not completed LAN setup, prevent the loopback-only `127.0.0.1` fallback from being presented as phone access, and provide a localized in-panel network picker that creates private TLS material and LAN-only Windows firewall rules after explicit confirmation. The configured gateway starts after one DSH restart (thanks @cangming99 for the report).
 - Keep native DSH file selection in the composer Add group, add only camera capture there, and reuse the native menu-row styling for the mobile action.
 - Add a native-app-only Switch computer action to the WebView's DSH General settings page, keeping the Android device-list settings and DSH content toolbar focused on their own controls.
 - Hide the Android shell toolbar above the WebView so DSH occupies the full safe viewport; the system status-bar color continues to follow the page background.

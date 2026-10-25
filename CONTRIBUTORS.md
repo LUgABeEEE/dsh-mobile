@@ -70,9 +70,9 @@ Thanks [@jamorzzz](https://github.com/jamorzzz) for the community-auth navigatio
 
 ## 0.6.3 代码贡献 / Code contributions in 0.6.3
 
-[@abworks-dev](https://github.com/abworks-dev) 的 [#190](https://github.com/saya-ch/dsh-mobile/pull/190)、[#192](https://github.com/saya-ch/dsh-mobile/pull/192)，以及 [@chintoleung](https://github.com/chintoleung) 的 [#191](https://github.com/saya-ch/dsh-mobile/pull/191) 和在 [#189](https://github.com/saya-ch/dsh-mobile/issues/189) 提供的三个 Worker 原型提交参与本版，保留原始提交并追加适配与修正。具体范围见 [更新记录](CHANGELOG.md#063---2026-10-10)。
+[@abworks-dev](https://github.com/abworks-dev) 的 [#190](https://github.com/saya-ch/dsh-mobile/pull/190)、[#191](https://github.com/saya-ch/dsh-mobile/pull/191)、[#192](https://github.com/saya-ch/dsh-mobile/pull/192)，以及 [@chintoleung](https://github.com/chintoleung) 在 [#189](https://github.com/saya-ch/dsh-mobile/issues/189) 提供的三个 Worker 原型提交参与本版，保留原始提交并追加适配与修正。具体范围见 [更新记录](CHANGELOG.md#063---2026-10-10)。
 
-[@abworks-dev](https://github.com/abworks-dev)'s [#190](https://github.com/saya-ch/dsh-mobile/pull/190) and [#192](https://github.com/saya-ch/dsh-mobile/pull/192), plus [@chintoleung](https://github.com/chintoleung)'s [#191](https://github.com/saya-ch/dsh-mobile/pull/191) and three Worker prototype commits supplied through [#189](https://github.com/saya-ch/dsh-mobile/issues/189), contribute to this release with original history and maintainer corrections. See the [release scope](CHANGELOG.md#063---2026-10-10).
+[@abworks-dev](https://github.com/abworks-dev)'s [#190](https://github.com/saya-ch/dsh-mobile/pull/190), [#191](https://github.com/saya-ch/dsh-mobile/pull/191) and [#192](https://github.com/saya-ch/dsh-mobile/pull/192), plus three Worker prototype commits supplied by [@chintoleung](https://github.com/chintoleung) through [#189](https://github.com/saya-ch/dsh-mobile/issues/189), contribute to this release with original history and maintainer corrections. See the [release scope](CHANGELOG.md#063---2026-10-10).
 
 ## 已合并 PR / Merged PRs
 
