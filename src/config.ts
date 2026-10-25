@@ -118,6 +118,14 @@ export interface PluginConfig {
   contentCacheMaxBytes?: number
   /** Exact `/api/` path prefixes the cache may serve; empty keeps every read live. */
   contentCachePaths?: string[]
+  /**
+   * Freshness window for the second group: plugin bundles and owned static resources.
+   * `0` keeps it off. These are content-addressed or ETag-validated files, so a longer
+   * window is safe, and they are never dropped by a write.
+   */
+  contentCacheAssetTtlMs?: number
+  /** Path prefixes for the static group; empty caches no asset. */
+  contentCacheAssetPaths?: string[]
   rateLimitWindowMs?: number
   maxPairingAttempts?: number
   maxRateLimitKeys?: number
@@ -166,6 +174,8 @@ export interface ResolvedGatewayConfig {
   readonly contentCacheTtlMs: number
   readonly contentCacheMaxBytes: number
   readonly contentCachePaths: readonly string[]
+  readonly contentCacheAssetTtlMs: number
+  readonly contentCacheAssetPaths: readonly string[]
   readonly rateLimitWindowMs: number
   readonly maxPairingAttempts: number
   readonly maxRateLimitKeys: number
@@ -230,6 +240,8 @@ export const Config: z<PluginConfig> = z.object({
   contentCacheTtlMs: z.natural(),
   contentCacheMaxBytes: z.natural(),
   contentCachePaths: z.array(String).default(['/api/sessions']),
+  contentCacheAssetTtlMs: z.natural(),
+  contentCacheAssetPaths: z.array(String).default(['/plugins', '/assets', '/mobile-access']),
   rateLimitWindowMs: z.natural(),
   maxPairingAttempts: z.natural(),
   maxRateLimitKeys: z.natural(),
@@ -462,6 +474,12 @@ export function parseGatewayConfig(raw: unknown): ResolvedGatewayConfig {
     contentCacheTtlMs: integer(value.contentCacheTtlMs, 'contentCacheTtlMs', 0, 0, 60_000),
     contentCacheMaxBytes: integer(value.contentCacheMaxBytes, 'contentCacheMaxBytes', 8 * 1024 * 1024, 64 * 1024, 64 * 1024 * 1024),
     contentCachePaths: Object.freeze(normalizeContentCachePaths(value.contentCachePaths ?? ['/api/sessions'])),
+    // Assets are immutable or validator-backed, so their window can be long; the
+    // ceiling stays an hour so a stale copy cannot outlive an edit by much.
+    contentCacheAssetTtlMs: integer(value.contentCacheAssetTtlMs, 'contentCacheAssetTtlMs', 0, 0, 3_600_000),
+    contentCacheAssetPaths: Object.freeze(normalizeContentCachePaths(
+      value.contentCacheAssetPaths ?? ['/plugins', '/assets', '/mobile-access'],
+    )),
     rateLimitWindowMs: integer(value.rateLimitWindowMs, 'rateLimitWindowMs', 60_000, 1_000, 3_600_000),
     maxPairingAttempts: integer(value.maxPairingAttempts, 'maxPairingAttempts', 8, 1, 100),
     maxRateLimitKeys: integer(value.maxRateLimitKeys, 'maxRateLimitKeys', 256, 1, 4096),
