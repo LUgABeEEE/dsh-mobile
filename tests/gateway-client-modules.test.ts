@@ -1,9 +1,9 @@
 import { createServer, request as requestHttp, type ClientRequest, type IncomingHttpHeaders, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { ClientModuleConflictError, MobileAccessGateway } from '../src/gateway.js'
+import { CLIENT_MODULE_MEASUREMENT_BUDGET_MS, ClientModuleConflictError, MobileAccessGateway, sanitizeModuleDescription } from '../src/gateway.js'
 import { ClientModulePreferenceStore, type ClientModulePreferenceView } from '../src/client-module-preferences.js'
 import { parseGatewayConfig } from '../src/config.js'
 import { MemoryDeviceStore } from '../src/storage.js'
@@ -36,13 +36,14 @@ function manifest(legacy = false) {
 
 interface Result { readonly status: number; readonly body: string; readonly headers: IncomingHttpHeaders }
 
-async function fixture(defaults: readonly string[] = [], legacy = false) {
+async function fixture(defaults: readonly string[] = [], legacy = false, upstreamTimeoutMs = 1_000) {
   const root = await mkdtemp(join(tmpdir(), 'dsh-mobile-module-gateway-'))
   cleanups.push(() => rm(root, { recursive: true, force: true }))
   const mobileLayoutFile = join(root, 'mobile-layout.js')
   await writeFile(mobileLayoutFile, 'globalThis.dedicatedLayout = true;')
   let graph = manifest(legacy)
   let indexRequests = 0
+  let pluginRequests = 0
   let indexOverride: ((request: IncomingMessage, response: ServerResponse) => void) | undefined
   let pluginOverride: ((request: IncomingMessage, response: ServerResponse) => void) | undefined
   const server: Server = createServer((incoming, response) => {
@@ -53,6 +54,7 @@ async function fixture(defaults: readonly string[] = [], legacy = false) {
       response.writeHead(200, { 'content-type': 'text/html', 'content-length': Buffer.byteLength(body) })
       response.end(body)
     } else if (incoming.url?.startsWith('/plugins/')) {
+      pluginRequests += 1
       if (pluginOverride !== undefined) pluginOverride(incoming, response)
       else response.end(`globalThis.modules = ${JSON.stringify(incoming.url)};`)
     }
@@ -69,7 +71,7 @@ async function fixture(defaults: readonly string[] = [], legacy = false) {
   const config = parseGatewayConfig({
     listenHost: '127.0.0.1', listenPort: 0, tls: { mode: 'disabled' },
     upstreamOrigin: `http://127.0.0.1:${String(address.port)}`, publicAuthorities: ['127.0.0.1'], allowedCidrs: ['127.0.0.0/8'],
-    stateFile: join(root, 'devices.json'), mobileLayoutFile, excludedClientModules: [...defaults], upstreamTimeoutMs: 1_000,
+    stateFile: join(root, 'devices.json'), mobileLayoutFile, excludedClientModules: [...defaults], upstreamTimeoutMs,
   })
   const gateway = new MobileAccessGateway(Object.freeze({ ...config, discovery: false }), new MemoryDeviceStore(), undefined, undefined, undefined, undefined, undefined, preferences)
   cleanups.push(() => gateway.close())
@@ -110,7 +112,8 @@ async function fixture(defaults: readonly string[] = [], legacy = false) {
     return JSON.parse(result.body) as ClientModulePreferenceView
   }
   return {
-    gateway, preferences, first, second, request, view,
+    gateway, preferences, first, second, request, view, root,
+    pluginRequests: () => pluginRequests,
     graph: () => graph, replaceGraph: (next: ReturnType<typeof manifest>) => { graph = next }, indexRequests: () => indexRequests,
     overrideIndex: (handler: (request: IncomingMessage, response: ServerResponse) => void) => { indexOverride = handler },
     overridePlugins: (handler: (request: IncomingMessage, response: ServerResponse) => void) => { pluginOverride = handler },
@@ -124,6 +127,18 @@ function boot(body: string): { entries: Array<{ id: string }>; batches: Array<{ 
   return JSON.parse(match[1]) as { entries: Array<{ id: string }>; batches: Array<{ url: string; entries: string[] }> }
 }
 
+describe('installed module descriptions', () => {
+  it('keeps one readable line and drops control characters and URLs', () => {
+    expect(sanitizeModuleDescription('  Manage\nDeepSeek login\tand billing  ')).toBe('Manage DeepSeek login and billing')
+    expect(sanitizeModuleDescription('See https://example.com/path for details')).toBe('See for details')
+    expect(sanitizeModuleDescription('')).toBeUndefined()
+    expect(sanitizeModuleDescription(42)).toBeUndefined()
+    const truncated = sanitizeModuleDescription('x'.repeat(400))
+    expect(truncated?.length).toBeLessThanOrEqual(200)
+    expect(truncated?.endsWith('…')).toBe(true)
+  })
+})
+
 describe('authenticated client module selection', () => {
   it('lists only module ids, installed dependencies and required flags without URL or credential metadata', async () => {
     const setup = await fixture()
@@ -131,14 +146,101 @@ describe('authenticated client module selection', () => {
     expect(view).toMatchObject({ source: 'plugin', excludedClientModules: [], defaultExcludedClientModules: [], reloadRequired: true })
     expect(view.entries.find(entry => entry.id === layoutId)?.required).toBe(true)
     expect(view.entries.find(entry => entry.id === core[0])?.required).toBe(true)
-    expect(view.entries.find(entry => entry.id === 'dependent')).toEqual({ id: 'dependent', required: false, dependencies: ['base'] })
+    expect(view.entries.find(entry => entry.id === 'dependent')).toMatchObject({ id: 'dependent', required: false, dependencies: ['base'] })
     expect(view.entries.find(entry => entry.id === 'feature')?.required).toBe(false)
+    // The panel exists to choose what the phone loads, so measured entries report
+    // both source and gzipped bytes; a failed probe leaves both fields absent.
+    expect(setup.pluginRequests()).toBe(0)
+    expect(view.entries.every(entry => entry.bytes === undefined)).toBe(true)
+    const measured = await setup.request(path, setup.first, { measure: true })
+    expect(measured.status).toBe(200)
+    const measuredView = JSON.parse(measured.body) as ClientModulePreferenceView
+    const sized = measuredView.entries.filter(entry => entry.bytes !== undefined)
+    expect(sized.length).toBe(view.entries.length)
+    expect(measuredView.entries.find(entry => entry.id === layoutId)?.bytes).toBe(Buffer.byteLength('globalThis.dedicatedLayout = true;'))
+    for (const entry of sized) expect(entry.gzipBytes).toBeGreaterThan(0)
+    for (const entry of measuredView.entries.filter(entry => entry.bytes === undefined)) expect(entry.gzipBytes).toBeUndefined()
+    for (const entry of measuredView.entries) {
+      if (entry.description === undefined) continue
+      expect(entry.description.length).toBeLessThanOrEqual(200)
+      expect(entry.description).not.toMatch(/[\u0000-\u001f\u007f]/u)
+    }
     const body = JSON.stringify(view)
     expect(body).not.toContain('/plugins/')
     expect(body).not.toContain('127.0.0.1')
     expect(body).not.toContain(setup.first.sessionToken)
     expect(body).not.toContain(setup.first.deviceToken)
     expect(body).not.toContain(setup.first.deviceId)
+  })
+
+  it('does not fetch optional bundles while reading, saving or resetting selections', async () => {
+    const setup = await fixture()
+    setup.overridePlugins(() => { throw new Error('ordinary settings must not measure a bundle') })
+    expect((await setup.request(path, setup.first)).status).toBe(200)
+    expect((await setup.request(path, setup.first, { excludedClientModules: ['feature'] })).status).toBe(200)
+    expect(await setup.preferences.read(setup.first.deviceId)).toMatchObject({ excludedClientModules: ['feature'] })
+    expect((await setup.request(path, setup.first, { reset: true })).status).toBe(200)
+    expect(setup.pluginRequests()).toBe(0)
+  })
+
+  it('drains rejected measurement response streams before completing the operation', async () => {
+    const setup = await fixture()
+    const closed: Promise<void>[] = []
+    setup.overridePlugins((_request, response) => {
+      closed.push(new Promise<void>(resolve => { response.once('close', resolve) }))
+      response.writeHead(503); response.flushHeaders()
+    })
+    const measured = await setup.gateway.measureClientModules()
+    await Promise.all(closed)
+    expect(closed.length).toBeGreaterThan(0)
+    expect(measured.entries.filter(entry => entry.id !== layoutId).every(entry => entry.bytes === undefined)).toBe(true)
+    expect((await setup.gateway.describeClientModules()).entries.find(entry => entry.id === layoutId)?.bytes).toBeGreaterThan(0)
+  })
+
+  it('cancels admitted measurement requests and admits a later measurement only after draining them', async () => {
+    const setup = await fixture([], false, 30_000)
+    let ready: () => void = () => {}
+    const started = new Promise<void>(resolve => { ready = resolve })
+    const closed: Promise<void>[] = []
+    setup.overridePlugins((_request, response) => {
+      closed.push(new Promise<void>(resolve => { response.once('close', resolve) }))
+      response.writeHead(200); response.write('held bundle'); ready()
+    })
+    const controller = new AbortController()
+    const pending = setup.gateway.measureClientModules(undefined, controller.signal)
+    const rejection = expect(pending).rejects.toBeDefined()
+    await started
+    await expect(setup.gateway.measureClientModules()).rejects.toMatchObject({ status: 429 })
+    controller.abort(); await rejection; await Promise.all(closed)
+    setup.overridePlugins((_request, response) => { response.end('fresh bundle') })
+    expect((await setup.gateway.measureClientModules()).entries.find(entry => entry.id === 'feature')?.bytes).toBeGreaterThan(0)
+  })
+
+  it('returns completed sizes at the overall measurement deadline and closes stalled upstreams', async () => {
+    const setup = await fixture([], false, 30_000)
+    const closed: Promise<void>[] = []
+    setup.overridePlugins((_request, response) => {
+      closed.push(new Promise<void>(resolve => { response.once('close', resolve) }))
+      response.writeHead(200); response.write('held bundle')
+    })
+    const measured = await setup.gateway.measureClientModules()
+    await Promise.all(closed)
+    expect(CLIENT_MODULE_MEASUREMENT_BUDGET_MS).toBeLessThan(15_000)
+    expect(closed.length).toBeGreaterThan(0)
+    expect(measured.entries.find(entry => entry.id === layoutId)?.bytes).toBeGreaterThan(0)
+    expect(measured.entries.find(entry => entry.id === 'feature')?.bytes).toBeUndefined()
+  })
+
+  it('looks up exported package metadata from the profile context and refreshes changed descriptions explicitly', async () => {
+    const setup = await fixture()
+    const directory = join(setup.root, 'node_modules', 'feature')
+    await mkdir(directory, { recursive: true })
+    const file = join(directory, 'package.json')
+    await writeFile(file, JSON.stringify({ name: 'feature', description: 'First description' }))
+    expect((await setup.gateway.measureClientModules()).entries.find(entry => entry.id === 'feature')?.description).toBe('First description')
+    await writeFile(file, JSON.stringify({ name: 'feature', description: 'Second description' }))
+    expect((await setup.gateway.describeClientModules()).entries.find(entry => entry.id === 'feature')?.description).toBe('First description')
+    expect((await setup.gateway.measureClientModules()).entries.find(entry => entry.id === 'feature')?.description).toBe('Second description')
   })
 
   it('changes only the authenticated device and distinguishes its immutable boot batch from another device', async () => {

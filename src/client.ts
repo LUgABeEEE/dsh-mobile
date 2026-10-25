@@ -25,6 +25,7 @@ import { createMobileAssetLoadReporter, ownsMobileCustomization, readMobileAsset
 import { EXTENSION_LIMITS, LEGACY_CUSTOM_ASSET_LIMIT } from './extension-limits.js'
 import { installMobileConnectionRecovery, type MobileConnectionState } from './client-recovery.js'
 import { installMobileUiLocalePersistence } from './mobile-ui-locale.js'
+import { dismissMobileDirectoryPicker, installMobileDirectoryPicker } from './mobile-directory-picker.js'
 
 export { shouldNudgeReconnect, shouldRenewSession } from './client-recovery.js'
 export type { MobileConnectionState } from './client-recovery.js'
@@ -134,6 +135,7 @@ export function installMobileNativeBack(view: Window, page: Document, blocked: (
     const top = layers.at(-1)
     if (top === undefined) return
     claim()
+    if (dismissMobileDirectoryPicker(top)) return
     const modelEntry = [...modelPopups].find(([popup]) => popup.contains(top))
     if (modelEntry !== undefined) {
       const [modelPopup, trigger] = modelEntry
@@ -4548,7 +4550,22 @@ export function apply(ctx: ClientContext): void {
         getLayout: () => ctx.get('layout'),
         getSidebarRight: () => ctx.get('sidebarRight'),
       }))
-      return () => { disposeClientModuleDialogs(); removeModuleSettings(); removeSettingsAction(); removeCustom(); removeSurface(); removeVoiceSession(); removeDraftTransfer(); localFont.dispose(); style.remove() }
+      // The dedicated page owns its directory flow: the desktop composition
+      // keeps DSH's adaptive picker (a native OS chooser there), which no remote
+      // browser can reach. Only this authenticated entry registers it.
+      const removeDirectoryPicker = window.__DSH_MOBILE_FRONTEND__ === 'dedicated'
+        ? installMobileDirectoryPicker(ctx, document) : () => Promise.resolve()
+      return async () => {
+        // Start the picker removal synchronously so no new flow can open, but run
+        // the existing teardown in the tick it always used. Awaiting the picker
+        // first would defer composer and queued native-call cancellation to a later
+        // microtask, letting an already-disposed owner reach the device
+        // (smoke:voice-session asserts a cancelled call must not).
+        const removal = removeDirectoryPicker()
+        try {
+          disposeClientModuleDialogs(); removeModuleSettings(); removeSettingsAction(); removeCustom(); removeSurface(); removeVoiceSession(); removeDraftTransfer(); localFont.dispose(); style.remove()
+        } finally { await removal }
+      }
     }
     const removeControl = installDshLanguageBoundSurface(() => {
       const control = installControl()

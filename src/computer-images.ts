@@ -1,6 +1,6 @@
-import { lstat, opendir, readFile } from 'node:fs/promises'
+import { lstat, opendir, readFile, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { basename, dirname, extname, isAbsolute, resolve } from 'node:path'
+import { basename, dirname, extname, isAbsolute, posix, resolve, win32 } from 'node:path'
 import { HttpError } from './http-security.js'
 
 const MAX_ENTRIES = 500
@@ -64,6 +64,100 @@ export async function listComputerImages(path: string | null, signal?: AbortSign
   rows.sort((left, right) => left.kind === right.kind
     ? left.name.localeCompare(right.name)
     : left.kind === 'directory' ? -1 : 1)
+  const parent = dirname(target)
+  return Object.freeze({
+    path: target,
+    ...(parent === target ? {} : { parent }),
+    entries: Object.freeze(rows),
+    truncated,
+  })
+}
+
+/** One folder row rendered by the authenticated mobile directory picker. */
+export interface DirectoryPickerEntry {
+  readonly name: string
+  readonly path: string
+}
+
+/** A bounded folder-only listing for the mobile workspace directory picker. */
+export interface DirectoryPickerListing {
+  readonly path: string
+  readonly parent?: string
+  readonly entries: readonly DirectoryPickerEntry[]
+  readonly truncated: boolean
+}
+
+/**
+ * Resolve a workspace path without a relative or current-drive fallback.
+ *
+ * @param path - Fully qualified directory, or null/empty for the Host home.
+ * @param platform - Host path syntax; explicit for cross-platform parser tests.
+ * @returns The normalized fully qualified path in the selected syntax.
+ */
+export function resolveWorkspaceDirectoryPath(path: string | null, platform: NodeJS.Platform = process.platform): string {
+  if (path === null || path === '') return homedir()
+  const paths = platform === 'win32' ? win32 : posix
+  const qualified = platform !== 'win32' || (
+    /^(?:[A-Za-z]:[\\/]|[\\/]{2}[^\\/]+[\\/]+[^\\/]+(?:[\\/]|$))/u.test(path)
+    && !/^[\\/]{2}[?.][\\/]/u.test(path)
+  )
+  if (path.includes('\0') || !paths.isAbsolute(path) || !qualified) throw new HttpError(400, 'bad_path')
+  return paths.resolve(path)
+}
+
+/**
+ * List folders only for the dedicated mobile workspace picker.
+ *
+ * Returns at most 500 enterable folders, including directory links. A truncated
+ * level retains its first filesystem-enumerated rows; callers can enter an
+ * absolute path to reach an omitted row. Cancellation preserves its reason;
+ * pending filesystem operations and handle closure settle before this request
+ * releases its Gateway work slot.
+ */
+export async function listWorkspaceDirectories(path: string | null, signal?: AbortSignal): Promise<DirectoryPickerListing> {
+  signal?.throwIfAborted()
+  const target = resolveWorkspaceDirectoryPath(path)
+  const rows: DirectoryPickerEntry[] = []
+  let truncated = false
+  let directory
+  try {
+    directory = await opendir(target)
+    for (;;) {
+      signal?.throwIfAborted()
+      const entry = await directory.read()
+      signal?.throwIfAborted()
+      if (entry === null) break
+      const entryPath = resolve(target, entry.name)
+      let enterable = entry.isDirectory()
+      if (!enterable && entry.isSymbolicLink()) {
+        try {
+          enterable = (await stat(entryPath)).isDirectory()
+          signal?.throwIfAborted()
+        } catch {
+          signal?.throwIfAborted()
+          // Broken or unreadable links cannot be entered by this picker.
+          continue
+        }
+      }
+      if (!enterable) continue
+      if (rows.length === MAX_ENTRIES) {
+        truncated = true
+        break
+      }
+      rows.push({ name: entry.name, path: entryPath })
+    }
+  } catch (error) {
+    if (signal?.aborted) throw signal.reason
+    throw new HttpError(404, 'directory_unavailable')
+  } finally {
+    try {
+      await directory?.close()
+    } catch {
+      throw new HttpError(500, 'directory_cleanup_failed')
+    }
+  }
+  signal?.throwIfAborted()
+  rows.sort((left, right) => left.name.localeCompare(right.name))
   const parent = dirname(target)
   return Object.freeze({
     path: target,

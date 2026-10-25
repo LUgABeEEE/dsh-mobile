@@ -1,22 +1,16 @@
 # Community bundle for the stock DSH Web profile. Installation contributes a
 # Host gateway and a browser Client face; it does not patch DSH source files.
-- id: directory-picker
-  name: '@deepseek-ai/dsh-host-directory-picker-auto'
-  disabled: true
-
+#
+# The directory picker is deliberately NOT composed here. Since DSH 0.2.1 the
+# `directory-picker` row is `@deepseek-ai/dsh-host-directory-picker-auto`, which
+# resolves the backend once at boot and mounts both its Host and Client faces
+# itself; the official Desktop no longer inserts its own pair. Inserting a second
+# picker here therefore collides on the single `directoryFlow` slots and on the
+# `directoryPicker` service, which makes the "Add workspace" action and its
+# Ctrl+O shortcut disappear. The dedicated Mobile page registers its own in-page
+# flow from the client face instead (see src/client.ts), so the desktop keeps its
+# native OS chooser without a second Host entry.
 - insert:
-    - id: directory-picker-mobile-host
-      name: '@deepseek-ai/dsh-host-directory-picker-browse'
-      # Windows DSH Desktop supplies its own browse pair after user patches.
-      # Its `desktopProfiles` service can appear before `desktopRuntime`; keep
-      # the platform guard so a Desktop profile on macOS/Linux retains the
-      # portable in-page picker.
-      disabled: !!js process.platform === 'win32' && (ctx.get('desktopRuntime')?.platform === 'win32' || ctx.get('desktopProfiles') !== undefined)
-
-    - id: directory-picker-mobile-surface
-      name: '@deepseek-ai/dsh-client-ui-directory-picker-browse'
-      disabled: !!js process.platform === 'win32' && (ctx.get('desktopRuntime')?.platform === 'win32' || ctx.get('desktopProfiles') !== undefined)
-
     - id: mobile-access
       name: dsh-mobile
       inject: [webServer, connection]
@@ -38,4 +32,3 @@
     # DSH anchors this file entry beside the bundle patch, independent of pnpm's linker.
     - id: dsh-ui-fixes
       name: ./packages/question-fixes/lib/index.mjs
-

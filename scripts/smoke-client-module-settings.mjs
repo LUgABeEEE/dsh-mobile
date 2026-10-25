@@ -279,6 +279,21 @@ try {
   assert.deepEqual(await dialog().locator('[data-client-module-group]').evaluateAll(nodes => nodes.map(node => node.dataset.clientModuleGroup)), ['extensions', 'system', 'required'])
   assert.equal(await dialog().locator('details[data-client-module-group="system"]').getAttribute('open'), null)
   assert.equal(await dialog().locator('details[data-client-module-group="required"]').getAttribute('open'), null)
+  const presetPosts = record.requests.filter(item => item.method === 'POST').length
+  await confirm('accept', () => dialog().getByRole('button', { name: /^(?:仅必需（最小加载）|Required only \(minimal load\)|Solo obbligatori \(caricamento minimo\))$/u }).click())
+  assert.equal(record.requests.filter(item => item.method === 'POST').length, presetPosts,
+    'The required-only preset persisted choices without an explicit save')
+  assert.equal(await skinRow().getByRole('checkbox').isChecked(), false)
+  const presetRequired = catalog.entries.find(entry => entry.required)
+  assert(presetRequired !== undefined)
+  await dialog().getByRole('searchbox').fill(presetRequired.id)
+  assert.equal(await dialog().locator('[data-client-module-id]').getByRole('checkbox').isChecked(), true)
+  assert.equal(await dialog().locator('[data-client-module-id]').getByRole('checkbox').isDisabled(), true)
+  await confirm('accept', () => close().click())
+  await dialog().waitFor({ state: 'detached' })
+  await openManager()
+  assert.equal(await skinRow().getByRole('checkbox').isChecked(), true, 'Discarding the preset changed saved choices')
+  record.checks.push('required-only preset protects required modules, stays draft-only and can be discarded')
   const search = dialog().getByRole('searchbox')
   await search.fill('no-matching-owned-module')
   await dialog().getByRole('button', { name: /Clear filters|清除筛选|Cancella filtri/u }).waitFor({ state: 'visible' })
@@ -289,6 +304,21 @@ try {
   assert.equal(await skinRow().getByRole('checkbox').isChecked(), selected, 'Module details changed the loading choice')
   await skinRow().getByRole('checkbox').uncheck()
   assert.equal(await save().isEnabled(), true)
+  const [measuredResponse] = await Promise.all([
+    phone.waitForResponse(response => new URL(response.url()).pathname === modulePath
+      && response.request().method() === 'POST' && response.request().postDataJSON()?.measure === true),
+    dialog().locator('[data-client-module-measure]').click(),
+  ])
+  assert.equal(measuredResponse.status(), 200, 'Explicit module measurement HTTP failure')
+  const measuredCatalog = await measuredResponse.json()
+  assert(measuredCatalog.entries.some(entry => entry.gzipBytes > 0), 'Explicit measurement produced no real transfer sizes')
+  assert(measuredCatalog.entries.some(entry => entry.id === '@deepseek-ai/dsh-client-ui-layout' && entry.gzipBytes > 0),
+    'Measurement did not include the actual Mobile layout')
+  await phone.waitForFunction(() => document.querySelector('.dsh-module-save')?.disabled === false)
+  assert.equal(await skinRow().getByRole('checkbox').isChecked(), false, 'Measurement discarded an unsaved module choice')
+  assert(!measuredCatalog.excludedClientModules.includes(skinId), 'A read-only measurement persisted the unsaved choice')
+  assert.deepEqual(await retained(), before, 'Measurement replaced the document or the actual unsent draft')
+  record.checks.push('explicit real size measurement includes Mobile layout and preserves unsaved choices, persisted defaults and the live draft')
   assert.match(await dialog().locator('.dsh-module-footer > p').first().textContent(), /(?:1 changes|1 项改动|1 modifiche)/u)
   await dialog().locator('[data-client-module-filter]').selectOption('excluded')
   assert.equal(await skinRow().count(), 1)

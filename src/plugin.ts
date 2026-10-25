@@ -592,6 +592,7 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
       entry => { logger.warn('auth failure %s', JSON.stringify(entry)) },
       entry => { logger.warn('http failure %s', JSON.stringify(entry)) },
       entry => { logger.info('upstream auth %s', JSON.stringify(entry)) },
+      entry => { logger.warn('slow api %s', JSON.stringify(entry)) },
     )
     await candidate.start()
     lanGateway = candidate
@@ -677,6 +678,7 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
         entry => { logger.warn('auth failure %s', JSON.stringify(entry)) },
         entry => { logger.warn('http failure %s', JSON.stringify(entry)) },
         entry => { logger.info('upstream auth %s', JSON.stringify(entry)) },
+        entry => { logger.warn('slow api %s', JSON.stringify(entry)) },
       )
       await candidate.start()
       return candidate
@@ -705,6 +707,7 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
       entry => { logger.warn('auth failure %s', JSON.stringify(entry)) },
       entry => { logger.warn('http failure %s', JSON.stringify(entry)) },
       entry => { logger.info('upstream auth %s', JSON.stringify(entry)) },
+      entry => { logger.warn('slow api %s', JSON.stringify(entry)) },
     )
     try { await candidate.start() } catch (error) {
       await candidate.close()
@@ -720,6 +723,7 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
       entry => { logger.warn('auth failure %s', JSON.stringify(entry)) },
       entry => { logger.warn('http failure %s', JSON.stringify(entry)) },
       entry => { logger.info('upstream auth %s', JSON.stringify(entry)) },
+      entry => { logger.warn('slow api %s', JSON.stringify(entry)) },
     )
     try { await candidate.start() } catch (error) {
       await candidate.close()
@@ -947,8 +951,11 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
             }
             if (request.method !== 'POST') throw new HttpError(405, 'method_not_allowed')
             const body = await readJsonObject(request, template.maxBodyBytes)
-            if (Object.keys(body).length !== 1 || Object.keys(body).some(key => key !== 'reset' && key !== 'excludedClientModules')) throw new HttpError(400, 'bad_request')
-            const view = body.reset === true
+            if (Object.keys(body).length !== 1 || Object.keys(body).some(key => key !== 'reset' && key !== 'excludedClientModules' && key !== 'measure')
+              || ('measure' in body && body.measure !== true)) throw new HttpError(400, 'bad_request')
+            const view = body.measure === true
+              ? await gateway.measureClientModules(undefined, operation.signal)
+              : body.reset === true
               ? await gateway.resetClientModules(undefined, operation.signal)
               : await gateway.configureClientModules(body.excludedClientModules, undefined, operation.signal)
             sendJson(response, 200, view, false)
