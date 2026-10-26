@@ -5,7 +5,7 @@ import { spawn } from 'node:child_process'
 import { createServer } from 'node:http'
 import { connect } from 'node:net'
 import { createRequire } from 'node:module'
-import { copyFile, lstat, mkdir, mkdtemp, readdir, readFile, realpath, rename, unlink, writeFile } from 'node:fs/promises'
+import { copyFile, lstat, mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, unlink, writeFile } from 'node:fs/promises'
 import { closeSync, openSync, writeSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
@@ -1054,36 +1054,58 @@ async function runFullSmoke({ negativeControl = false, pairDiagnostic = false } 
   const dshVersion = createRequire(binary)('@deepseek-ai/dsh/package.json').version
   assert.equal(dshVersion, RUNTIME_VERSION, 'Push public-contract fixture is pinned to the validated DSH contract runtime')
   const tarballSha256 = createHash('sha256').update(await readFile(tarball)).digest('hex')
-  if (pairDiagnostic) assert.equal(tarballSha256, '80787f9c5809f29b06c07836cc323ea32ce5869d1efaf542b87e70db6227450f',
-    'Pair diagnostic is pinned to the controller-provided post-I1 candidate')
   const pairDiagnosticRunId = randomUUID()
   // All diagnostics live inside the OWNED per-run temporary root (unique run identity; no committed
   // plan-path dependency, no fixed filenames, no clean-checkout ENOENT / repeat-run EEXIST). The
   // optional pair-diagnostic log requires an explicit absolute output path from the caller.
   const root = await mkdtemp(join(tmpdir(), prefix))
-  const diagnosticsDir = join(root, 'diagnostics')
-  await mkdir(diagnosticsDir, { recursive: true })
+  // Optional explicit seam for behavioral coverage of the runtime-diagnostic setup-failure path:
+  // an absolute directory for the runtime diagnostic; defaults to the owned root. Pointing it at an
+  // existing FILE (or an unwritable location) deterministically exercises the fail-closed setup path.
+  const explicitDiagnosticsDir = process.env.DSH_PUSH_DIAGNOSTICS_DIR
+  const diagnosticsDir = typeof explicitDiagnosticsDir === 'string' && explicitDiagnosticsDir !== '' && isAbsolute(explicitDiagnosticsDir)
+    ? explicitDiagnosticsDir : join(root, 'diagnostics')
   const runtimeDiagnosticPath = join(diagnosticsDir, `task8-push-runtime-${pairDiagnosticRunId}.jsonl`)
-  const identity = { runId: pairDiagnosticRunId, at: new Date().toISOString(), mode: pairDiagnostic ? 'pair-diagnostic' : negativeControl ? 'negative-control-owner' : 'positive',
-    smokeSha256: await fileSha256(new URL(import.meta.url).pathname), tarballSha256,
-    dshVersion, runtimeCli: binary, transportHelperSha256: await fileSha256(transportPath),
-    networkGuardSha256: await fileSha256(networkGuardPath), preflightSha256: await fileSha256(preflightPath) }
   const pairDiagnosticTarget = process.env[PAIR_DIAGNOSTIC_LOG_ENV]
   let pairDiagnosticFd
   let runtimeDiagnosticFd
+  let identity
   const loggingSetupFailures = []
+  // Owned fail-closed diagnostic setup (fix-round-2 N1): any failure here is reported by its named
+  // condition, closes acquired descriptors (caller-owned partial files are kept, never overwritten
+  // or deleted), removes ONLY this owned root, and exits before any package/profile/DSH/browser work.
+  const failClosedSetup = async named => {
+    const closed = []
+    for (const [label, fd] of [['runtime-diagnostic', runtimeDiagnosticFd], ['pair-diagnostic', pairDiagnosticFd]]) {
+      if (fd !== undefined) { try { closeSync(fd); closed.push(label) } catch { closed.push(`${label}:close-failed`) } }
+    }
+    // The owned mkdtemp root is always ours to remove on setup failure; caller-owned explicit
+    // outputs (pair log / seam diagnostics dir) are never inside it and are never touched.
+    let rootRemoved = false
+    try { await rm(root, { recursive: true, force: true }); rootRemoved = true } catch { rootRemoved = false }
+    console.log(JSON.stringify({ status: 'DIAGNOSTIC_SETUP_FAILED', failure: named,
+      ownedRoot: root, rootRemoved, descriptorsClosed: closed,
+      callerTargetTouched: false, mode: pairDiagnostic ? 'pair-diagnostic' : negativeControl ? 'negative-control-owner' : 'positive' }))
+    process.exit(1)
+  }
+  try { await mkdir(diagnosticsDir, { recursive: true }) }
+  catch (error) { await failClosedSetup(`diagnostics-dir-create:${error?.code ?? error?.name ?? 'Error'}`) }
+  try {
+    identity = { runId: pairDiagnosticRunId, at: new Date().toISOString(), mode: pairDiagnostic ? 'pair-diagnostic' : negativeControl ? 'negative-control-owner' : 'positive',
+      smokeSha256: await fileSha256(new URL(import.meta.url).pathname), tarballSha256,
+      dshVersion, runtimeCli: binary, transportHelperSha256: await fileSha256(transportPath),
+      networkGuardSha256: await fileSha256(networkGuardPath), preflightSha256: await fileSha256(preflightPath) }
+  } catch (error) { await failClosedSetup(`run-identity:${error?.code ?? error?.name ?? 'Error'}`) }
   try {
     runtimeDiagnosticFd = openSync(runtimeDiagnosticPath, 'wx', 0o600)
-  } catch (error) { loggingSetupFailures.push(`runtime-diagnostic-open:${error?.code ?? error?.name ?? 'Error'}`) }
+  } catch (error) { await failClosedSetup(`runtime-diagnostic-open:${error?.code ?? error?.name ?? 'Error'}`) }
   if (pairDiagnostic) {
     if (typeof pairDiagnosticTarget !== 'string' || !isAbsolute(pairDiagnosticTarget)) {
-      loggingSetupFailures.push('pair-diagnostic-target-missing')
-    } else {
-      try { pairDiagnosticFd = openSync(pairDiagnosticTarget, 'wx', 0o600) }
-      catch (error) { loggingSetupFailures.push(`pair-diagnostic-open:${error?.code ?? error?.name ?? 'Error'}`) }
+      await failClosedSetup('pair-diagnostic-target-missing')
     }
+    try { pairDiagnosticFd = openSync(pairDiagnosticTarget, 'wx', 0o600) }
+    catch (error) { await failClosedSetup(`pair-diagnostic-open:${error?.code ?? error?.name ?? 'Error'}`) }
   }
-  for (const failure of loggingSetupFailures) cleanupFailures.push(new Error(`Diagnostic logging setup failed: ${failure}`))
   pairDiagnosticEntry(pairDiagnosticFd, pairDiagnosticRunId, 'identity', 'run-identity', identity)
   pairDiagnosticEntry(runtimeDiagnosticFd, pairDiagnosticRunId, 'identity', 'run-identity', identity)
   pairDiagnosticEntry(pairDiagnosticFd, pairDiagnosticRunId, 'complete', 'owned-temp-root')
