@@ -2198,7 +2198,7 @@ async function runFullSmoke({ negativeControl = false, pairDiagnostic = false } 
       limits: ['Synthetic PushManager and local Apple HTTPS acceptance are not Apple/iPhone delivery evidence.',
         'The paired-expiry case removes short-session cookies; it does not simulate server-side Session TTL.',
         'Chromium cross-document navigation does not establish iOS Home Screen warm-tap or in-flight preservation behavior.',
-        'A never-created-ID public observeSession lookup is not a genuine persisted deleted-target test; this DSH runtime exposes no public SessionPersistence delete operation.'], 
+        'A never-created-ID public observeSession lookup is not a genuine persisted deleted-target test; this DSH runtime exposes no public SessionPersistence delete operation.'],
       cleanup: 'browser and both owned DSH children drained before temporary root removal',
     }
   } catch (error) {
