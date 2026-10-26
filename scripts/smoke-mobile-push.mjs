@@ -23,7 +23,7 @@ const repository = fileURLToPath(new URL('../', import.meta.url))
 const TRANSPORT_MARKER = 'dsh.mobile.push.integration.transport'
 const RUNTIME_VERSION = '0.2.1-rc.2'
 const OWNER_NEGATIVE_MARKER = 'Push ownership negative control detected'
-const PAIR_DIAGNOSTIC_LOG = join(repository, '.superpowers', 'sdd', '2026-10-24-ios-declarative-push', 'task8-pair-diagnostic-11064d8-r2.log')
+const PAIR_DIAGNOSTIC_LOG_ENV = 'DSH_PUSH_PAIR_DIAGNOSTIC_LOG'
 const args = process.argv.slice(2)
 const allowed = new Set(['--help', '--transport-self-test', '--negative-control-owner', '--pair-diagnostic'])
 for (const arg of args) if (!allowed.has(arg)) throw new Error(`Unknown argument: ${arg}`)
@@ -46,7 +46,10 @@ fail-closed unowned Apple endpoints, fail-closed non-loopback/conflicting connec
 missing-preload aborts before any egress, with complete cleanup and without DSH.
 --negative-control-owner intentionally runs the cross-device opaque-reference denial and, only after
 all smoke diagnostics and cleanup succeed, emits: ${OWNER_NEGATIVE_MARKER}
---pair-diagnostic stops after the owned pair attempt and records redacted boundary evidence before cleanup.`
+--pair-diagnostic stops after the owned pair attempt and records redacted boundary evidence before
+cleanup; it requires DSH_PUSH_PAIR_DIAGNOSTIC_LOG=<absolute new file> for its progress log.
+All runtime diagnostics are written inside the owned per-run temporary root and retained only
+through DSH_PUSH_EVIDENCE_DIR; no private plan path is used.`
 if (args.includes('--help')) { console.log(usage); process.exit(0) }
 
 const prefix = 'dsh-mobile-push-smoke-'
@@ -100,12 +103,109 @@ function pairDiagnosticDetail(fd, runId, phase, stage, details) {
   writeSync(fd, JSON.stringify({ runId, at: new Date().toISOString(), phase, stage, details }) + '\n')
 }
 
+/**
+ * Settle one promise under a deadline with an HONEST outcome label: 'fulfilled', 'rejected'
+ * (including rejection with an undefined reason), or 'timeout'. `completed` is kept for existing
+ * callers and means only "settled before the deadline", never success.
+ */
 function settleBefore(promise, timeoutMs) {
   let timer
   return Promise.race([
-    Promise.resolve(promise).then(value => ({ completed: true, value }), error => ({ completed: true, error })),
-    new Promise(resolve => { timer = setTimeout(() => resolve({ completed: false }), timeoutMs) }),
+    Promise.resolve(promise).then(
+      value => ({ completed: true, status: 'fulfilled', value }),
+      error => ({ completed: true, status: 'rejected', error })),
+    new Promise(resolve => { timer = setTimeout(() => resolve({ completed: false, status: 'timeout' }), timeoutMs) }),
   ]).finally(() => clearTimeout(timer))
+}
+
+/**
+ * Derive the warm-tap history-return labels from OBSERVED session identity plus the wait's honest
+ * settlement status — never from settlement alone. Persistence is claimed only when the draft
+ * session itself was observed after the return; otherwise it stays 'cannot-verify'.
+ */
+function historyReturnLabels({ waitStatus, observedSessionId, draftSessionId, observedDraft, unsentDraft }) {
+  const restoredToDraftSession = waitStatus === 'fulfilled' && observedSessionId === draftSessionId
+  return {
+    historyReturn: { waitStatus, restoredToDraftSession, landedOnSession: observedSessionId ?? null },
+    draftSessionPersistence: restoredToDraftSession
+      ? (observedDraft === unsentDraft ? 'retained' : 'not-retained')
+      : 'cannot-verify',
+  }
+}
+
+/**
+ * Validate one child's FINAL network-guard evidence after that child has exited: exact PID, no
+ * blocked entries of any family, and both binding attestations still true. Pure on its input so the
+ * covering controls can exercise every failure branch.
+ */
+function checkFinalGuardEvidence(evidence, expectedPid) {
+  if (evidence === undefined || evidence === null) return { ok: false, reason: 'missing-final-guard-evidence' }
+  if (evidence.processId !== expectedPid) {
+    return { ok: false, reason: `final-guard-pid-mismatch:${String(evidence.processId)}!==${String(expectedPid)}` }
+  }
+  const counters = ['dnsBlocked', 'resolveBlocked', 'connectBlocked', 'httpBlocked', 'fetchBlocked', 'udpDnsBlocked']
+  for (const counter of counters) {
+    const value = evidence[counter]
+    if (value === undefined || value === null || value < 0 || !Number.isSafeInteger(value)) {
+      return { ok: false, reason: `final-guard-counter-invalid:${counter}=${String(value)}` }
+    }
+    if (value !== 0) return { ok: false, reason: `final-guard-block-present:${counter}=${String(value)}` }
+  }
+  if (!Array.isArray(evidence.blocked) || evidence.blocked.length !== 0) {
+    return { ok: false, reason: `final-guard-blocked-entries:${String(evidence.blocked?.length ?? 'not-an-array')}` }
+  }
+  if (evidence.facadeSyncEffective !== true || evidence.cjsPatchVisible !== true) {
+    return { ok: false, reason: 'final-guard-attestation-not-visible' }
+  }
+  return { ok: true, reason: null, finalCounters: Object.fromEntries(counters.map(counter => [counter, evidence[counter]])) }
+}
+
+/**
+ * Release-check route matcher (F1): the tested product's best-effort update lookup
+ * (GET /api/mobile-access/release; src/release-update.ts via src/plugin.ts, triggered by
+ * src/client.ts's control-panel install) is aborted at the OWNED Playwright route boundary before
+ * it can reach the Gateway, so the child's release manager never issues its external fetches.
+ * ONLY this exact GET is matched; everything else passes through untouched.
+ */
+function isReleaseCheckRequest(url, method, allowedOrigins) {
+  try {
+    const parsed = new URL(url)
+    return String(method).toUpperCase() === 'GET'
+      && parsed.pathname === '/api/mobile-access/release'
+      && (allowedOrigins instanceof Set ? allowedOrigins.has(parsed.origin) : false)
+  } catch { return false }
+}
+
+const releaseCheckInterceptions = { count: 0, methods: new Set(), origins: new Set(),
+  nonMatchingPassThrough: 0, foreignOriginSamePathPassThrough: 0 }
+
+/**
+ * Arm the owned release-check abort on one context BEFORE any of its pages navigate. The route
+ * glob deliberately also catches query-suffixed and sub-path spellings; the exact decision is the
+ * pure matcher above: ONLY an exact-path GET whose origin is one of the run's OWNED control origins
+ * (upstream desktop or the Gateway public authority) is aborted. Same-path foreign-origin and
+ * non-GET requests pass through untouched and are counted separately.
+ */
+function armReleaseCheckAbort(context, label, allowedOrigins) {
+  return context.route('**/api/mobile-access/release*', async route => {
+    const request = route.request()
+    let url
+    try { url = new URL(request.url()) } catch { releaseCheckInterceptions.nonMatchingPassThrough += 1; await route.continue(); return }
+    if (String(request.method()).toUpperCase() !== 'GET' || url.pathname !== '/api/mobile-access/release') {
+      releaseCheckInterceptions.nonMatchingPassThrough += 1
+      await route.continue()
+      return
+    }
+    if (!allowedOrigins.has(url.origin)) {
+      releaseCheckInterceptions.foreignOriginSamePathPassThrough += 1
+      await route.continue()
+      return
+    }
+    releaseCheckInterceptions.count += 1
+    releaseCheckInterceptions.methods.add(request.method())
+    releaseCheckInterceptions.origins.add(url.origin)
+    await route.abort('blockedbyclient')
+  }).then(() => label)
 }
 
 function waitForChildClose(child, timeoutMs) {
@@ -500,6 +600,121 @@ async function transportSelfTest() {
     assert.equal(shapesTransport?.appleRequestsBlocked, 2)
     assert.equal(localHits, 1, 'a raw loopback TCP control connection must not fabricate an HTTP request')
     checks.push('normalized array/numeric-keyed and conflicting-host-field targets denied without delegation; loopback still delegated')
+    // Covering controls for the fix-round-1 amended logic (no DSH, no network): honest settlement
+    // labels, history-return label derivation from observed identity, strict final-guard gate
+    // failure branches, and the narrow release-check route matcher with pass-through.
+    const settlementControls = await Promise.all([
+      settleBefore(Promise.resolve('ok'), 250),
+      settleBefore(Promise.reject(new Error('boom')), 250),
+      settleBefore(Promise.reject(undefined), 250),
+      settleBefore(new Promise(() => {}), 250),
+    ])
+    assert.deepEqual(settlementControls.map(entry => entry.status), ['fulfilled', 'rejected', 'rejected', 'timeout'],
+      'settleBefore must distinguish fulfilled/rejected (incl. undefined rejection)/timeout')
+    assert.equal(settlementControls[1].error?.message, 'boom')
+    assert.equal(settlementControls[2].error, undefined, 'rejection with an undefined reason must stay labelled rejected')
+    checks.push('settleBefore honest outcome labels (fulfilled/rejected-with-undefined/timeout)')
+
+    const labelsA = historyReturnLabels({ waitStatus: 'fulfilled', observedSessionId: 'B', draftSessionId: 'B',
+      observedDraft: 'draft', unsentDraft: 'draft' })
+    const labelsB = historyReturnLabels({ waitStatus: 'fulfilled', observedSessionId: 'A', draftSessionId: 'B',
+      observedDraft: '', unsentDraft: 'draft' })
+    const labelsC = historyReturnLabels({ waitStatus: 'timeout', observedSessionId: 'A', draftSessionId: 'B',
+      observedDraft: '', unsentDraft: 'draft' })
+    const labelsD = historyReturnLabels({ waitStatus: 'rejected', observedSessionId: null, draftSessionId: 'B',
+      observedDraft: null, unsentDraft: 'draft' })
+    assert.equal(labelsA.draftSessionPersistence, 'retained')
+    assert.deepEqual(labelsB.historyReturn, { waitStatus: 'fulfilled', restoredToDraftSession: false, landedOnSession: 'A' })
+    assert.equal(labelsB.draftSessionPersistence, 'cannot-verify')
+    assert.equal(labelsC.draftSessionPersistence, 'cannot-verify')
+    assert.equal(labelsD.draftSessionPersistence, 'cannot-verify')
+    checks.push('history-return labels derive from observed identity; cannot-verify preserved on mismatch/transient/timeout')
+
+    const goodGuard = { processId: 4242, blocked: [], dnsBlocked: 0, resolveBlocked: 0, connectBlocked: 0,
+      httpBlocked: 0, fetchBlocked: 0, udpDnsBlocked: 0, facadeSyncEffective: true, cjsPatchVisible: true }
+    assert.equal(checkFinalGuardEvidence(goodGuard, 4242).ok, true)
+    assert.equal(checkFinalGuardEvidence(undefined, 4242).reason, 'missing-final-guard-evidence')
+    assert.equal(checkFinalGuardEvidence({ ...goodGuard, processId: 1 }, 4242).reason.startsWith('final-guard-pid-mismatch'), true)
+    assert.equal(checkFinalGuardEvidence({ ...goodGuard, fetchBlocked: 2 }, 4242).reason, 'final-guard-block-present:fetchBlocked=2')
+    assert.equal(checkFinalGuardEvidence({ ...goodGuard, blocked: [{ api: 'fetch', host: 'x' }] }, 4242).reason,
+      'final-guard-blocked-entries:1')
+    assert.equal(checkFinalGuardEvidence({ ...goodGuard, cjsPatchVisible: false }, 4242).reason,
+      'final-guard-attestation-not-visible')
+    assert.equal(checkFinalGuardEvidence({ ...goodGuard, connectBlocked: undefined }, 4242).reason,
+      'final-guard-counter-invalid:connectBlocked=undefined')
+    checks.push('strict final-guard gate fails on late block / wrong PID / missing / invalid counter / lost attestation')
+
+    const ownedOrigins = new Set(['https://owned.test'])
+    assert.equal(isReleaseCheckRequest('https://owned.test/api/mobile-access/release', 'GET', ownedOrigins), true)
+    assert.equal(isReleaseCheckRequest('https://owned.test/api/mobile-access/release?x=1', 'GET', ownedOrigins), true, 'exact path with query still matches by pathname')
+    assert.equal(isReleaseCheckRequest('https://foreign.test/api/mobile-access/release', 'GET', ownedOrigins), false, 'same-path foreign origin must pass through')
+    assert.equal(isReleaseCheckRequest('https://owned.test/api/mobile-access/release/extra', 'GET', ownedOrigins), false)
+    assert.equal(isReleaseCheckRequest('https://owned.test/api/mobile-access/release', 'POST', ownedOrigins), false)
+    assert.equal(isReleaseCheckRequest('https://owned.test/mobile-access/release', 'GET', ownedOrigins), false)
+    assert.equal(isReleaseCheckRequest('not a url', 'GET', ownedOrigins), false)
+    checks.push('release-check pure matcher: exact GET on an owned origin only; foreign origin, sub-path, non-GET, malformed pass through')
+
+    // REAL route-predicate control (owned headless Chromium + loopback origins only, no DSH): the
+    // armed route glob plus matcher must abort an owned-origin GET including the query-suffixed
+    // spelling, while a same-path foreign-origin GET and an owned-origin POST pass through.
+    {
+      const ownedServer = createServer((_request, response) => { response.writeHead(200).end('ok') })
+      const foreignServer = createServer((_request, response) => { response.writeHead(200).end('foreign') })
+      await new Promise((resolveListen, reject) => { ownedServer.once('error', reject); ownedServer.listen(0, '127.0.0.1', resolveListen) })
+      await new Promise((resolveListen, reject) => { foreignServer.once('error', reject); foreignServer.listen(0, '127.0.0.1', resolveListen) })
+      const ownedOrigin = `http://127.0.0.1:${ownedServer.address().port}`
+      const foreignOrigin = `http://127.0.0.1:${foreignServer.address().port}`
+      const routeOrigins = new Set([ownedOrigin])
+      const routeCounter = { aborted: 0, passed: 0 }
+      let routeBrowser
+      try {
+        routeBrowser = await chromium.launch({ headless: true })
+        const routeContext = await routeBrowser.newContext()
+        await routeContext.route('**/api/mobile-access/release*', async route => {
+          const request = route.request()
+          let url
+          try { url = new URL(request.url()) } catch { routeCounter.passed += 1; await route.continue(); return }
+          if (String(request.method()).toUpperCase() !== 'GET' || url.pathname !== '/api/mobile-access/release'
+            || !routeOrigins.has(url.origin)) { routeCounter.passed += 1; await route.continue(); return }
+          routeCounter.aborted += 1
+          await route.abort('blockedbyclient')
+        })
+        const routePage = await routeContext.newPage()
+        await routePage.goto(`${ownedOrigin}/`, { waitUntil: 'domcontentloaded' })
+        await routePage.evaluate(async ({ ownedOrigin, foreignOrigin }) => {
+          window.__results = {}
+          const attempt = async (label, url, method) => {
+            try {
+              const response = await fetch(url, { method })
+              window.__results[label] = `ok:${response.status}`
+            } catch (error) { window.__results[label] = `aborted:${String(error).slice(0, 40)}` }
+          }
+          await attempt('GET /api/mobile-access/release', `${ownedOrigin}/api/mobile-access/release`, 'GET')
+          await attempt('GET /api/mobile-access/release?probe=1', `${ownedOrigin}/api/mobile-access/release?probe=1`, 'GET')
+          await attempt('POST /api/mobile-access/release', `${ownedOrigin}/api/mobile-access/release`, 'POST')
+          await attempt('GET /api/mobile-access/release/extra', `${ownedOrigin}/api/mobile-access/release/extra`, 'GET')
+        }, { ownedOrigin, foreignOrigin })
+        // Same-path foreign-origin GET is issued through the context's API request (a page-side
+        // cross-origin fetch would fail on CORS, which is not the boundary under test).
+        const foreignResponse = await routeContext.request.get(`${foreignOrigin}/api/mobile-access/release`, { timeout: 5_000 }).catch(error => ({ error }))
+        routePage.__foreignResult = foreignResponse.status !== undefined ? `ok:${foreignResponse.status()}` : `error:${String(foreignResponse.error).slice(0, 40)}`
+        const routeResults = await routePage.evaluate(() => window.__results)
+        assert.equal(routeCounter.aborted, 2, 'owned-origin exact-path GETs (plain + query) must be aborted by the actual route')
+        assert.equal(String(routeResults['GET /api/mobile-access/release']).startsWith('aborted:'), true)
+        assert.equal(String(routeResults['GET /api/mobile-access/release?probe=1']).startsWith('aborted:'), true, 'query-suffixed owned GET must be caught by the route glob and aborted')
+        assert.equal(String(routeResults['POST /api/mobile-access/release']).startsWith('ok:'), true, 'owned-origin POST must pass through')
+        assert.equal(String(routeResults['GET /api/mobile-access/release/extra']).startsWith('ok:'), true, 'sub-path GET must pass through')
+        assert.equal(routePage.__foreignResult.startsWith('ok:'), true, 'same-path foreign-origin GET must pass through')
+        checks.push('actual route predicate: owned-origin GET aborted incl query spelling; foreign-origin/sub-path/POST pass through')
+      } finally {
+        await routeBrowser?.close().catch(() => {})
+        for (const server of [ownedServer, foreignServer]) {
+          server.closeAllConnections?.()
+          if (server.listening) await new Promise(resolveClose => server.close(resolveClose))
+        }
+      }
+    }
+
   } finally {
     if (server?.listening) await new Promise(resolveClose => server.close(resolveClose))
     await removeTemporaryRoot(root, prefix + 'guard-')
@@ -842,11 +1057,35 @@ async function runFullSmoke({ negativeControl = false, pairDiagnostic = false } 
   if (pairDiagnostic) assert.equal(tarballSha256, '80787f9c5809f29b06c07836cc323ea32ce5869d1efaf542b87e70db6227450f',
     'Pair diagnostic is pinned to the controller-provided post-I1 candidate')
   const pairDiagnosticRunId = randomUUID()
-  const pairDiagnosticFd = pairDiagnostic ? openSync(PAIR_DIAGNOSTIC_LOG, 'wx', 0o600) : undefined
-  const runtimeDiagnosticPath = join(dirname(PAIR_DIAGNOSTIC_LOG), `task8-push-runtime-${pairDiagnosticRunId}.jsonl`)
-  const runtimeDiagnosticFd = openSync(runtimeDiagnosticPath, 'wx', 0o600)
-  pairDiagnosticEntry(pairDiagnosticFd, pairDiagnosticRunId, 'before', 'owned-temp-root')
+  // All diagnostics live inside the OWNED per-run temporary root (unique run identity; no committed
+  // plan-path dependency, no fixed filenames, no clean-checkout ENOENT / repeat-run EEXIST). The
+  // optional pair-diagnostic log requires an explicit absolute output path from the caller.
   const root = await mkdtemp(join(tmpdir(), prefix))
+  const diagnosticsDir = join(root, 'diagnostics')
+  await mkdir(diagnosticsDir, { recursive: true })
+  const runtimeDiagnosticPath = join(diagnosticsDir, `task8-push-runtime-${pairDiagnosticRunId}.jsonl`)
+  const identity = { runId: pairDiagnosticRunId, at: new Date().toISOString(), mode: pairDiagnostic ? 'pair-diagnostic' : negativeControl ? 'negative-control-owner' : 'positive',
+    smokeSha256: await fileSha256(new URL(import.meta.url).pathname), tarballSha256,
+    dshVersion, runtimeCli: binary, transportHelperSha256: await fileSha256(transportPath),
+    networkGuardSha256: await fileSha256(networkGuardPath), preflightSha256: await fileSha256(preflightPath) }
+  const pairDiagnosticTarget = process.env[PAIR_DIAGNOSTIC_LOG_ENV]
+  let pairDiagnosticFd
+  let runtimeDiagnosticFd
+  const loggingSetupFailures = []
+  try {
+    runtimeDiagnosticFd = openSync(runtimeDiagnosticPath, 'wx', 0o600)
+  } catch (error) { loggingSetupFailures.push(`runtime-diagnostic-open:${error?.code ?? error?.name ?? 'Error'}`) }
+  if (pairDiagnostic) {
+    if (typeof pairDiagnosticTarget !== 'string' || !isAbsolute(pairDiagnosticTarget)) {
+      loggingSetupFailures.push('pair-diagnostic-target-missing')
+    } else {
+      try { pairDiagnosticFd = openSync(pairDiagnosticTarget, 'wx', 0o600) }
+      catch (error) { loggingSetupFailures.push(`pair-diagnostic-open:${error?.code ?? error?.name ?? 'Error'}`) }
+    }
+  }
+  for (const failure of loggingSetupFailures) cleanupFailures.push(new Error(`Diagnostic logging setup failed: ${failure}`))
+  pairDiagnosticEntry(pairDiagnosticFd, pairDiagnosticRunId, 'identity', 'run-identity', identity)
+  pairDiagnosticEntry(runtimeDiagnosticFd, pairDiagnosticRunId, 'identity', 'run-identity', identity)
   pairDiagnosticEntry(pairDiagnosticFd, pairDiagnosticRunId, 'complete', 'owned-temp-root')
   let gatewayPort
   const home = join(root, 'home')
@@ -868,7 +1107,8 @@ async function runFullSmoke({ negativeControl = false, pairDiagnostic = false } 
     const copies = []
     for (const [label, path] of [['initial-transport', evidenceFile], ['initial-guard', guardEvidenceFile],
       ['initial-preflight', preflightEvidenceFile], ['restart-transport', evidenceFileRestart],
-      ['restart-guard', guardEvidenceFileRestart], ['restart-preflight', preflightEvidenceFileRestart]]) {
+      ['restart-guard', guardEvidenceFileRestart], ['restart-preflight', preflightEvidenceFileRestart],
+      ['runtime-diagnostic', runtimeDiagnosticPath]]) {
       try { await copyFile(path, join(target, `task8-${pairDiagnosticRunId}-${label}.json`)); copies.push(label) }
       catch (error) { if (error.code !== 'ENOENT') throw error }
     }
@@ -878,6 +1118,8 @@ async function runFullSmoke({ negativeControl = false, pairDiagnostic = false } 
   const endpoint = `https://n-${transportNonce}.push.apple.com/${transportNonce}`
   const cases = [], cleanupFailures = []
   let dsh, browser, browserProxy, failed, stage = 'profile', processExited = false, promptAttempts = 0
+  let initialChildPid, restartedChildPid, evidenceRetentionDir = null
+  const releaseCheckAllowedOrigins = new Set()
   let promptHoldReached, promptHoldRelease, promptHoldPromise, promptHoldHandlerDone
   let desktopContext, desktop, phoneContext, phone, deviceId, installationId, negativeObserved = false
   let expectedProviderCountAfterRevoke, summary, pairDiagnosticResult
@@ -977,6 +1219,7 @@ async function runFullSmoke({ negativeControl = false, pairDiagnostic = false } 
     dsh = launchDsh(root, home, binary, { nonce: transportNonce, transportEvidence: evidenceFile,
       guardEvidence: guardEvidenceFile, preflightEvidence: preflightEvidenceFile, fixtureNonce, fixtureControl })
     mark('complete', 'launch-owned-dsh-process', { pid: dsh.pid })
+    initialChildPid = dsh.pid
     // The hard preflight's deliberate probes are the post-preload baseline (dnsOwned 1 / accepted 0 /
     // blocked 2). Every later counter assertion is a delta against these exact literals, never an
     // absolute feature count.
@@ -996,7 +1239,8 @@ async function runFullSmoke({ negativeControl = false, pairDiagnostic = false } 
     assert.equal(preloadBaseline.transport.processId, dsh.pid, 'Transport evidence PID did not match the actual DSH child')
     assert.equal(preloadBaseline.guard.processId, dsh.pid, 'Network-guard evidence PID did not match the actual DSH child')
     assert.equal(preloadBaseline.preflight.processId, dsh.pid, 'Preflight evidence PID did not match the actual DSH child')
-    guardChainReceipts.push({ child: 'initial', pid: dsh.pid, preflightAttested: true, guardBlockedCount: 0,
+    guardChainReceipts.push({ child: 'initial', pid: dsh.pid, preflightAttested: true,
+      guardBlockedCount: 0, guardBlockedSamplingPoint: 'startup-window',
       baseline: { dnsOwned: 1, requestsAccepted: 0, appleRequestsBlocked: 2 } })
     stage = 'browser'
     // Route ONLY the owned exact public authority through an owned loopback CONNECT tunnel; every
@@ -1025,9 +1269,11 @@ async function runFullSmoke({ negativeControl = false, pairDiagnostic = false } 
     const ownedContextProxy = { server: `http://127.0.0.1:${browserProxy.address().port}` }
     browser = await traced('launch-owned-headless-chromium', () => chromium.launch({ headless: true }))
     desktopContext = await traced('create-owned-desktop-context', () => browser.newContext({ locale: 'en-US' }))
+    await traced('arm-release-check-abort-desktop', () => armReleaseCheckAbort(desktopContext, 'desktop', releaseCheckAllowedOrigins))
     desktop = await traced('create-owned-desktop-page', () => desktopContext.newPage())
     const desktopUrl = await traced('await-owned-dsh-web-readiness', () => dsh.ready())
     const upstreamOrigin = new URL(desktopUrl).origin
+    releaseCheckAllowedOrigins.add(upstreamOrigin)
     let initialFixtureReady
     try {
       initialFixtureReady = await traced('await-public-host-fixture-ready', () => waitForJson(join(home, 'push-integration-fixture-result.json'), value => value.phase === 'fixture-ready' && value.ok === true,
@@ -1057,11 +1303,13 @@ async function runFullSmoke({ negativeControl = false, pairDiagnostic = false } 
     const workspaceId = await traced('create-owned-dsh-workspace-through-public-api', () => createOwnedWorkspace(desktop, workspacePath, 'push-smoke-workspace'))
     const gatewayPairUrl = await traced('open-real-desktop-pairing-window', () => openPairing(desktop, undefined, dsh.logs))
     const gatewayOrigin = new URL(gatewayPairUrl).origin
+    releaseCheckAllowedOrigins.add(gatewayOrigin)
     assert.equal(Number(new URL(gatewayPairUrl).port), gatewayPort, 'Owned HTTPS Gateway must use its allocated restart-stable port')
     assert.equal(new URL(gatewayPairUrl).hostname, FIXTURE_AUTHORITY_HOST,
       'Gateway public origin must derive from the configured publicAuthorities entry, not the loopback bind address')
     phoneContext = await traced('create-owned-mobile-context', () => browser.newContext({ viewport: { width: 390, height: 844 },
       isMobile: true, hasTouch: true, locale: 'en-US', ignoreHTTPSErrors: true, proxy: ownedContextProxy }))
+    await traced('arm-release-check-abort-phone', () => armReleaseCheckAbort(phoneContext, 'phone', releaseCheckAllowedOrigins))
     const pairConsoleDiagnostics = [], pairPageErrors = []
     const attachPhoneObservers = async page => {
       await traced('install-synthetic-push-manager-init-script', () => installSyntheticPushManager(page,
@@ -1330,6 +1578,7 @@ async function runFullSmoke({ negativeControl = false, pairDiagnostic = false } 
     assert(pairingBaseline.value.items.some(item => item.workspaceId === workspaceId), 'Authenticated Workspace baseline omitted owned Workspace')
     assert(pairingBaseline.value.items.some(item => item.workspaceId === workspaceId), 'Authenticated Workspace baseline omitted owned Workspace')
     const unpairedContext = await browser.newContext({ ignoreHTTPSErrors: true, locale: 'en-US', proxy: ownedContextProxy })
+    await traced('arm-release-check-abort-unpaired', () => armReleaseCheckAbort(unpairedContext, 'unpaired', releaseCheckAllowedOrigins))
     try {
       const unpairedPage = await unpairedContext.newPage()
       const opaqueReturn = 'task8-return-check'
@@ -1717,21 +1966,23 @@ async function runFullSmoke({ negativeControl = false, pairDiagnostic = false } 
     const returnSettled = await settleBefore(phone.waitForFunction(id =>
       document.querySelector('[data-conversation-session]')?.getAttribute('data-conversation-session') === id,
       draftSessionId, { timeout: 15_000, polling: 250 }), 17_000)
-    const returnToDraftSession = returnSettled.completed
-      ? await phone.evaluate(() => ({ documentId: window.__dshPushSmokeDocumentId,
-          sessionId: document.querySelector('[data-conversation-session]')?.getAttribute('data-conversation-session'),
-          draft: document.querySelector('[data-conversation-session] [data-composer-input][contenteditable="true"]')?.textContent }))
-      : { restoredWithinBound: false,
-          landedOnSession: await phone.evaluate(() => document.querySelector('[data-conversation-session]')?.getAttribute('data-conversation-session') ?? null).catch(() => null) }
-    // Draft measurement semantics (controller precision 2026-10-26): before = B observed before the
-    // tap; after = visibility in the CURRENT document after the tap; the history return landed on the
-    // last-active session (A), so B's editor is NOT observed post-return and B-draft persistence is
-    // explicitly cannot-verify rather than lost/retained.
+    // Observe the ACTUAL mounted session after the return, regardless of the wait's outcome; every
+    // label below is derived from this observed identity plus the wait's honest settlement status.
+    const returnObservation = await phone.evaluate(() => ({ documentId: window.__dshPushSmokeDocumentId,
+      sessionId: document.querySelector('[data-conversation-session]')?.getAttribute('data-conversation-session'),
+      draft: document.querySelector('[data-conversation-session] [data-composer-input][contenteditable="true"]')?.textContent,
+      composerVisible: (() => { const el = document.querySelector('[data-composer-input]'); if (!el) return false
+        const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0 })() })).catch(() => ({}))
+    const returnLabels = historyReturnLabels({ waitStatus: returnSettled.status,
+      observedSessionId: returnObservation.sessionId ?? null, draftSessionId,
+      observedDraft: returnObservation.draft, unsentDraft })
+    // Draft measurement semantics (reviewer F2): before = B observed before the tap; after =
+    // visibility in the CURRENT document after the tap; persistence is claimed ONLY when the draft
+    // session itself was observed after the return, otherwise explicitly cannot-verify.
     const warmTap = { documentChanged: beforeWarmTap.documentId !== afterWarmTap.documentId,
       draftBeforeInDraftSession: beforeWarmTap.draft, draftVisibilityInDocumentAfterTap: afterWarmTap.draft ?? null,
-      historyReturn: { restoredToDraftSession: returnSettled.completed,
-        landedOnSession: returnToDraftSession.restoredWithinBound === false ? returnToDraftSession.landedOnSession ?? null : draftSessionId },
-      draftSessionPersistence: returnSettled.completed && returnToDraftSession.draft === unsentDraft ? 'retained' : 'cannot-verify',
+      returnObservedSession: returnObservation.sessionId ?? null, returnComposerVisible: returnObservation.composerVisible === true,
+      ...returnLabels,
       targetOpened: afterWarmTap.sessionId === targetSessionId, queryCleared: afterWarmTap.query === '' }
     pairDiagnosticDetail(runtimeDiagnosticFd, pairDiagnosticRunId, 'snapshot', 'warm-tap-measured-effects', warmTap)
     assert.equal(warmTapResult.sessionIdMatched, true, 'Warm tap actual resolver did not reopen the owned Session')
@@ -1812,13 +2063,17 @@ async function runFullSmoke({ negativeControl = false, pairDiagnostic = false } 
     assert.equal(restartedBaseline.transport.processId, dsh.pid, 'Restarted transport evidence PID did not match the actual DSH child')
     assert.equal(restartedBaseline.guard.processId, dsh.pid, 'Restarted network-guard evidence PID did not match the actual DSH child')
     assert.equal(restartedBaseline.preflight.processId, dsh.pid, 'Restarted preflight evidence PID did not match the actual DSH child')
-    guardChainReceipts.push({ child: 'restart', pid: dsh.pid, preflightAttested: true, guardBlockedCount: 0,
+    restartedChildPid = dsh.pid
+    guardChainReceipts.push({ child: 'restart', pid: dsh.pid, preflightAttested: true,
+      guardBlockedCount: 0, guardBlockedSamplingPoint: 'startup-window',
       baseline: { dnsOwned: restartedBaseline.transport.dnsOwned,
         requestsAccepted: restartedBaseline.transport.requestsAccepted,
         appleRequestsBlocked: restartedBaseline.transport.appleRequestsBlocked } })
     desktopContext = await browser.newContext({ locale: 'en-US' })
+    await traced('arm-release-check-abort-restarted-desktop', () => armReleaseCheckAbort(desktopContext, 'restarted-desktop', releaseCheckAllowedOrigins))
     desktop = await desktopContext.newPage()
     const restartedDesktopUrl = await dsh.ready()
+    releaseCheckAllowedOrigins.add(new URL(restartedDesktopUrl).origin)
     const restartedFixtureReady = await waitForJson(join(home, 'push-integration-fixture-result.json'), value => value.phase === 'fixture-ready' && value.ok === true,
       'public Host fixture readiness after DSH restart', 15_000)
     publicSessionObservationRestarted = assertPublicObserveSessionNegative(restartedFixtureReady.publicSessionObservation, 'same-profile DSH restart')
@@ -1966,6 +2221,7 @@ async function runFullSmoke({ negativeControl = false, pairDiagnostic = false } 
 
     const deviceBContext = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true,
       locale: 'en-US', ignoreHTTPSErrors: true, proxy: ownedContextProxy })
+    await traced('arm-release-check-abort-device-b', () => armReleaseCheckAbort(deviceBContext, 'device-b', releaseCheckAllowedOrigins))
     const deviceBPage = await deviceBContext.newPage()
     const pairLabelB = `Task8 Pair B ${randomUUID().slice(0, 8)}`
     const pairBResponsePromise = deviceBPage.waitForResponse(response => new URL(response.url()).pathname === '/mobile-access/auth/pair'
@@ -2194,7 +2450,6 @@ async function runFullSmoke({ negativeControl = false, pairDiagnostic = false } 
       effects: { expiredSession, warmTap, pushController: { mountedRowCount: pushRowCount, subscribeCallsBeforeEnable,
         subscribeCallsAfterEnable, successfulEnrollCount, settingsDiagnostic: pushSettingsDiagnostic }, workerCounts: workersAfter.calls, serviceWorkerScopes: workersAfter.workers,
         cacheKeys: workersAfter.cacheKeys, promptAttempts, syntheticTestPosts },
-      runtimeDiagnosticLog: runtimeDiagnosticPath,
       limits: ['Synthetic PushManager and local Apple HTTPS acceptance are not Apple/iPhone delivery evidence.',
         'The paired-expiry case removes short-session cookies; it does not simulate server-side Session TTL.',
         'Chromium cross-document navigation does not establish iOS Home Screen warm-tap or in-flight preservation behavior.',
@@ -2224,11 +2479,53 @@ async function runFullSmoke({ negativeControl = false, pairDiagnostic = false } 
       await new Promise(resolveClose => browserProxy.close(resolveClose))
       if (browserProxy.listening) cleanupFailures.push(new Error('Owned exact-authority proxy did not close'))
     }
+    // F1 strict final gate: after each actual child has exited (guard files still in the owned root),
+    // its FINAL guard evidence must show the exact PID, zero blocked entries and zero block counters
+    // of every family, with both binding attestations still visible. Any late block, invalid or
+    // missing evidence fails the run — which also suppresses the negative receipt by throwing first.
+    if (processExited || pairDiagnosticResult !== undefined) {
+      const finalGuardChecks = []
+      const checkChild = async (label, expectedPid, guardPath) => {
+        if (expectedPid === undefined) return
+        const evidence = await readTransportEvidence(guardPath).catch(() => undefined)
+        const verdict = checkFinalGuardEvidence(evidence, expectedPid)
+        pairDiagnosticDetail(runtimeDiagnosticFd, pairDiagnosticRunId, 'cleanup', `final-guard-evidence-${label}`, {
+          expectedPid, ok: verdict.ok, reason: verdict.reason, finalCounters: verdict.finalCounters ?? null })
+        finalGuardChecks.push({ label, ...verdict })
+        const receipt = guardChainReceipts.find(entry => entry.pid === expectedPid)
+        if (receipt !== undefined) {
+          receipt.guardFinalSamplingPoint = 'final-after-exit'
+          receipt.guardFinalCounters = verdict.finalCounters ?? null
+        }
+        if (!verdict.ok) cleanupFailures.push(new Error(`Strict final guard gate failed for the ${label} child: ${verdict.reason}`))
+      }
+      await checkChild('initial', initialChildPid, guardEvidenceFile)
+      if (restartedChildPid !== undefined) await checkChild('restart', restartedChildPid, guardEvidenceFileRestart)
+      mark('cleanup', 'release-check-abort-settlement', {
+        intercepted: releaseCheckInterceptions.count, methods: [...releaseCheckInterceptions.methods],
+        origins: [...releaseCheckInterceptions.origins],
+        allowedOrigins: [...releaseCheckAllowedOrigins],
+        foreignOriginSamePathPassThrough: releaseCheckInterceptions.foreignOriginSamePathPassThrough,
+        nonMatchingPassThrough: releaseCheckInterceptions.nonMatchingPassThrough })
+      if (summary !== undefined && summary.guardChain !== undefined) {
+        summary.guardChain.releaseCheckAbort = { path: '/api/mobile-access/release', method: 'GET',
+          allowedOrigins: [...releaseCheckAllowedOrigins],
+          intercepted: releaseCheckInterceptions.count, origins: [...releaseCheckInterceptions.origins],
+          foreignOriginSamePathPassThrough: releaseCheckInterceptions.foreignOriginSamePathPassThrough,
+          nonMatchingPassThrough: releaseCheckInterceptions.nonMatchingPassThrough,
+          settlement: 'aborted-at-owned-route-boundary' }
+      }
+    }
+
+    // Evidence copy runs AFTER the strict gate so the RETAINED runtime diagnostic includes the
+    // per-child final-guard records and the release-abort settlement.
     const evidenceRetention = await persistRawGuardEvidence().catch(error => {
       cleanupFailures.push(new Error(`Raw guard evidence persistence failed: ${error?.message ?? error}`))
       return null
     })
+    evidenceRetentionDir = evidenceRetention?.directory ?? null
     if (evidenceRetention !== null) mark('cleanup', 'raw-guard-evidence-retained', { copied: evidenceRetention.copied.length })
+
     if (processExited && browserExited) {
       const finalAskSettlement = typeof home === 'string'
         ? await readFixtureAskSettlement(home).catch(() => ({ present: false, readErrorCode: 'READ_ERROR' })) : { present: false, readErrorCode: 'HOME_UNAVAILABLE' }
@@ -2268,7 +2565,7 @@ async function runFullSmoke({ negativeControl = false, pairDiagnostic = false } 
       browserSignal: browserStopResult?.signalSent, browserForceKillSent: browserStopResult?.forceKillSent,
       dshClosed: dshStopResult?.closed === true, dshForced: dshStopResult?.forced === true,
       privateRootRemoved: processExited && browserStopResult?.closed === true, withinAbsoluteDeadline: Date.now() <= absoluteDeadline }
-    pairDiagnosticResult.progressLog = relative(repository, PAIR_DIAGNOSTIC_LOG)
+    pairDiagnosticResult.progressLog = pairDiagnosticTarget ?? null
     console.log(JSON.stringify(pairDiagnosticResult, null, 2))
     return pairDiagnosticResult
   }
@@ -2281,7 +2578,8 @@ async function runFullSmoke({ negativeControl = false, pairDiagnostic = false } 
     dshClosed: dshStopResult?.closed === true, dshForced: dshStopResult?.forced === true, dshExitCode: dshStopResult?.code ?? null,
     privateRootRemoved: processExited && browserStopResult?.closed === true, withinAbsoluteDeadline: Date.now() <= absoluteDeadline,
     bodyDeadlineExpired: diagnosticCancelled }
-  summary.runtimeDiagnosticLog = runtimeDiagnosticPath
+  summary.runtimeDiagnostic = { path: runtimeDiagnosticPath,
+    retention: evidenceRetentionDir !== null ? `retained copy at ${evidenceRetentionDir}` : 'ephemeral (owned temporary root; set DSH_PUSH_EVIDENCE_DIR to retain)' }
   if (negativeControl) {
     summary.status = 'EXPECTED_NEGATIVE_CONTROL'
     summary.negativeControl = OWNER_NEGATIVE_MARKER
