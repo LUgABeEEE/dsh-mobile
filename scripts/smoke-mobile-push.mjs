@@ -1652,6 +1652,43 @@ async function runFullSmoke({ negativeControl = false, pairDiagnostic = false } 
     pairDiagnosticDetail(runtimeDiagnosticFd, pairDiagnosticRunId, 'snapshot', 'settings-row-visible', pushSettingsDiagnostic)
     pushRowCount = pushSettingsDiagnostic.exactEnglishLocatorCount
     assert.equal(pushRowCount, 1, 'Exactly one mounted Web Push settings row/controller is expected')
+    // Presentation acceptance for the mounted category rows: measured geometry of the
+    // packed client, matching the isolated rendered fixture (smoke-mobile-push-settings.mjs).
+    const mountedCategoryGeometry = await phone.evaluate(() => {
+      const group = document.querySelector('.dsh-mobile-push-categories')
+      if (!group) return { missing: true }
+      const groupRect = group.getBoundingClientRect()
+      const rows = [...group.querySelectorAll('label')].map(label => {
+        const input = label.querySelector('input')
+        const text = label.querySelector('.dsh-mobile-push-categoryName') ?? label.firstChild
+        const l = label.getBoundingClientRect(), i = input.getBoundingClientRect(), t = text.getBoundingClientRect()
+        return { labelHeight: l.height, labelWidth: l.width, labelRight: l.right, labelTop: l.top, labelBottom: l.bottom,
+          inputWidth: i.width, inputHeight: i.height, inputRight: i.right, inputLeft: i.left, inputTop: i.top, inputBottom: i.bottom,
+          textRight: t.right }
+      })
+      return { missing: false, rows, groupLeft: groupRect.left, groupRight: groupRect.right,
+        docScrollWidth: document.scrollingElement.scrollWidth, viewportWidth: document.documentElement.clientWidth }
+    })
+    assert.equal(mountedCategoryGeometry.missing, false, 'Mounted settings must render the push category group')
+    assert.equal(mountedCategoryGeometry.rows.length, 6, 'Mounted push settings must render six category rows')
+    const mountedAvailableWidth = mountedCategoryGeometry.groupRight - mountedCategoryGeometry.groupLeft
+    mountedCategoryGeometry.rows.forEach((row, index) => {
+      assert.ok(row.labelHeight >= 47.5, `Mounted category row ${index} must keep a >=48px full-row target (got ${row.labelHeight}px)`)
+      assert.ok(Math.abs(row.labelWidth - mountedAvailableWidth) <= 1.5, `Mounted category row ${index} must fill the settings section width`)
+      assert.ok(row.textRight <= row.inputLeft - 2, `Mounted category row ${index} must keep its label left of the switch`)
+      assert.ok(row.labelRight - row.inputRight <= 1.5, `Mounted category row ${index} must right-align its switch`)
+      assert.ok(row.inputWidth >= 40 && row.inputWidth <= 52 && row.inputHeight >= 24 && row.inputHeight <= 32,
+        `Mounted category row ${index} switch must stay fixed-size (got ${row.inputWidth}x${row.inputHeight}px)`)
+      assert.ok(row.inputTop >= row.labelTop - 1 && row.inputBottom <= row.labelBottom + 1, `Mounted category row ${index} switch must stay on its row`)
+    })
+    assert.ok(mountedCategoryGeometry.docScrollWidth <= mountedCategoryGeometry.viewportWidth + 1,
+      'Mounted push category rows must not overflow the phone viewport horizontally')
+    const mountedEvidenceDir = process.env.DSH_PUSH_EVIDENCE_DIR
+    if (typeof mountedEvidenceDir === 'string' && mountedEvidenceDir !== '' && isAbsolute(mountedEvidenceDir)) {
+      await mkdir(mountedEvidenceDir, { recursive: true })
+      await settings.screenshot({ path: join(mountedEvidenceDir, `task8-${pairDiagnosticRunId}-push-settings-mounted-categories.png`) })
+    }
+    cases.push('mounted push category rows measured at full-width >=48px label-left/switch-right geometry inside the phone viewport')
     const enable = settings.getByRole('button', { name: 'Enable', exact: true })
     await enable.waitFor({ state: 'visible', timeout: CLIENT_TIMEOUT_MS })
     subscribeCallsBeforeEnable = await phone.evaluate(() => window.__dshPushSmokeCounts().subscribeCalls ?? 0)

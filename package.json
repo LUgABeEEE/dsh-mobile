@@ -252,6 +252,7 @@
     "js-yaml": "^4.3.2",
     "playwright": "1.63.0",
     "react": "^18.2.0",
+    "react-dom": "18.3.1",
     "tsdown": "^0.23.0",
     "typescript": "^7.0.2",
     "vitest": "^5.0.2"
