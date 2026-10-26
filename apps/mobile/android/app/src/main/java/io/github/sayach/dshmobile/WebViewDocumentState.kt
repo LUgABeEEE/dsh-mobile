@@ -39,9 +39,9 @@ internal class WebViewDocumentState(private val origin: GatewayOrigin) {
         return true
     }
 
-    /** A cancelled timer must not fail a newer document or already usable content. */
-    fun shouldTimeout(expectedGeneration: Int): Boolean = generation > 0
-        && generation == expectedGeneration && !failed && !usable
+    /** An active connection deadline owns first boot; a shorter page timer must not restart it. */
+    fun shouldTimeout(expectedGeneration: Int, connectionDeadlineActive: Boolean = false): Boolean = generation > 0
+        && generation == expectedGeneration && !failed && !usable && !connectionDeadlineActive
 }
 
 /** Only the root DSH shell is a page whose JavaScript state we may retain. */
