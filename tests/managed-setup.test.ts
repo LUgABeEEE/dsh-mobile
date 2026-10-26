@@ -237,16 +237,12 @@ describe('managed setup upstream snapshot', () => {
 
     expect(await refreshManagedUpstreamOrigin(setupFile, setup, 57_725)).toBe(true)
     const rewritten = parseManagedSetup(JSON.parse(await readFile(setupFile, 'utf8')))
-    expect(rewritten.upstreamOrigin).toBe('http://127.0.0.1:57725')
-    expect(rewritten.networkInterface).toBe(setup.networkInterface)
-    expect(rewritten.listenPort).toBe(setup.listenPort)
-    expect(rewritten.extraAllowedCidrs).toEqual(['11.24.0.0/24'])
-    expect(rewritten.tls).toEqual(setup.tls)
+    expect(rewritten).toEqual({ ...setup, upstreamOrigin: 'http://127.0.0.1:57725' })
 
     // Already current: no rewrite, and an unusable port is not written at all.
     const current = { ...setup, upstreamOrigin: 'http://127.0.0.1:57725' }
     expect(await refreshManagedUpstreamOrigin(setupFile, current, 57_725)).toBe(false)
     expect(await refreshManagedUpstreamOrigin(setupFile, current, 0)).toBe(false)
-    expect(parseManagedSetup(JSON.parse(await readFile(setupFile, 'utf8'))).upstreamOrigin).toBe('http://127.0.0.1:57725')
+    expect(parseManagedSetup(JSON.parse(await readFile(setupFile, 'utf8')))).toEqual(current)
   })
 })

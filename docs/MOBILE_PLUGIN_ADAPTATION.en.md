@@ -2,26 +2,44 @@
 
 [中文](MOBILE_PLUGIN_ADAPTATION.md) · [Documentation index](README.md)
 
-Whether a plugin is usable on a small screen is the plugin's own responsibility: the mobile layer owns layout and connectivity and does not rearrange third-party panels. This guide is the shortest path to **desktop unchanged, usable on a phone** — no interaction redesign, and no Android device needed to start.
+This guide is for DSH plugin authors, aiming for **usable small screens without desktop regressions**. DSH Mobile provides connectivity, page layout and shared entry points; it does not rearrange every third-party plugin's internal controls. Start in a browser, then add device acceptance; an Android device is not required to begin.
 
-## How the mobile page hosts a plugin
+## Identify where the panel is mounted
 
-| Fact | What it means for a plugin |
+| Current mobile-page behavior | What the plugin should do |
 | --- | --- |
-| A panel registered in the `main` slot takes the full phone width, above a 56px "back to conversation" bar | The panel has 56px less height than on desktop; do not assume the whole screen |
-| The sidebar is a 340px drawer, not a persistent column | Sidebar entries must let their text and buttons shrink |
-| The layout provides `[data-pane="conversation"]`, `[data-pane="sidebar"]` and `.dshm-shell` | Prefer those markers over desktop CSS-module class names |
-| The shell forces `font-size: max(16px, …)` on `input`/`textarea` | Inputs are taller; design form density around that |
-| The shell only fixes touch targets inside public slots | Your own buttons, inline actions and close controls must reach 44px themselves |
+| Opening a panel in the `main` slot adds a “Back to conversation” bar above it | Use the container's actual available height. The bar is at least 56px high; safe areas and content can increase it. Do not subtract a fixed 56px from screen height |
+| The narrow sidebar is a drawer no wider than `min(88vw, 340px)`; a wide layout can keep it persistent | Do not assume a fixed 340px sidebar. Let entry labels and buttons shrink |
+| The mobile layout has `.dshm-shell`, `[data-pane="conversation"]` and `[data-pane="sidebar"]` markers | Use these to locate regions while diagnosing. Scope internal styles to the plugin's own root rather than private host CSS class names |
+| The mobile shell gives inputs and editable areas a 16px font floor while retaining larger inherited sizes | Leave room for editing, rather than counteracting user preferences with a smaller fixed font |
+| Adapted shared entry points do not guarantee arbitrary third-party hit areas | Plugin authors must still check buttons, close actions, checkboxes and menus for actual hit testing |
 
-## Switch on the panel's measured width
+These describe the current layout, not fixed dimensions a plugin should copy. Overlays, sidebars and main panels have different available space; verify the actual mounting location.
 
-Measure once at the panel root, then follow later size changes:
+## Adapt to available space
+
+Make the base layout shrink first: give flex/grid children `min-width: 0`, let toolbars wrap, and use content-driven height. Panel width is not always viewport width: a 400px panel in a desktop sidebar needs compact layout too.
+
+For arrangement-only changes, CSS container queries are an option; full-page viewport adaptation can still use media queries. The `600px` below is an example breakpoint, to be chosen for the plugin's content:
+
+```css
+.plugin-panel-host { container-type: inline-size; min-width: 0; }
+.plugin-panel { min-width: 0; }
+.plugin-panel .toolbar { display: flex; flex-wrap: wrap; gap: 8px; }
+
+@container (max-width: 600px) {
+  .plugin-panel .toolbar { display: grid; grid-template-columns: minmax(0, 1fr); }
+}
+```
+
+Wrap `.plugin-panel` in `.plugin-panel-host`. On engines without container queries, the base wrapping and fluid widths should remain usable; do not put an essential action solely in the query branch.
+
+When a script branch is necessary, observe the component's root width instead of classifying a phone by user agent:
 
 ```js
-const MOBILE_MAX_WIDTH = 600
+const rootRef = useRef(null)
 const [panelWidth, setPanelWidth] = useState(null)
-const isMobile = panelWidth !== null && panelWidth <= MOBILE_MAX_WIDTH
+const isNarrow = panelWidth !== null && panelWidth <= 600
 
 useEffect(() => {
   const element = rootRef.current
@@ -36,160 +54,103 @@ useEffect(() => {
     observer?.disconnect()
   }
 }, [])
+
+// The component's returned root; keep a usable base layout before the first measurement.
+h('section', { ref: rootRef, className: 'plugin-panel', 'data-narrow': isNarrow ? 'true' : 'false' }, contents)
 ```
+
+Without ResizeObserver, this fallback only measures again on window resize. If a panel resizes independently, also use the plugin's existing layout notifications. Dispose observers and listeners when the component unmounts.
+
+## Adaptation checklist
+
+### Touch targets and spacing
+
+This project recommends at least a **44×44 CSS px** hit area for primary Web controls, with 48px for primary actions where space permits; these are not conversions from Android dp or iOS pt. Leave space between adjacent actions rather than extending targets over their neighbors.
+
+```css
+.plugin-panel :is(button, select, input:not([type="checkbox"]):not([type="radio"])) { min-height: 44px; }
+.plugin-panel .icon-button { min-width: 44px; }
+.plugin-panel .actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.plugin-panel .check-label { box-sizing: border-box; display: inline-flex; align-items: center; gap: 8px; min-width: 44px; min-height: 44px; padding-inline: 8px; }
+```
+
+Put a small checkbox inside its associated `label` to enlarge the clickable label without enlarging the icon. Use actual taps and `elementFromPoint()` to check edge hits; a declared `min-height` can still be shrunk, clipped or obscured by layout.
+
+### Filters, tabs and inline actions
+
+Long filter strips can wrap or use their own horizontally scrollable container; do not make the whole page overflow horizontally. Retain visible focus and enough padding to bring the last item fully into view:
+
+```css
+.plugin-panel .chips { display: flex; gap: 8px; overflow-x: auto; padding: 4px; }
+.plugin-panel .chip { flex: 0 0 auto; min-height: 44px; }
+```
+
+An unambiguous inline action can become an icon on narrow panels, provided it keeps an accessible name and, where needed, a text explanation in a menu. Hover text cannot be the only explanation on a phone.
 
 ```js
-h('div', { className: 'panel', 'data-mobile': isMobile ? '1' : '0' }, …)
+h('button', { className: 'icon-button', 'aria-label': label }, h(Icon, { 'aria-hidden': true, name: 'play' }))
 ```
 
-Do not decide from the user agent, and do not replace this with `@media (max-width: 600px)`:
+A narrow panel does not imply the absence of a keyboard. Decorative shortcut badges can collapse, but retain functioning shortcuts, help, Tab order and visible focus; do not remove keyboard-accessible behavior solely by width.
 
-- A panel's width is not the viewport width. The same panel can be 400px wide inside a desktop sidebar, and it needs the mobile rules there too.
-- When a desktop window is dragged narrow, users want it usable, not a layout pretending it is wide.
-- A measured width can be supplied by a static preview harness, which is what makes the adaptation testable.
+### Type, density and complete information
 
-600px is a suggestion, not a rule. Existing wide-screen breakpoints (for example a second column at 960px) still apply: `data-mobile` governs touch and density, `data-wide` governs columns.
-
-## Checklist
-
-### Touch targets of at least 44px
-
-Desktop-sized 28–32px buttons are hard to hit. Give buttons, inputs and selects `min-height: 44px`, and icon buttons `min-width: 44px`. Keep a round checkbox visually 24px and grow only its hit area:
+Inherit DSH's fonts and semantic colors. To follow the mobile page's text setting, a plugin can use `--dsh-content-font-size` on its content root and retain inheritance when the variable is absent:
 
 ```css
-[data-mobile="1"] .check { position: relative; }
-[data-mobile="1"] .check::after { content: ''; position: absolute; inset: -10px; }
+.plugin-panel { font-size: var(--dsh-content-font-size, inherit); line-height: 1.5; }
+.plugin-panel .meta { color: var(--dsw-alias-label-secondary, currentColor); }
 ```
 
-Do not enlarge the whole card: the hit area can grow without the visual size.
+Compress decorative headings and whitespace, not touch targets. Let long titles wrap or offer an accessible way to view them in full. Errors, pending confirmations and essential action names must not exist only as truncated text. Check larger text, long paths and Chinese/English content.
 
-### Make horizontal chips and tabs scroll
+### Overlays, forms and scrolling
 
-Filter strips and group tabs are the first thing a phone clips, and the clipped entries are often the ones that only appear when they have data.
+Constrain overlays to their actual container and visible area, rather than using fixed dimensions that push actions off-screen. Reuse DSH's existing overlay components first; a custom overlay needs an accessible close action, focus management and Escape behavior.
 
 ```css
-[data-mobile="1"] .chips {
-  flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden;
-  padding: 0; scrollbar-width: none; -webkit-overflow-scrolling: touch;
-}
-[data-mobile="1"] .chips::-webkit-scrollbar { display: none; }
-[data-mobile="1"] .chip { flex: 0 0 auto; min-height: 44px; }
+.plugin-panel .form-row { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
+.plugin-panel .scroll-body { min-height: 0; overflow: auto; overscroll-behavior: contain; }
+.plugin-panel textarea { box-sizing: border-box; width: 100%; min-height: 96px; }
 ```
 
-Hide separators that only exist to divide the row: once it scrolls, they wrap onto a line of their own.
+Add `env(safe-area-inset-*)` only where content really reaches a screen edge and the host has not already handled it, avoiding duplicate space. Save, Cancel and errors must remain visible or reachable by scrolling with the keyboard open. An independent scroll area should not move the page underneath.
 
-### Collapse inline text actions to icons
+## Verification: what code checks, browsers and devices establish
 
-Side-by-side text buttons eat the title width and push the body onto two or three lines. Wrap the label, hide it on a phone, keep an accessible name, and keep the text entry points in menus and details:
+### Structural checks
+
+Unit tests can check narrow branches, accessible names, retained state and unmount cleanup. Server rendering does not run browser layout measurement; supplying a test width or layout stub only establishes the chosen branch, not actual dimensions, hit testing or pixel-identical desktop output. A `44px` string in CSS is not touch acceptance.
+
+### Real browser checks
+
+Mount the plugin in an actual DSH page and cover at least 375px and 390px narrow viewports, landscape, full-width desktop and a narrow desktop sidebar. If a static preview is maintained, load it in a browser too and describe its differences from the real host.
+
+- Cover list, detail, settings, empty, long-content and error states;
+- Inspect element bounds, clipping ancestors and actual hit targets, including the first and last actions;
+- Use a keyboard to check Tab, Escape and focus restoration, with no accidental background action while an overlay is open;
+- Change width and text size, checking that drafts, selections and expanded state survive;
+- Check light/dark themes and desktop baselines. Explain screenshot changes rather than demanding pixel identity for intentional improvements.
+
+For example, after opening the real panel through its existing entry point, Playwright can check a control's geometry and hit testing. Replace the following selector with the plugin's own stable marker:
 
 ```js
-h('button', { className: 'btn', 'aria-label': label }, h(Icon, { name: 'play' }), h('span', { className: 'btn-label' }, label))
+const action = page.locator('[data-plugin-action="save"]')
+await action.scrollIntoViewIfNeeded()
+const box = await action.boundingBox()
+if (box === null || box.width < 44 || box.height < 44) throw new Error('Save target is too small')
+const hit = await action.evaluate(element => {
+  const box = element.getBoundingClientRect()
+  return element.contains(document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2))
+})
+if (!hit) throw new Error('Save target is obscured')
 ```
 
-```css
-[data-mobile="1"] .btn-label { display: none; }
-[data-mobile="1"] .btn { min-width: 44px; padding: 0; justify-content: center; }
-```
+A center hit is a starting point, not a substitute for edge taps, scrolling, focus or state checks. See [CONTRIBUTING](../CONTRIBUTING.md#select-behavior-checks) for launch and verification procedures.
 
-The words may disappear; the action must not.
+### Device follow-up
 
-### Hide desktop-only affordances
-
-`/` to focus search, `kbd` hints and shortcut tables are noise without a keyboard. Hide them on a phone and keep the explanations in help.
-
-### Bottom safe area and scroll boundaries
-
-When the panel is its own scroll container, the shell's top inset does not reach the end of the list, and momentum scrolling can drag the page behind it.
-
-```css
-[data-mobile="1"] .inner { padding-bottom: max(28px, calc(14px + env(safe-area-inset-bottom))); }
-[data-mobile="1"] .list { overscroll-behavior: contain; }
-```
-
-### Follow the shell's text size
-
-The mobile page exposes its text-size setting as `--dsh-content-font-size` (16px by default). Hard-coding 13px means only the inputs grow when a reader enlarges the text:
-
-```css
-[data-mobile="1"] .panel { font-size: var(--dsh-content-font-size, 15px); }
-[data-mobile="1"] .meta { font-size: max(12px, 0.8em); }
-```
-
-Desktop does not define the variable, so the fallback applies and the desktop is unaffected.
-
-### Dialogs and forms
-
-A fixed 360px settings card is clipped on both sides at 390px, and two-column forms squeeze into one. On a phone, anchor the surface to both edges, collapse form rows, and give multi-line inputs at least 96px:
-
-```css
-[data-mobile="1"] .settings { width: auto; max-width: none; }
-[data-mobile="1"] .form-row { grid-template-columns: minmax(0, 1fr); }
-[data-mobile="1"] textarea { min-height: 96px; }
-```
-
-### Compress the header, not the targets
-
-A phone's first screen belongs to content. Drop the title to about 1.2em, clamp the subtitle to one line and tighten card spacing — without tightening the touch targets with it.
-
-## Verification
-
-Adaptations rot where only a device can see the difference. Most regressions can still be caught automatically.
-
-### Give the static preview harness a width
-
-If the plugin renders static HTML previews for baseline screenshots, the panel's width measurement never runs there (there is no layout engine), so every preview lands on the wide branch. Make the harness answer the measurement:
-
-```js
-const viewport = { width: 0, height: 0 }
-for (const arg of process.argv.slice(2)) {
-  const match = /^--(width|height)=(\d+)$/.exec(arg)
-  if (match) viewport[match[1]] = Number(match[2])
-}
-// While rendering, give every ref a layout stub that answers with the target width
-if (typeof type === 'string' && viewport.width > 0 && props?.ref) {
-  props.ref.current = {
-    getBoundingClientRect: () => ({ width: viewport.width, height: viewport.height, top: 0, left: 0, right: viewport.width, bottom: viewport.height }),
-    contains: () => false, focus() {}, blur() {}, scrollIntoView() {},
-    querySelectorAll: () => [], addEventListener() {}, removeEventListener() {},
-  }
-}
-```
-
-With this, `--width=390` renders the actual narrow branch instead of shrinking the desktop page.
-
-### Assert the structure in the render check
-
-- The narrow render took the mobile branch;
-- The CSS still contains the 44px, `safe-area-inset-bottom` and `--dsh-content-font-size` rules;
-- Hidden hints and collapsed labels still have accessible names;
-- The desktop render is pixel-identical to its baseline.
-
-### Screenshot baselines
-
-Take 390×844 for at least list, detail and settings; re-shoot the desktop set after the change and compare it with the previous images.
-
-### What static checks cannot prove
-
-The visible area after the soft keyboard opens, real `env(safe-area-inset-*)` values, momentum scrolling and bounce, and re-wrapping after a system font-size increase all wait for a device.
-
-## Reference implementation
-
-The 0.19.0 mobile layout of `dsh-global-todo` followed this guide (that release is not public yet):
-
-| Item | Approach |
-| --- | --- |
-| Signal | Panel measured width ≤600px → `data-mobile="1"` |
-| Touch | 44px controls, inputs and filters; 24px visual checkbox with a pseudo-element hit area |
-| Density | Inline hand-off collapses to its icon (label kept as `aria-label`); creator attribution moves to the detail; meta returns to two or three entries per line |
-| Scrolling | Filter chips scroll on one line with separators hidden; toolbar becomes one column with full-width search |
-| Desktop hints | `/` badge and `kbd` hidden |
-| Safe area | `max(28px, 14px + env(safe-area-inset-bottom))`; list uses `overscroll-behavior: contain` |
-| Type | Body text follows `--dsh-content-font-size` (15px fallback) |
-| Dialogs | Settings sheet anchored to both edges, measured top kept, no fixed 360px card |
-| Result | Card height at 390×844 drops from roughly 250px to 150px; every target ≥44px; desktop screenshots pixel-identical |
-| Regression | Preview harness `--width=390`; render checks assert the mobile branch and the key rules; 390×844 baselines generated |
-
-The change used three stable hooks: the mobile switch, a wrapper class for one text label, and class names for facts that must be hidden. There is no second render path — the detail still has exactly one implementation.
+Browser emulation does not replace real WebView, keyboard, safe-area, momentum-scroll or external-keyboard acceptance. Record the device, App/WebView versions, connection and actual steps. State unverified parts directly instead of claiming all-platform success.
 
 ## Templates for plugin authors
 
@@ -197,35 +158,31 @@ The change used three stable hooks: the mobile switch, a wrapper class for one t
 
 ```markdown
 ## Plugin on a small screen
-- Plugin and version:
-- Panel location (sidebar entry / main panel / other):
-- Phone and App (or browser) version:
-- Symptom (screenshot or recording):
-- Expectation (only "desktop unchanged + usable on a phone"):
+- Plugin name and version:
+- DSH, DSH Mobile and App/browser versions:
+- Panel location and available width (main / sidebar / overlay):
+- Reproduction steps, expected and actual behavior:
+- Screenshot and identifiable control (redact credentials and private content):
+- Comparison with other optional frontend modules omitted, if tested:
 
-## Acceptance
-- [ ] Touch targets ≥44px
-- [ ] Horizontal chips scroll; no clipped tail
-- [ ] Inline text actions collapse to icons with accessible names
-- [ ] Desktop-only hints hidden
-- [ ] Bottom safe area and overscroll handled
-- [ ] Type follows --dsh-content-font-size
-- [ ] Dialogs and forms fit at 390px
-- [ ] Desktop screenshots unchanged
+## Acceptance goals
+- [ ] Essential actions are visible and usable; long content is not clipped
+- [ ] Actual touch areas, adjacent spacing and first/last items checked
+- [ ] Keyboard focus, back/close behavior and drafts retained
+- [ ] Overlays and forms work at narrow widths and larger text
+- [ ] No desktop workflow regressions; unverified device behavior identified
 ```
 
 ### PR
 
-- [ ] One render/detail implementation; no second tree for mobile;
-- [ ] The breakpoint uses measured width, not a user agent or the viewport;
-- [ ] Mobile rules sit behind one switch; desktop selectors untouched;
-- [ ] The static preview accepts a width, and the narrow branch really runs;
-- [ ] The render check gained structural assertions; desktop baselines compared;
-- [ ] Anything unverified on a device is stated in the description (keyboard, safe area, momentum scrolling).
+- [ ] Describe affected entry points and content, without hard-splitting phone/desktop by UA;
+- [ ] Reuse components and state; avoid duplicating business logic when arrangements differ;
+- [ ] Supply real-browser narrow and desktop comparisons, steps and relevant tests;
+- [ ] Check focus, hit testing, long content, errors and cleanup, not only CSS text;
+- [ ] Distinguish verified and unverified device behavior; do not copy another version's results.
 
-## Boundaries and anti-patterns
+## Scope
 
-- Do not inject third-party CSS from the mobile layer by class name: it breaks when a class changes and can hit the desktop as well.
-- Do not fork the component tree per platform: two implementations diverge at the first field change.
-- Do not promise that every plugin can be adapted: background services and plugins that depend on native windows are out of scope.
-- Do not treat "it scrolls" as acceptance: check the first exception, the actual box sizes and the focus order.
+This guide draws on community plugin adaptation and [discussion #279](https://github.com/saya-ch/dsh-mobile/discussions/279). It offers reusable implementation and acceptance ideas, not an independent verification of a new third-party release. For theme-specific questions, see [Skins and mobile layout](SKIN_COMPATIBILITY.en.md).
+
+DSH Mobile does not maintain a universal override table keyed by third-party private class names, or guarantee that plugins requiring native windows work directly on remote pages. The plugin owning the component should maintain its adaptation through DSH's public extension points. Report missing host capabilities separately rather than modifying installed DSH artifacts to work around them.

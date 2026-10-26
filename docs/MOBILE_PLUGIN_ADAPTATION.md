@@ -2,26 +2,44 @@
 
 [English](MOBILE_PLUGIN_ADAPTATION.en.md) · [返回文档索引](README.md)
 
-插件在小屏上是否易用，由插件自己决定：移动层负责布局与连接，不替第三方面板重排样式。这份指南给出一条最小路径——**桌面不变，小屏可用**，不要求重做交互，也不要求安卓真机才能开始。
+这份指南面向 DSH 插件作者，目标是**小屏可用，桌面功能不回退**。DSH Mobile 提供连接、页面布局和公共入口，不会逐个重排第三方插件的内部控件。可以先用浏览器完成适配，再补充真机验证；没有 Android 设备并不妨碍开始。
 
-## 移动页如何承载插件
+## 先确认面板所在位置
 
-| 事实 | 对插件的影响 |
+| 当前移动页面行为 | 插件应如何处理 |
 | --- | --- |
-| 注册在 `main` 槽的面板占满手机宽度，上方有 56px 的「返回会话」栏 | 面板高度比桌面少 56px，不要假设独占整屏 |
-| 侧栏是 340px 抽屉，不是常驻列 | 侧栏入口的文字与按钮要能收缩 |
-| 布局提供 `[data-pane="conversation"]`、`[data-pane="sidebar"]` 与 `.dshm-shell` | 需要针对性选择器时用这些标记，不要依赖桌面 CSS 模块类名 |
-| 外壳对 `input`/`textarea` 强制 `font-size: max(16px, …)` | 输入框会变大，表单密度要按这个前提设计 |
-| 外壳只修正公共插槽的触摸目标 | 插件自己的按钮、行内动作、关闭键要自己保证 ≥44px |
+| 打开 `main` 槽中的面板时，布局在面板上方提供「返回会话」栏 | 使用容器实际可用高度；该栏至少 56px，安全区和内容可能增加高度，不要手动从屏幕高度固定减去 56px |
+| 窄屏侧栏以抽屉显示，展开宽度不超过 `min(88vw, 340px)`；宽屏可以常驻显示 | 不假设侧栏永远是 340px，入口文字和按钮应能收缩 |
+| 移动布局带有 `.dshm-shell` 和 `[data-pane="conversation"]`、`[data-pane="sidebar"]` 标记 | 排障时可用这些标记定位区域；插件内部样式优先作用于自己的根节点，不依赖宿主私有 CSS 类名 |
+| 移动外壳为输入框和可编辑区域设置至少 16px 的字体，同时保留更大的继承字号 | 为输入区域预留高度，不用更小的固定字体抵消用户设置 |
+| 公共入口的适配不会保证任意第三方控件的可点击区域 | 插件作者仍需检查按钮、关闭键、复选框和菜单的实际命中区域 |
 
-## 用面板实测宽度切换
+这些是当前布局行为，不是要求插件复制的固定尺寸。浮层、侧栏和主面板的可用空间不同，需在实际挂载位置验证。
 
-在面板根节点上测量一次，并观察后续尺寸变化：
+## 按可用空间适配
+
+先让基础布局能够收缩：给 flex/grid 子项设置 `min-width: 0`，允许工具栏换行，使用内容驱动的高度。面板宽度不一定等于视口宽度：桌面侧栏中的 400px 面板也需要紧凑布局。
+
+只改变排列时，可用 CSS 容器查询；全屏页面的视口适配仍可使用媒体查询。下面的 `600px` 是示例断点，应按插件内容选择：
+
+```css
+.plugin-panel-host { container-type: inline-size; min-width: 0; }
+.plugin-panel { min-width: 0; }
+.plugin-panel .toolbar { display: flex; flex-wrap: wrap; gap: 8px; }
+
+@container (max-width: 600px) {
+  .plugin-panel .toolbar { display: grid; grid-template-columns: minmax(0, 1fr); }
+}
+```
+
+`.plugin-panel-host` 应包住 `.plugin-panel`。对不支持容器查询的引擎，基础的换行和流式宽度仍应可用，不要把必需操作藏在唯一的查询分支里。
+
+确实需要脚本分支时，可以在组件内部观察根节点宽度，而不是判断手机 UA：
 
 ```js
-const MOBILE_MAX_WIDTH = 600
+const rootRef = useRef(null)
 const [panelWidth, setPanelWidth] = useState(null)
-const isMobile = panelWidth !== null && panelWidth <= MOBILE_MAX_WIDTH
+const isNarrow = panelWidth !== null && panelWidth <= 600
 
 useEffect(() => {
   const element = rootRef.current
@@ -36,160 +54,103 @@ useEffect(() => {
     observer?.disconnect()
   }
 }, [])
+
+// 组件返回值中的根节点；初次测量前也应保留可用的基础布局。
+h('section', { ref: rootRef, className: 'plugin-panel', 'data-narrow': isNarrow ? 'true' : 'false' }, contents)
 ```
 
-```js
-h('div', { className: 'panel', 'data-mobile': isMobile ? '1' : '0' }, …)
-```
-
-不要用 UA 判断，也不要用 `@media (max-width: 600px)` 代替：
-
-- 面板宽度不等于视口宽度。桌面侧栏里的同一面板可能只有 400px，它同样需要移动档；
-- 桌面窗口拖窄时，用户期望的是能用，而不是一个假装很宽的布局；
-- 实测宽度可以由静态预览夹具喂一个固定值，从而让适配可回归。
-
-600px 是建议值，不是规定。已有的宽屏断点（例如 ≥960px 开第二列）继续保留：`data-mobile` 管触控与密度，`data-wide` 管列布局。
+没有 ResizeObserver 的回退只能在窗口变化时重测；如果面板会独立调整宽度，还需接入插件已有的布局通知。观察器和监听器应随组件卸载清理。
 
 ## 适配清单
 
-### 触控目标 ≥44px
+### 触控目标与间距
 
-桌面尺寸的 28–32px 按钮在手机上点不中。按钮、输入、选择器统一 `min-height: 44px`，图标按钮补 `min-width: 44px`。圆形勾选框保持 24px 视觉，只放大命中区：
-
-```css
-[data-mobile="1"] .check { position: relative; }
-[data-mobile="1"] .check::after { content: ''; position: absolute; inset: -10px; }
-```
-
-不要把整张卡片一起放大：命中区可以扩，视觉尺寸不必跟着变。
-
-### 横向 chip 与标签条改为可横滑
-
-手机上筛选条、分组标签是最先被裁掉的东西，被裁的往往正是「只在有数据时才出现」的过滤器。
+本项目建议主要 Web 操作提供至少 **44×44 CSS px** 的命中区域，主操作有空间时可用 48px；这不是 Android dp 或 iOS pt 的换算。相邻操作保留间距，不通过覆盖邻居来扩大点击区。
 
 ```css
-[data-mobile="1"] .chips {
-  flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden;
-  padding: 0; scrollbar-width: none; -webkit-overflow-scrolling: touch;
-}
-[data-mobile="1"] .chips::-webkit-scrollbar { display: none; }
-[data-mobile="1"] .chip { flex: 0 0 auto; min-height: 44px; }
+.plugin-panel :is(button, select, input:not([type="checkbox"]):not([type="radio"])) { min-height: 44px; }
+.plugin-panel .icon-button { min-width: 44px; }
+.plugin-panel .actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.plugin-panel .check-label { box-sizing: border-box; display: inline-flex; align-items: center; gap: 8px; min-width: 44px; min-height: 44px; padding-inline: 8px; }
 ```
 
-同时隐藏只起分隔作用的竖线：容器改为横滑后，它会换行落单。
+小复选框可放在关联的 `label` 中，扩大标签的可点击区域，不必放大图标。用实际点按和 `elementFromPoint()` 检查边缘命中；声明了 `min-height` 仍可能被布局压缩、裁切或遮挡。
 
-### 行内文字动作收成图标
+### 筛选条、标签与行内动作
 
-并排的文字按钮会吃掉标题宽度，把正文挤成两三行。把文字包一层标签，移动档隐藏标签、保留可访问名称；菜单与详情里继续保留文字入口：
+过长的筛选条可以换行，或放入能横向滚动的独立容器；不要让页面整体横向溢出。保留焦点可见性和足够的内边距，使最后一项也能滚入视野：
+
+```css
+.plugin-panel .chips { display: flex; gap: 8px; overflow-x: auto; padding: 4px; }
+.plugin-panel .chip { flex: 0 0 auto; min-height: 44px; }
+```
+
+有明确含义的行内动作可以在窄屏收成图标，但要保留可访问名称，必要时在菜单中保留文字说明。不能靠悬停提示作为手机上唯一的操作说明。
 
 ```js
-h('button', { className: 'btn', 'aria-label': label }, h(Icon, { name: 'play' }), h('span', { className: 'btn-label' }, label))
+h('button', { className: 'icon-button', 'aria-label': label }, h(Icon, { 'aria-hidden': true, name: 'play' }))
 ```
+
+窄屏不代表没有键盘。可以收起装饰性的快捷键角标，但保留实际快捷键、帮助入口、Tab 顺序和可见焦点；不要只按宽度移除键盘可用功能。
+
+### 字体、密度与完整信息
+
+继承 DSH 的字体和语义颜色；需要跟随移动页面字号时，可在自己的内容根节点使用 `--dsh-content-font-size`，未提供该变量时保留继承值：
 
 ```css
-[data-mobile="1"] .btn-label { display: none; }
-[data-mobile="1"] .btn { min-width: 44px; padding: 0; justify-content: center; }
+.plugin-panel { font-size: var(--dsh-content-font-size, inherit); line-height: 1.5; }
+.plugin-panel .meta { color: var(--dsw-alias-label-secondary, currentColor); }
 ```
 
-文字可以消失，动作不能消失。
+压缩装饰性标题和空白，不压缩触摸目标。长标题允许换行或提供可访问的完整查看入口；错误、待确认内容和关键操作名称不能只剩截断文本。大字号、长路径与中英文内容都要检查。
 
-### 隐藏桌面专属提示
+### 弹层、表单与滚动边界
 
-`/` 聚焦搜索、`kbd` 角标、快捷键表在没有键盘的设备上只是噪声。移动档隐藏它们，说明留在帮助页。
-
-### 底部安全区与滚动边界
-
-面板自己是滚动容器时，外壳的顶部安全区管不到列表末尾；惯性滚动还可能把背后页面一起带着走。
+浮层应受实际容器和可视区约束，避免固定宽高把按钮推到屏幕外。先使用 DSH 的现有浮层组件；自有弹层需保留可达的关闭入口、焦点管理和 Escape 行为。
 
 ```css
-[data-mobile="1"] .inner { padding-bottom: max(28px, calc(14px + env(safe-area-inset-bottom))); }
-[data-mobile="1"] .list { overscroll-behavior: contain; }
+.plugin-panel .form-row { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
+.plugin-panel .scroll-body { min-height: 0; overflow: auto; overscroll-behavior: contain; }
+.plugin-panel textarea { box-sizing: border-box; width: 100%; min-height: 96px; }
 ```
 
-### 字号跟随外壳变量
+只有确实延伸到屏幕边缘且未被宿主处理的区域才追加 `env(safe-area-inset-*)`，避免重复留白。键盘打开后，保存、取消和错误提示仍应可见或可滚动到达；独立滚动区域不应拖动背后的页面。
 
-移动页把「移动端字号」放在 `--dsh-content-font-size` 上（默认 16px）。写死 13px 会让调大字号时只有输入框变大：
+## 验证：代码检查、浏览器与真机分别证明什么
 
-```css
-[data-mobile="1"] .panel { font-size: var(--dsh-content-font-size, 15px); }
-[data-mobile="1"] .meta { font-size: max(12px, 0.8em); }
-```
+### 结构检查
 
-桌面没有这个变量，回退值即可，不影响电脑。
+单测可验证窄屏分支、可访问名称、状态保留和卸载清理。服务端渲染不会执行浏览器布局测量；给测试提供宽度或布局桩，只能证明选中了哪个分支，不能证明真实尺寸、可点击性或桌面像素一致。不要把 CSS 中出现 `44px` 当成触摸验收。
 
-### 弹层与表单
+### 真实浏览器检查
 
-固定 360px 的设置卡放进 390px 视口会两边被切；两列表单会挤成一条。移动档让弹层贴两边、表单收成单列、多行输入至少 96px：
+将插件挂到实际 DSH 页面后，至少检查 375px、390px 窄屏、横屏、桌面全宽和桌面窄侧栏。若维护静态预览，还要在浏览器中加载它，并明确它与真实宿主的差异。
 
-```css
-[data-mobile="1"] .settings { width: auto; max-width: none; }
-[data-mobile="1"] .form-row { grid-template-columns: minmax(0, 1fr); }
-[data-mobile="1"] textarea { min-height: 96px; }
-```
+- 覆盖列表、详情、设置、空状态、长内容和出错状态；
+- 检查元素边界、裁切祖先和实际命中，确认首尾操作都能触达；
+- 用键盘验证 Tab、Escape、焦点恢复，以及浮层打开时背景不会误操作；
+- 改变宽度和字号，确认输入草稿、选择与展开状态保留；
+- 检查浅色、深色和桌面基线；截图差异需解释，不要求有意改进也逐像素不变。
 
-### 标题区压缩、列表密度
-
-手机首屏要留给内容。标题降到约 1.2em，副标题单行截断，卡片间距收紧——但不要把触控目标一起收紧。
-
-## 验证
-
-适配最容易烂在「只有真机能看出来」。下面这套做法能让大部分回归在自动检查里发现。
-
-### 给静态预览夹具加宽度参数
-
-若插件用「服务端渲染 + 静态 HTML 预览」生成截图基线，面板的宽度测量在这些静态页里不会执行（没有布局引擎），结果永远落到宽屏分支。让夹具回答这次测量：
+例如，在 Playwright 中对已有面板入口执行实际操作后，可检查控件几何和命中；以下选择器应替换为插件自己的稳定标记：
 
 ```js
-const viewport = { width: 0, height: 0 }
-for (const arg of process.argv.slice(2)) {
-  const match = /^--(width|height)=(\d+)$/.exec(arg)
-  if (match) viewport[match[1]] = Number(match[2])
-}
-// 渲染时给每个 ref 一个按目标宽度回答的布局桩
-if (typeof type === 'string' && viewport.width > 0 && props?.ref) {
-  props.ref.current = {
-    getBoundingClientRect: () => ({ width: viewport.width, height: viewport.height, top: 0, left: 0, right: viewport.width, bottom: viewport.height }),
-    contains: () => false, focus() {}, blur() {}, scrollIntoView() {},
-    querySelectorAll: () => [], addEventListener() {}, removeEventListener() {},
-  }
-}
+const action = page.locator('[data-plugin-action="save"]')
+await action.scrollIntoViewIfNeeded()
+const box = await action.boundingBox()
+if (box === null || box.width < 44 || box.height < 44) throw new Error('Save target is too small')
+const hit = await action.evaluate(element => {
+  const box = element.getBoundingClientRect()
+  return element.contains(document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2))
+})
+if (!hit) throw new Error('Save target is obscured')
 ```
 
-这样 `--width=390` 渲染的是真实窄屏分支，而不是把桌面页缩小。
+中心点命中只是起点，不能替代边缘点按、滚动、焦点与状态检查。具体启动和验证流程见[贡献指南](../CONTRIBUTING.md#select-behavior-checks)。
 
-### 把结构断言接进渲染检查
+### 真机补充
 
-- 窄屏渲染出现移动档标记；
-- CSS 里仍存在 44px、`safe-area-inset-bottom`、`--dsh-content-font-size` 规则；
-- 被隐藏的提示与收起的文字，仍保留可访问名称；
-- 桌面渲染与基线逐像素一致。
-
-### 截图基线
-
-手机档取 390×844，至少覆盖列表、详情、设置三态；桌面档改完后重拍，与旧图对比。
-
-### 静态检查证明不了的事
-
-软键盘弹出后的可视区、真实 `env(safe-area-inset-*)` 的值、惯性滚动与回弹、系统字号放大后的换行，都要留到真机。
-
-## 参考实现
-
-`dsh-global-todo` 的 0.19.0 移动档按本指南走了一遍（该版本尚未公开发布）：
-
-| 项 | 做法 |
-| --- | --- |
-| 信号 | 面板实测宽度 ≤600px → `data-mobile="1"` |
-| 触控 | 按钮/输入/筛选 44px；圆形勾选框 24px 视觉 + 伪元素扩命中区 |
-| 密度 | 行内「交给 Agent」收成图标（`aria-label` 保留）；创建者归属移入详情；meta 恢复每行 2–3 条 |
-| 横滑 | 筛选 chip 单行横滑、隐藏分隔条；工具栏改单列、搜索满宽 |
-| 桌面提示 | `/` 角标与 `kbd` 隐藏 |
-| 安全区 | 底部 `max(28px, 14px + env(safe-area-inset-bottom))`；列表 `overscroll-behavior: contain` |
-| 字号 | 正文取 `--dsh-content-font-size`（回退 15px） |
-| 弹层 | 设置卡贴两边、保留实测 top，不再固定 360px |
-| 结果 | 390×844 卡片高度约 250px → 150px；所有目标 ≥44px；桌面截图逐像素不变 |
-| 回归 | 预览夹具 `--width=390`；渲染检查断言移动分支与关键规则；生成 390×844 基线 |
-
-改动只用三个稳定挂钩：移动档开关、一个文字标签的包装类、以及需要隐藏的事实的类名。没有第二套渲染路径——详情仍然只有一份实现。
+浏览器模拟不能代替真实 WebView、输入法、安全区、惯性滚动或外接键盘验收。记录设备、App/WebView 版本、连接方式和实际步骤；没有验证的部分直接说明，不宣称已全平台通过。
 
 ## 给插件作者的模板
 
@@ -197,35 +158,31 @@ if (typeof type === 'string' && viewport.width > 0 && props?.ref) {
 
 ```markdown
 ## 插件与小屏
-- 插件名/版本：
-- 面板位置（侧栏入口 / 主面板 / 其他）：
-- 手机与 App（或浏览器）版本：
-- 现象（截图/录屏）：
-- 期望（只要求「桌面不变 + 小屏可用」）：
+- 插件名和版本：
+- DSH、DSH Mobile 与 App/浏览器版本：
+- 面板位置与可用宽度（主面板 / 侧栏 / 浮层）：
+- 复现步骤、期望与实际表现：
+- 截图及可定位的控件（隐藏凭据和私人内容）：
+- 关闭其他可选前端模块后的对照结果（如已测试）：
 
-## 验收
-- [ ] 触控目标 ≥44px
-- [ ] 横向 chip 可横滑、无被裁的尾部
-- [ ] 行内文字动作收成图标且保留可访问名称
-- [ ] 桌面专属提示已隐藏
-- [ ] 底部安全区与 overscroll 处理
-- [ ] 字号跟随 --dsh-content-font-size
-- [ ] 弹层/表单在 390px 下不溢出
-- [ ] 桌面截图无回归
+## 验收目标
+- [ ] 必需操作可见、可点，长内容不被截断
+- [ ] 触控区域、相邻间距和首尾项经过实际检查
+- [ ] 键盘焦点、返回/关闭和草稿状态无回退
+- [ ] 弹层与表单在窄屏和大字号下可用
+- [ ] 桌面主要流程无回退；注明尚未验证的设备行为
 ```
 
 ### PR
 
-- [ ] 只有一份渲染/详情实现，没有为移动复制第二套；
-- [ ] 断点基于实测宽度，不是 UA/viewport；
-- [ ] 移动规则挂在同一个开关下，桌面选择器未改动；
-- [ ] 静态预览可以指定宽度，且窄屏分支真的被执行；
-- [ ] 渲染检查新增结构断言，桌面基线已对比；
-- [ ] 真机未验的部分在描述里写明（键盘、安全区、惯性滚动）。
+- [ ] 说明受影响入口和内容，不按 UA 硬分手机与桌面；
+- [ ] 优先复用组件与状态；确需不同排列时避免复制业务逻辑；
+- [ ] 给出真实浏览器的窄屏和桌面对照、操作步骤及相关测试；
+- [ ] 检查焦点、命中、长内容、错误和清理，不仅检查 CSS 文本；
+- [ ] 说明真机已验证与未验证的范围，不复制其他版本的结果。
 
-## 边界与反模式
+## 范围
 
-- 不要由移动层按类名注入第三方 CSS：类名一变就碎，而且会同时影响桌面。
-- 不要为移动端复制一套组件树：两份实现一定会在第一个字段变更时分叉。
-- 不要承诺所有插件都能适配：后台型、依赖原生窗口的插件不在此列。
-- 不要把「能滚动」当成验收通过：还要看首个异常、实际尺寸与焦点顺序。
+本指南来自社区插件适配实践与 [#279 讨论](https://github.com/saya-ch/dsh-mobile/discussions/279)，提供可复用的实现与验收思路，不代表这里已独立验证任何第三方插件的新版本。主题细节还可参考[皮肤与移动布局](SKIN_COMPATIBILITY.md)。
+
+DSH Mobile 不按第三方私有类名维护通用覆盖表，也不保证依赖原生窗口的插件能在远程页面直接使用。适配应由拥有该组件的插件维护，并使用 DSH 的公开扩展接口；发现宿主缺失的能力时应单独报告，不修改已安装的 DSH 产物来绕过问题。
