@@ -2,6 +2,20 @@
 
 Notable changes are recorded here. GitHub Releases provide the downloadable packages and generated commit notes.
 
+## 0.6.18 (unreleased)
+
+- Preserve DSH's adaptive directory-picker composition. The dedicated Mobile page reuses an available upstream browse picker, including its **New folder** action; a host using the system chooser keeps that chooser on Desktop and gets a separate web directory flow on the remote page. Thanks @OranImp for [#271](https://github.com/saya-ch/dsh-mobile/issues/271).
+- Add **New folder** to the Mobile-owned directory flow. Create one child under a confirmed existing directory, report duplicate names and permission errors, and enter the new directory on success. Reject drive-relative and invalid names, fence cancelled results, prevent duplicate submissions and retain cancellation while admitted work settles. Escape and Back first close the creation step; writes are never automatically replayed.
+- Offer the device-scoped module recovery page for stale profile defaults as well as saved computer/device selections. Recovery changes only the current device's selection, not computer defaults, other devices or installed plugins. Thanks @LUgABeEEE for [#276](https://github.com/saya-ch/dsh-mobile/issues/276).
+- Add optional `adminAllowedCidrs` for controlled NAS administration. The default remains loopback-only; extra direct peers also require active DSH authentication, with existing Host/Origin and cross-site restrictions. Forwarded IP headers do not grant access. See [trusted networks](docs/TRUSTED_NETWORKS.en.md#accessing-the-nas-administration-page). Thanks @LzBsA for [#272](https://github.com/saya-ch/dsh-mobile/issues/272).
+- Refresh only the legacy `upstreamOrigin` snapshot in managed setup when DSH's active WebServer port changes. Runtime forwarding already follows that port; this prevents misleading stale configuration, rather than establishing the cause of every connection timeout. Thanks @LUgABeEEE for [#274](https://github.com/saya-ch/dsh-mobile/pull/274).
+- Add a bilingual [mobile adaptation guide for plugin authors](docs/MOBILE_PLUGIN_ADAPTATION.en.md), covering container layout, touch targets, keyboard/focus, safe areas and measured browser acceptance. Thanks @LUgABeEEE for [#280](https://github.com/saya-ch/dsh-mobile/pull/280).
+
+## Android 0.6.8 (unreleased)
+
+- Let the existing overall connection deadline govern the first page download, instead of interrupting it with the shorter page timer and automatically restarting the download after renewal. A real first-load failure retains explicit manual retry; already running pages retain their recovery behavior. Existing TLS verification, cancellation and renderer-crash handling remain. Thanks @LUgABeEEE for [#275](https://github.com/saya-ch/dsh-mobile/issues/275).
+- Prepare App 0.6.8/build 84 independently of plugin 0.6.18. The published App descriptor and download links remain on App 0.6.7 until a separately verified signed release exists.
+
 ## 0.6.17 - 2026-10-25
 
 - Keep DSH's own directory-picker composition instead of registering a second Host service and Client surface. Official Desktop retains its native chooser, **Add workspace** action and `Ctrl+O` shortcut independently of Mobile's in-page picker. Thanks @ChaoPhone for [#257](https://github.com/saya-ch/dsh-mobile/issues/257) and @bvbhu for [#258](https://github.com/saya-ch/dsh-mobile/issues/258).

@@ -2564,6 +2564,7 @@ class MainActivity : Activity() {
     }
 
     private fun recoverAutomatically() {
+        if (initialPageLoadPending()) return
         loadingConnectionAttempt = null
         loadingDocumentGeneration = null
         pageReadyCheck?.let(restoreUiHandler::removeCallbacks)
@@ -3308,6 +3309,7 @@ class MainActivity : Activity() {
                     inspectVisibleContent(generation)
                 }
             },
+            connectionDeadlineActive = { ownsBrowser() && initialPageLoadPending() },
         )
         secureWebViewClient = secureClient
         browser.webViewClient = secureClient
@@ -3668,9 +3670,15 @@ class MainActivity : Activity() {
         }
     }
 
+    /** Only the live initial page uses the connection owner's single nonrenewable loading budget. */
+    private fun initialPageLoadPending(): Boolean {
+        val attempt = loadingConnectionAttempt ?: return false
+        return pendingConnection === attempt && connectionAttempts.isCurrent(attempt)
+    }
+
     private fun showLoadFailure(failure: LoadFailure) {
         if (isFinishing || failureDialog?.isShowing == true) return
-        if ((failure == LoadFailure.NETWORK || failure == LoadFailure.AUTH_EXPIRED || failure == LoadFailure.SERVICE_UNAVAILABLE)
+        if (shouldAutomaticallyRecoverPage(failure, initialPageLoadPending())
             && canRecoverAutomatically()
         ) {
             if (scheduleAutomaticRecovery()) return

@@ -24,3 +24,20 @@ DSH Mobile's default Windows HTTPS / Discovery inbound rules allow only `LocalSu
 A routed network may not support LAN broadcast discovery. If the computer is not discovered, use its displayed pairing link or QR code; routing, firewall access, and the HTTPS entry must still work. Adding an IPv6 CIDR does not create an IPv6 listener.
 
 This setting controls source access to the LAN Gateway, not source CIDRs for an external reverse proxy. Configure that separately with the [own HTTPS reverse proxy guide](SELF_HOSTED_ORIGIN.en.md). Do not expose the LAN Gateway or private HTTP backend directly to the public internet.
+
+## Accessing the NAS administration page
+
+The administration page's `/api/mobile-access` and the phone Gateway are separate entries. The additional trusted networks above do not open the management API. By default, the management API still accepts only direct loopback peers.
+
+The unreleased candidate adds `adminAllowedCidrs` for NAS deployments already accessed through a controlled LAN. Add this field to the existing `mobile-access` entry's complete `config`, replacing the example with the administration computer's actual address:
+
+```yaml
+adminAllowedCidrs:
+  - 192.168.50.23/32
+```
+
+This is only the additional field, **not a complete replacement `config`**. DSH entry overrides replace the whole configuration; retain the existing `setupFile`, `stateFile`, `controlFile`, TLS and other custom settings. Restart DSH after editing.
+
+This option does not change DSH's listener, routing or firewall, or open a public management entry. It accepts only the listed direct TCP peers, never `X-Forwarded-For`, and also requires the current request to pass DSH session authentication. Sign in to DSH normally first. A version without usable authentication, a deployment with authentication disabled or a request without credentials cannot gain management access merely through a CIDR. Prefer a single administration computer's `/32`; the limit is 32 entries, with no all-address `/0` or duplicate networks.
+
+Existing private-IP/loopback Host restrictions, exact Origin checks, cross-site rejection and denied CORS preflights remain. The management API does not accept arbitrary DNS names or public Hosts. A proxy's direct address may represent several visitors: the proxy must restrict access, retain DSH authentication and never add CORS permission for this path. Plain HTTP on a LAN does not prevent interception; use HTTPS or SSH forwarding on uncontrolled networks, and never publish `/api/mobile-access`. Remove the field or set an empty list to restore the default without deleting pairings.

@@ -25,7 +25,7 @@ function manifest() {
   ] }
 }
 
-async function runCase(browser, cookieKind) {
+async function runCase(browser, cookieKind, profileDefault = false) {
   const directory = await mkdtemp(resolve(tmpdir(), 'dsh-mobile-module-recovery-browser-'))
   const cleanups = [() => rm(directory, { recursive: true, force: true })]
   const errors = []
@@ -52,7 +52,7 @@ async function runCase(browser, cookieKind) {
     await writeFile(certFile, certificate.cert, { mode: 0o600 })
     await writeFile(keyFile, certificate.private, { mode: 0o600 })
     await writeFile(mobileLayoutFile, 'globalThis.fixtureLayout = true;')
-    const preferences = new ClientModulePreferenceStore(resolve(directory, 'preferences.json'), [])
+    const preferences = new ClientModulePreferenceStore(resolve(directory, 'preferences.json'), profileDefault ? ['feature'] : [])
     const config = parseGatewayConfig({ listenHost: '127.0.0.1', listenPort: 0,
       tls: { mode: 'provided', certFile, keyFile }, upstreamOrigin: `http://127.0.0.1:${upstream.address().port}`,
       publicAuthorities: ['127.0.0.1'], allowedCidrs: ['127.0.0.0/8'], stateFile: resolve(directory, 'devices.json'),
@@ -63,8 +63,10 @@ async function runCase(browser, cookieKind) {
     await gateway.start()
     const pair = async () => { const window = await gateway.access.openPairing(); return gateway.access.pair('browser-fixture', window.token, 'Recovery fixture') }
     const first = await pair(), other = await pair()
-    if (cookieKind === 'protected') await gateway.configureClientModules(['feature'], first.deviceId)
-    else await gateway.configureClientModules(['feature'])
+    if (!profileDefault) {
+      if (cookieKind === 'protected') await gateway.configureClientModules(['feature'], first.deviceId)
+      else await gateway.configureClientModules(['feature'])
+    }
     await gateway.configureClientModules([], other.deviceId)
     const computerBefore = await preferences.read(), otherBefore = await preferences.read(other.deviceId), firstBefore = await preferences.read(first.deviceId)
     graph.entries.find(entry => entry.id === 'feature').immediately = true
@@ -121,6 +123,9 @@ async function runCase(browser, cookieKind) {
 
 const browser = await chromium.launch({ headless: true })
 try {
-  for (const kind of ['protected', 'legacy']) await runCase(browser, kind)
-  console.log('Client module recovery browser smoke passed: protected and legacy cookies, CSP, explicit action, failed-save retry, no automatic reload, and device-only persistence.')
+  for (const kind of ['protected', 'legacy']) {
+    await runCase(browser, kind)
+    await runCase(browser, kind, true)
+  }
+  console.log('Client module recovery browser smoke passed: device/computer/profile defaults, protected and legacy cookies, CSP, explicit action, failed-save retry, no automatic reload, and device-only persistence.')
 } finally { await browser.close() }

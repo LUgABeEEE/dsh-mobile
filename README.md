@@ -130,7 +130,7 @@ dsh plugin --profile web add dshmarket
 
 侧栏底部有其他插件入口时，**移动访问**会收起为手机图标；悬停可查看名称，点击仍打开原面板。独占该区域时恢复文字显示。
 
-端口说明：`dsh web --port` 修改 DSH Web 上游端口（默认 3080），插件会自动跟随；`dsh-mobile setup --port` 修改 Mobile HTTPS 监听端口（默认 3443），配对二维码会包含实际端口。
+端口说明：`dsh web --port` 修改 DSH Web 上游端口（默认 3080），插件会自动跟随；`dsh-mobile setup --port` 修改 Mobile HTTPS 监听端口（默认 3443），配对二维码会包含实际端口。若 DSH Desktop 以 `--port 0` 随机端口启动，网关跟随的是**当前实际端口**，`mobile-access/setup.json` 里的 `upstreamOrigin` 只是首次配置的快照，插件启动时会把它更新为当前端口——排查时不要把它当成网关实际使用的上游。
 
 <details>
 <summary>无界面主机、内网代理与额外来源网段</summary>

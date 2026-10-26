@@ -81,7 +81,7 @@ import {
 } from './version.js'
 import { addressAllowed, isLoopbackAddress, type ParsedCidr, RequestTrustPolicy } from './network.js'
 import type { DeviceStore } from './storage.js'
-import { listComputerImages, listWorkspaceDirectories, readComputerImage } from './computer-images.js'
+import { createWorkspaceDirectory, listComputerImages, listWorkspaceDirectories, readComputerImage } from './computer-images.js'
 import {
   disposeLateExtensionResponse,
   EXTENSION_LIMITS,
@@ -2004,7 +2004,8 @@ export class MobileAccessGateway {
     }
     const computerImages = request.method === 'GET' && target.decodedPathname === `${AUTH_PREFIX}/computer-images`
     const computerImage = request.method === 'GET' && target.decodedPathname === `${AUTH_PREFIX}/computer-image`
-    const workspaceDirectories = request.method === 'GET' && target.decodedPathname === `${AUTH_PREFIX}/workspace-directories`
+    const workspaceDirectories = (request.method === 'GET' || request.method === 'POST')
+      && target.decodedPathname === `${AUTH_PREFIX}/workspace-directories`
     const clientModules = target.decodedPathname === `${AUTH_PREFIX}/client-modules`
     const requestedExtension = extensionTarget(target.decodedPathname)
     const requestedMobileBootBatch = mobileBootBatchKey(target.decodedPathname)
@@ -2174,10 +2175,20 @@ export class MobileAccessGateway {
       response.once('close', onClose)
       const task = (async (): Promise<void> => {
         try {
-          const query = new URL(target.raw, this.address().origin).searchParams
-          const listing = await listWorkspaceDirectories(query.get('path'), operation.signal)
-          operation.signal.throwIfAborted()
-          sendJson(response, 200, listing, this.tlsEnabled)
+          if (request.method === 'POST') {
+            const body = await readJsonObject(request, MAX_CONTROL_BODY_BYTES)
+            if (typeof body.path !== 'string' || body.path.length === 0 || typeof body.name !== 'string') {
+              throw new HttpError(400, 'directory_create_invalid')
+            }
+            const created = await createWorkspaceDirectory(body.path, body.name, operation.signal)
+            operation.signal.throwIfAborted()
+            sendJson(response, 201, created, this.tlsEnabled)
+          } else {
+            const query = new URL(target.raw, this.address().origin).searchParams
+            const listing = await listWorkspaceDirectories(query.get('path'), operation.signal)
+            operation.signal.throwIfAborted()
+            sendJson(response, 200, listing, this.tlsEnabled)
+          }
         } catch (error) {
           if (operation.signal.aborted && error === operation.signal.reason) return
           throw error
@@ -2855,17 +2866,20 @@ export class MobileAccessGateway {
               this.lastModuleExclusionError = detail
               process.emitWarning(detail, { code: 'DSH_MOBILE_MODULE_EXCLUSION_INVALID' })
             }
-            if (preference.source === 'device' || preference.source === 'computer') {
-              operation.signal.throwIfAborted()
-              const locale = resolveAuthPageLocale(headerValue(request.headers, 'accept-language'))
-              const recovery = Buffer.from(renderClientModuleRecoveryPage(locale))
-              // A valid owned document uses 200 so Android does not replace its recovery action with a generic HTTP-error dialog.
-              setSecurityHeaders(response, this.tlsEnabled)
-              response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Content-Length': recovery.byteLength })
-              response.end(recovery)
-              return
-            }
-            sendJson(response, 409, { error: 'excluded_client_modules_invalid', detail }, this.tlsEnabled)
+            // Every source gets the same owned recovery document, including the
+            // computer default (`source: 'plugin'`). A JSON error here is swapped
+            // for a generic HTTP dialog by Android while the page that hosts the
+            // module manager stays unreachable, so a stale profile-level exclusion
+            // locked a paired App out with no way left to correct it. The recovery
+            // action writes a device-level selection and leaves computer defaults,
+            // other devices and installed plugins untouched, so it resolves any source.
+            operation.signal.throwIfAborted()
+            const locale = resolveAuthPageLocale(headerValue(request.headers, 'accept-language'))
+            const recovery = Buffer.from(renderClientModuleRecoveryPage(locale))
+            // A valid owned document uses 200 so Android does not replace its recovery action with a generic HTTP-error dialog.
+            setSecurityHeaders(response, this.tlsEnabled)
+            response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Content-Length': recovery.byteLength })
+            response.end(recovery)
             return
           }
           throw new HttpError(502, 'upstream_unavailable')

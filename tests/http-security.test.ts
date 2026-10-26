@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { describe, expect, it } from 'vitest'
 import { HttpError, assertLocalAdminTrust, setSecurityHeaders } from '../src/http-security.js'
 import { DESKTOP_ADMIN_HEADER, DESKTOP_ADMIN_MARKER, WEB_ADMIN_HEADER, WEB_ADMIN_MARKER } from '../src/local-admin-host.js'
+import { parseCidr } from '../src/network.js'
 
 const GATEWAY_POLICY = 'camera=(), microphone=(), geolocation=(), payment=(), usb=()'
 const PROXIED_POLICY = 'camera=(), microphone=(self), geolocation=(), payment=(), usb=()'
@@ -58,7 +59,7 @@ describe('setSecurityHeaders', () => {
 function fakeRequest(init: {
   readonly remoteAddress?: string | undefined
   readonly host?: string
-  readonly origin?: string
+  readonly origin?: string | undefined
   readonly site?: string
   readonly desktopMarker?: string | readonly string[]
   readonly webMarker?: string | readonly string[]
@@ -66,6 +67,7 @@ function fakeRequest(init: {
   readonly contentType?: string | readonly string[]
   readonly mode?: string
   readonly dest?: string
+  readonly forwardedFor?: string
 }): IncomingMessage {
   const headers: Record<string, string | readonly string[]> = {}
   if (init.host !== undefined) headers.host = init.host
@@ -76,6 +78,7 @@ function fakeRequest(init: {
   if (init.contentType !== undefined) headers['content-type'] = init.contentType
   if (init.mode !== undefined) headers['sec-fetch-mode'] = init.mode
   if (init.dest !== undefined) headers['sec-fetch-dest'] = init.dest
+  if (init.forwardedFor !== undefined) headers['x-forwarded-for'] = init.forwardedFor
   return {
     ...(init.method === undefined ? {} : { method: init.method }),
     socket: {
@@ -95,6 +98,48 @@ function reject(init: Parameters<typeof fakeRequest>[0], requireOrigin = false, 
 }
 
 describe('assertLocalAdminTrust', () => {
+  it('admits only explicitly trusted direct peers with authenticated DSH requests', () => {
+    const cidrs = [parseCidr('192.168.50.23/32')]
+    const request = fakeRequest({ remoteAddress: '192.168.50.23', host: '192.168.50.8:3080',
+      method: 'POST', origin: 'http://192.168.50.8:3080', site: 'same-origin' })
+    expect(() => assertLocalAdminTrust(request, true, () => true)).toThrowError(expect.objectContaining({ status: 403 }))
+    expect(() => assertLocalAdminTrust(request, true, () => false, cidrs)).toThrowError(expect.objectContaining({ status: 401, code: 'admin_authentication_required' }))
+    expect(() => assertLocalAdminTrust(request, true, () => true, cidrs)).not.toThrow()
+    expect(() => assertLocalAdminTrust(request, true, undefined, cidrs)).toThrowError(expect.objectContaining({ status: 401 }))
+  })
+
+  it('requires authenticated admission for remote management reads too', () => {
+    const cidrs = [parseCidr('192.168.50.0/24')]
+    const request = fakeRequest({ remoteAddress: '::ffff:192.168.50.23', host: '192.168.50.8:3080' })
+    expect(() => assertLocalAdminTrust(request, false, () => false, cidrs)).toThrowError(expect.objectContaining({ status: 401 }))
+    expect(() => assertLocalAdminTrust(request, false, () => true, cidrs)).not.toThrow()
+  })
+
+  it.each([
+    { remoteAddress: '192.168.60.23', forwardedFor: '192.168.50.23' },
+    { remoteAddress: undefined, forwardedFor: '192.168.50.23' },
+    { host: 'evil.example' },
+    { origin: 'http://evil.example' },
+    { origin: 'http://192.168.50.8:9999' },
+    { site: 'cross-site' },
+    { site: 'same-site' },
+    { method: 'OPTIONS' },
+    { origin: undefined },
+  ])('keeps remote management source restrictions with valid authentication: %j', override => {
+    const request = fakeRequest({ remoteAddress: '192.168.50.23', host: '192.168.50.8:3080',
+      method: 'POST', origin: 'http://192.168.50.8:3080', site: 'same-origin', ...override })
+    expect(() => assertLocalAdminTrust(request, true, () => true, [parseCidr('192.168.50.23/32')]))
+      .toThrowError(expect.objectContaining({ status: 403 }))
+  })
+
+  it('requires DSH authentication even for a correctly marked remote JSON request', () => {
+    const request = fakeRequest({ remoteAddress: '192.168.50.23', host: '192.168.50.8:3080',
+      method: 'POST', contentType: 'application/json', webMarker: WEB_ADMIN_MARKER })
+    const cidrs = [parseCidr('192.168.50.23/32')]
+    expect(() => assertLocalAdminTrust(request, true, () => false, cidrs)).toThrowError(expect.objectContaining({ status: 401 }))
+    expect(() => assertLocalAdminTrust(request, true, () => true, cidrs)).not.toThrow()
+  })
+
   it('keeps loopback Host and TCP peer working', () => {
     expect(() => assertLocalAdminTrust(fakeRequest({ host: '127.0.0.1:8787' }), false)).not.toThrow()
     expect(() => assertLocalAdminTrust(fakeRequest({ host: 'localhost:8787' }), false)).not.toThrow()

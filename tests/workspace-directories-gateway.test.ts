@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { parseGatewayConfig } from '../src/config.js'
 import { listWorkspaceDirectories } from '../src/computer-images.js'
 import { MobileAccessGateway } from '../src/gateway.js'
-import { SESSION_COOKIE } from '../src/http-security.js'
+import { CSRF_HEADER, SESSION_COOKIE } from '../src/http-security.js'
 import { MemoryDeviceStore } from '../src/storage.js'
 
 vi.mock('node:fs/promises', async importOriginal => {
@@ -47,9 +47,10 @@ async function close(server: Server): Promise<void> {
   await new Promise<void>((resolve, reject) => { server.close(error => { if (error) reject(error); else resolve() }) })
 }
 
-function beginRequest(port: number, path: string, headers: IncomingHttpHeaders, method = 'GET') {
+function beginRequest(port: number, path: string, headers: IncomingHttpHeaders, method = 'GET', body?: string) {
   let cancel = (): void => {}
   const wireHeaders = Object.fromEntries(Object.entries(headers).filter(([, value]) => value !== undefined))
+  if (body !== undefined) wireHeaders['content-length'] = String(Buffer.byteLength(body))
   const result = new Promise<HttpResult>((resolve, reject) => {
     const outgoing = requestHttp({ host: '127.0.0.1', port, path, method, headers: wireHeaders, agent: false }, incoming => {
       const chunks: Buffer[] = []
@@ -60,7 +61,7 @@ function beginRequest(port: number, path: string, headers: IncomingHttpHeaders, 
     outgoing.once('error', reject)
     outgoing.setTimeout(2_000, () => { outgoing.destroy(new Error('owned directory request timed out')) })
     cancel = () => { outgoing.destroy(new Error('fixture caller cancelled')) }
-    outgoing.end()
+    outgoing.end(body)
   })
   return { result, cancel: () => cancel() }
 }
@@ -151,14 +152,33 @@ describe('authenticated workspace directory gateway', () => {
     } finally { now.mockRestore() }
   })
 
-  it('does not forward writes or unsupported directory methods to DSH', async () => {
+  it('refuses unsupported directory methods and an unauthenticated write', async () => {
     const context = await fixture()
-    for (const method of ['HEAD', 'POST', 'PUT', 'DELETE']) {
+    for (const method of ['HEAD', 'PUT', 'DELETE']) {
       const response = await beginRequest(context.instance.address().port, directoryRoute(context.root), context.headers, method).result
       expect(response.status).toBe(404)
     }
+    const write = await beginRequest(context.instance.address().port, directoryRoute(context.root), context.headers, 'POST', JSON.stringify({ path: context.root, name: 'created' })).result
+    expect(write.status).toBe(403)
     expect(listWorkspaceDirectories).not.toHaveBeenCalled()
     expect(context.observations).toEqual([])
+  })
+
+  it('creates one child directory for an authenticated write', async () => {
+    const context = await fixture()
+    const headers = { ...context.headers, [CSRF_HEADER]: context.paired.csrfToken, 'content-type': 'application/json' }
+    const response = await beginRequest(context.instance.address().port, '/mobile-access/workspace-directories', headers, 'POST', JSON.stringify({ path: context.root, name: 'created' })).result
+    expect(response.status, response.body).toBe(201)
+    expect(JSON.parse(response.body).path).toBe(join(context.root, 'created'))
+    expect((await fs.stat(join(context.root, 'created'))).isDirectory()).toBe(true)
+  })
+
+  it('refuses a write that names a path instead of one child', async () => {
+    const context = await fixture()
+    const headers = { ...context.headers, [CSRF_HEADER]: context.paired.csrfToken, 'content-type': 'application/json' }
+    const response = await beginRequest(context.instance.address().port, '/mobile-access/workspace-directories', headers, 'POST', JSON.stringify({ path: context.root, name: 'a/b' })).result
+    expect(response.status).toBe(400)
+    expect(await fs.stat(join(context.root, 'a')).catch(() => undefined)).toBeUndefined()
   })
 
   it('withdraws a disconnected caller but retains its slot until physical listing work settles', async () => {

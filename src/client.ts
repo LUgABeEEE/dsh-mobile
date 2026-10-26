@@ -25,7 +25,7 @@ import { createMobileAssetLoadReporter, ownsMobileCustomization, readMobileAsset
 import { EXTENSION_LIMITS, LEGACY_CUSTOM_ASSET_LIMIT } from './extension-limits.js'
 import { installMobileConnectionRecovery, type MobileConnectionState } from './client-recovery.js'
 import { installMobileUiLocalePersistence } from './mobile-ui-locale.js'
-import { dismissMobileDirectoryPicker, installMobileDirectoryPicker } from './mobile-directory-picker.js'
+import { dismissMobileDirectoryPicker, hasUpstreamBrowsePicker, installMobileDirectoryPicker } from './mobile-directory-picker.js'
 
 export { shouldNudgeReconnect, shouldRenewSession } from './client-recovery.js'
 export type { MobileConnectionState } from './client-recovery.js'
@@ -4550,10 +4550,14 @@ export function apply(ctx: ClientContext): void {
         getLayout: () => ctx.get('layout'),
         getSidebarRight: () => ctx.get('sidebarRight'),
       }))
-      // The dedicated page owns its directory flow: the desktop composition
-      // keeps DSH's adaptive picker (a native OS chooser there), which no remote
-      // browser can reach. Only this authenticated entry registers it.
+      // The dedicated page owns its directory flow only when DSH's own picker
+      // cannot serve a remote browser: the desktop composition keeps DSH's
+      // adaptive picker (a native OS chooser there), which no remote browser
+      // can reach. When DSH resolved the browse interaction, its own web
+      // implementation already fills these slots, and shadowing it would take
+      // away the upstream folder creation.
       const removeDirectoryPicker = window.__DSH_MOBILE_FRONTEND__ === 'dedicated'
+        && !hasUpstreamBrowsePicker(window)
         ? installMobileDirectoryPicker(ctx, document) : () => Promise.resolve()
       return async () => {
         // Start the picker removal synchronously so no new flow can open, but run

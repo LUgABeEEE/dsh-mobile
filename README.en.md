@@ -130,7 +130,7 @@ Use this when the phone and computer share Wi-Fi, Ethernet, or a phone hotspot. 
 
 When other plugin entries share the sidebar footer, **Mobile access** becomes a phone-icon button. Hover to read its name; clicking opens the same panel. Its text label returns when the entry is alone.
 
-Port note: `dsh web --port` changes the DSH Web upstream port (3080 by default), which the plugin follows automatically. `dsh-mobile setup --port` changes the Mobile HTTPS listener (3443 by default), and the pairing QR code includes the selected port.
+Port note: `dsh web --port` changes the DSH Web upstream port (3080 by default), which the plugin follows automatically. `dsh-mobile setup --port` changes the Mobile HTTPS listener (3443 by default), and the pairing QR code includes the selected port. When DSH Desktop starts with `--port 0`, the gateway follows the **actual port in use**; `upstreamOrigin` in `mobile-access/setup.json` is only the snapshot from the first setup, and the plugin refreshes it at startup — do not read it as the upstream the gateway uses.
 
 <details>
 <summary>Headless hosts, private proxies and additional source networks</summary>

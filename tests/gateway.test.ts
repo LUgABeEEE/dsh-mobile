@@ -1333,23 +1333,29 @@ describe('HTTP gateway', () => {
     expect(inner.observations.map(observation => observation.url)).not.toContain('/plugins/application-2.js?rev=stock')
   })
 
-  it('reports a selected module missing from the live graph without serving a partial page', async () => {
+  it('offers recovery for a missing profile-selected module without serving a partial boot graph', async () => {
     const inner = await upstream('batched')
     const instance = await gateway(inner.port, { excludedClientModules: ['feature-missing'] })
     const paired = await pair(instance)
     const warning = vi.spyOn(process, 'emitWarning').mockImplementation(() => undefined)
     try {
-      const page = await request(instance.address().port, '/', {
-        headers: { ...browserHeaders(instance), accept: 'text/html', cookie: `${SESSION_COOKIE}=${paired.session}` },
-      })
-      expect(page.status).toBe(409)
-      expect(JSON.parse(page.body)).toEqual({
-        error: 'excluded_client_modules_invalid',
-        detail: 'excludedClientModules: module feature-missing is not installed in this DSH client graph',
-      })
+      const headers = { ...browserHeaders(instance), accept: 'text/html', cookie: `${SESSION_COOKIE}=${paired.session}` }
+      const page = await request(instance.address().port, '/', { headers })
+      expect(page.status).toBe(200)
+      expect(page.headers['content-type']).toContain('text/html')
+      expect(page.headers['cache-control']).toBe('no-store')
+      expect(page.headers['x-frame-options']).toBe('DENY')
+      expect(page.body).toContain('id="load-all-modules"')
+      expect(page.body).not.toContain('__DSH_BOOT__')
+      expect(page.body).not.toContain('feature-missing')
+      expect(page.body).not.toContain(paired.session)
       expect(warning).toHaveBeenCalledWith(expect.stringContaining('module feature-missing is not installed'), {
         code: 'DSH_MOBILE_MODULE_EXCLUSION_INVALID',
       })
+      const repeated = await request(instance.address().port, '/', { headers })
+      expect(repeated.status).toBe(200)
+      expect(repeated.body).toContain('id="load-all-modules"')
+      expect(warning).toHaveBeenCalledTimes(1)
     } finally {
       warning.mockRestore()
     }

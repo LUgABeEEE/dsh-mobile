@@ -1,4 +1,4 @@
-import { lstat, opendir, readFile, stat } from 'node:fs/promises'
+import { lstat, mkdir, opendir, readFile, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, dirname, extname, isAbsolute, posix, resolve, win32 } from 'node:path'
 import { HttpError } from './http-security.js'
@@ -165,6 +165,62 @@ export async function listWorkspaceDirectories(path: string | null, signal?: Abo
     entries: Object.freeze(rows),
     truncated,
   })
+}
+
+/**
+ * Resolve exactly one child name without drive-relative or reserved Win32 spellings.
+ * @param path - Fully qualified parent without a home/current-drive fallback.
+ * @param name - Single non-blank path segment.
+ * @param platform - Host path rules, explicit for portable parser tests.
+ * @returns The child path whose immediate parent is the normalized requested directory.
+ */
+export function workspaceDirectoryChildPath(path: string, name: string, platform: NodeJS.Platform = process.platform): string {
+  if (typeof path !== 'string' || path.length === 0) throw new HttpError(400, 'directory_create_invalid')
+  if (typeof name !== 'string' || name.length === 0 || name.length > 255 || name.trim() === ''
+    || name === '.' || name === '..' || name.includes('/') || name.includes('\\') || name.includes('\0')
+    || isAbsolute(name) || (platform === 'win32' && (
+      /[<>:"|?*\u0000-\u001f]/u.test(name) || /[. ]$/u.test(name)
+      || /^(?:CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³])(?:\.|$)/iu.test(name)
+    ))) {
+    throw new HttpError(400, 'directory_create_invalid')
+  }
+  const paths = platform === 'win32' ? win32 : posix
+  const parent = resolveWorkspaceDirectoryPath(path, platform)
+  const child = paths.resolve(parent, name)
+  if (paths.dirname(child) !== parent) throw new HttpError(400, 'directory_create_invalid')
+  return child
+}
+
+/**
+ * Create one child directory under an explicitly confirmed existing parent.
+ * @param path - Fully qualified existing parent; no home/default fallback is used.
+ * @param name - One non-blank segment accepted by the Host filesystem rules.
+ * @param signal - Cancellation withdraws admission/results, never a completed mkdir.
+ * @returns The created directory's absolute path after filesystem work settles.
+ */
+export async function createWorkspaceDirectory(path: string, name: string, signal?: AbortSignal): Promise<{ path: string }> {
+  signal?.throwIfAborted()
+  const created = workspaceDirectoryChildPath(path, name)
+  const parent = resolveWorkspaceDirectoryPath(path)
+  let stats
+  try {
+    stats = await stat(parent)
+  } catch (error) {
+    if (signal?.aborted) throw signal.reason
+    throw new HttpError(404, 'directory_unavailable')
+  }
+  if (!stats.isDirectory()) throw new HttpError(400, 'directory_create_invalid')
+  signal?.throwIfAborted()
+  try {
+    await mkdir(created)
+  } catch (error) {
+    if (signal?.aborted) throw signal.reason
+    const code = (error as NodeJS.ErrnoException).code
+    if (code === 'EEXIST') throw new HttpError(409, 'directory_exists')
+    throw new HttpError(400, 'directory_create_failed')
+  }
+  signal?.throwIfAborted()
+  return Object.freeze({ path: created })
 }
 
 /** Read one bounded regular image file selected by an authenticated device. */
