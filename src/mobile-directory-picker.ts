@@ -114,29 +114,31 @@ async function readDirectories(path: string | null, signal: AbortSignal): Promis
 const STYLES = `
 dialog.dshm-picker{position:fixed;inset:0;box-sizing:border-box;width:100%;max-width:none;height:100%;max-height:none;margin:0;padding:max(16px,env(safe-area-inset-top)) max(16px,env(safe-area-inset-right)) max(16px,env(safe-area-inset-bottom)) max(16px,env(safe-area-inset-left));border:0;background:transparent;color:var(--dsw-alias-label-primary,#16181d);font:400 14px/1.5 system-ui;overflow:hidden}
 dialog.dshm-picker[open]{display:grid;place-items:center}dialog.dshm-picker::backdrop{background:rgb(0 0 0 / 42%)}
-.dshm-picker__panel{display:flex;flex-direction:column;box-sizing:border-box;width:min(680px,100%);height:min(500px,100%);min-height:0;overflow:hidden;border:0;border-radius:28px;box-shadow:0 0 0 .5px rgba(0 0 0 / 16%),0 3px 8px rgba(0 0 0 / 4%);background:var(--dsw-alias-bg-layer-1,#fff)}
-.dshm-picker__header{display:flex;align-items:center;flex:none;gap:8px;padding:16px 14px 8px 24px;border-bottom:1px solid var(--dsw-alias-border-l2,#dde0e4)}
+.dshm-picker__panel{display:flex;flex-direction:column;box-sizing:border-box;width:min(680px,100%);height:min(720px,100%);min-height:0;overflow:hidden;border:0;border-radius:20px;box-shadow:0 0 0 .5px rgba(0 0 0 / 16%),0 3px 8px rgba(0 0 0 / 4%);background:var(--dsw-alias-bg-layer-1,#fff)}
+.dshm-picker__header{display:flex;align-items:center;flex:none;gap:8px;padding:4px 8px 4px 12px;border-bottom:1px solid var(--dsw-alias-border-l2,#dde0e4)}
 .dshm-picker__title{flex:1;min-width:0;margin:0;font-size:16px;font-weight:510;line-height:24px;overflow-wrap:anywhere}
-.dshm-picker__toolbar{display:flex;flex-wrap:wrap;gap:8px;flex:none;padding:12px 16px 8px}.dshm-picker__path-label{flex:1;min-width:min(180px,100%);display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--dsw-alias-label-secondary,#606873)}
-.dshm-picker__path{box-sizing:border-box;width:100%;min-width:0;min-height:48px;padding:10px 12px;border:1px solid var(--dsw-alias-border-l3,#cfd5dd);border-radius:10px;background:var(--dsw-alias-bg-layer-2,#f7f8fa);color:var(--dsw-alias-label-primary,#16181d);font:400 16px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace}
+.dshm-picker__toolbar{display:flex;align-items:center;flex-wrap:nowrap;gap:8px;flex:none;padding:8px 10px}.dshm-picker__path-label{flex:1;min-width:0;display:flex;color:var(--dsw-alias-label-secondary,#606873)}
+.dshm-picker__path-caption{position:absolute;width:1px;height:1px;padding:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.dshm-picker__path{box-sizing:border-box;width:100%;min-width:0;min-height:44px;padding:6px 8px;border:1px solid var(--dsw-alias-border-l3,#cfd5dd);border-radius:8px;background:var(--dsw-alias-bg-layer-2,#f7f8fa);color:var(--dsw-alias-label-primary,#16181d);font:400 16px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace}
 .dshm-picker__path[aria-invalid=true]{border-color:var(--dsw-alias-state-error-primary,#b42318)}.dshm-picker__go{align-self:flex-end}
-.dshm-picker__navigation{display:flex;flex:none;gap:8px;padding:0 16px 8px}.dshm-picker__navigation .dshm-picker__button{flex:1;white-space:normal}
-.dshm-picker__list{flex:1;min-height:0;margin:0;padding:16px 16px 16px 24px;overflow:auto;overscroll-behavior:contain;list-style:none;scroll-padding:4px}
+.dshm-picker__navigation{display:flex;flex:none;gap:8px;padding:0}
+.dshm-picker__list{flex:1;min-height:0;margin:0;padding:0 10px 4px;overflow:auto;overscroll-behavior:contain;list-style:none;scroll-padding:4px}
 .dshm-picker__row{display:flex;align-items:center;gap:8px;box-sizing:border-box;width:100%;min-height:44px;padding:6px 8px;border:0;border-radius:8px;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer;touch-action:manipulation}
 .dshm-picker__folder{flex:none;width:20px;height:20px;color:var(--dsw-alias-label-secondary,#606873)}
 .dshm-picker__name{flex:1;min-width:0;overflow-wrap:anywhere}.dshm-picker__row:hover:not(:disabled),.dshm-picker__button:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover,#eef1f5)}
 .dshm-picker__row:active:not(:disabled),.dshm-picker__button:active:not(:disabled){background:var(--dsw-alias-interactive-bg-active,#e4e8ee)}
-.dshm-picker__button{flex:none;box-sizing:border-box;min-width:48px;min-height:48px;padding:10px 14px;border:1px solid var(--dsw-alias-border-l3,#cfd5dd);border-radius:10px;background:transparent;color:inherit;font:500 14px/1.4 system-ui;cursor:pointer;touch-action:manipulation}
+.dshm-picker__button{flex:none;box-sizing:border-box;min-width:44px;min-height:44px;padding:6px 10px;border:1px solid var(--dsw-alias-border-l3,#cfd5dd);border-radius:8px;background:transparent;color:inherit;font:500 14px/1.4 system-ui;cursor:pointer;touch-action:manipulation}
+.dshm-picker__icon{display:inline-flex;align-items:center;justify-content:center;width:44px;padding:0;border-color:transparent}.dshm-picker__icon>svg{display:block;width:18px;height:18px}
 .dshm-picker :is(button,input):focus-visible{outline:2px solid var(--dsw-alias-state-business-primary,#2563eb);outline-offset:2px}.dshm-picker button:disabled{opacity:.5;cursor:default}
 .dshm-picker [hidden]{display:none!important}.dshm-picker__create{flex:1;min-height:0;overflow:auto;display:flex;flex-direction:column;gap:8px;padding:12px 16px}
 .dshm-picker__create-title{margin:0;font-size:13px;color:var(--dsw-alias-label-secondary,#606873)}
 .dshm-picker__create-input{box-sizing:border-box;width:100%;min-width:0;min-height:48px;padding:10px 12px;border:1px solid var(--dsw-alias-border-l3,#cfd5dd);border-radius:10px;background:var(--dsw-alias-bg-layer-2,#f7f8fa);color:var(--dsw-alias-label-primary,#0f1115);font:inherit;font-size:16px;line-height:1.4}
 .dshm-picker__create-actions{display:flex;justify-content:flex-end;gap:8px}.dshm-picker__create-error{color:var(--dsw-alias-state-error-primary,#b42318)}
-.dshm-picker__create-trigger{margin-right:auto}
-.dshm-picker__status{flex:none;margin:0;padding:8px 16px;font-size:13px;color:var(--dsw-alias-label-secondary,#606873);overflow-wrap:anywhere}.dshm-picker__error{color:var(--dsw-alias-state-error-primary,#b42318)}
-.dshm-picker__status[hidden],.dshm-picker__button[hidden]{display:none}.dshm-picker__footer{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;flex:none;gap:8px;padding:16px 24px;border-top:1px solid var(--dsw-alias-border-l2,#dde0e4)}
-.dshm-picker__confirm{border-color:transparent;background:var(--dsw-alias-button-primary-fill,#2563eb);color:var(--dsw-alias-label-primary-foreground,#fff)}.dshm-picker__confirm:hover:not(:disabled),.dshm-picker__confirm:active:not(:disabled){background:var(--dsw-alias-button-primary-hover,#1d4ed8)}
-@media(max-width:420px){dialog.dshm-picker{padding:max(8px,env(safe-area-inset-top)) max(8px,env(safe-area-inset-right)) max(8px,env(safe-area-inset-bottom)) max(8px,env(safe-area-inset-left))}.dshm-picker__header,.dshm-picker__toolbar,.dshm-picker__footer{padding-left:12px;padding-right:12px}.dshm-picker__footer .dshm-picker__button{flex:1}.dshm-picker__path-label{min-width:0}}
+.dshm-picker__create-trigger{margin-right:auto;border-color:transparent;padding-left:8px;padding-right:8px}
+.dshm-picker__status{flex:none;margin:0;padding:4px 10px;font-size:13px;color:var(--dsw-alias-label-secondary,#606873);overflow-wrap:anywhere}.dshm-picker__error{color:var(--dsw-alias-state-error-primary,#b42318)}
+.dshm-picker__status[hidden],.dshm-picker__button[hidden]{display:none}.dshm-picker__footer{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;flex:none;gap:8px;padding:6px 10px;border-top:1px solid var(--dsw-alias-border-l2,#dde0e4)}
+.dshm-picker__confirm{min-width:72px;border-color:transparent;background:var(--dsw-alias-button-primary-fill,#2563eb);color:var(--dsw-alias-label-primary-foreground,#fff)}.dshm-picker__confirm:hover:not(:disabled),.dshm-picker__confirm:active:not(:disabled){background:var(--dsw-alias-button-primary-hover,#1d4ed8)}
+@media(max-width:420px){dialog.dshm-picker{padding:max(8px,env(safe-area-inset-top)) max(8px,env(safe-area-inset-right)) max(8px,env(safe-area-inset-bottom)) max(8px,env(safe-area-inset-left))}}
 `
 
 interface DirectoryDialogOwner { setHostBusy(value: boolean): void; dispose(): Promise<void> }
@@ -179,16 +181,26 @@ function openDirectoryDialog(doc: Document, getProps: () => DirectoryFlowProps, 
     if (name !== undefined) value.setAttribute(`data-dshm-picker-${name}`, '')
     return value
   }
+  const iconButton = (label: string, outline: string, name?: string): HTMLButtonElement => {
+    const value = button('', name); value.classList.add('dshm-picker__icon'); value.setAttribute('aria-label', label); value.title = label
+    const icon = doc.createElementNS('http://www.w3.org/2000/svg', 'svg')
+    icon.setAttribute('viewBox', '0 0 24 24'); icon.setAttribute('fill', 'none'); icon.setAttribute('stroke', 'currentColor')
+    icon.setAttribute('stroke-width', '1.75'); icon.setAttribute('stroke-linecap', 'round'); icon.setAttribute('stroke-linejoin', 'round'); icon.setAttribute('aria-hidden', 'true')
+    const shape = doc.createElementNS('http://www.w3.org/2000/svg', 'path'); shape.setAttribute('d', outline); icon.append(shape); value.append(icon)
+    return value
+  }
   const header = doc.createElement('header'); header.className = 'dshm-picker__header'
   const title = doc.createElement('h2'); title.className = 'dshm-picker__title'; title.textContent = copy.title
-  const close = button(copy.close); header.append(title, close)
+  const close = iconButton(copy.close, 'M6 6l12 12M6 18L18 6'); header.append(title, close)
   const toolbar = doc.createElement('form'); toolbar.className = 'dshm-picker__toolbar'
-  const pathLabel = doc.createElement('label'); pathLabel.className = 'dshm-picker__path-label'; pathLabel.textContent = copy.path
+  const pathLabel = doc.createElement('label'); pathLabel.className = 'dshm-picker__path-label'
+  const pathCaption = doc.createElement('span'); pathCaption.className = 'dshm-picker__path-caption'; pathCaption.textContent = copy.path; pathLabel.append(pathCaption)
   const path = doc.createElement('input'); path.type = 'text'; path.className = 'dshm-picker__path'; path.setAttribute('data-dshm-picker-path', ''); path.spellcheck = false; path.autocomplete = 'off'; path.maxLength = 8192
   pathLabel.append(path)
-  const go = button(copy.go, 'load'); go.type = 'submit'; go.classList.add('dshm-picker__go'); toolbar.append(pathLabel, go)
+  const go = iconButton(copy.go, 'M5 12h14m-6-6 6 6-6 6', 'load'); go.type = 'submit'; go.classList.add('dshm-picker__go'); toolbar.append(pathLabel, go)
   const navigation = doc.createElement('nav'); navigation.className = 'dshm-picker__navigation'; navigation.setAttribute('aria-label', copy.title)
-  const home = button(copy.home, 'home'); const up = button(copy.up, 'up'); navigation.append(home, up)
+  const home = iconButton(copy.home, 'm3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1Z', 'home')
+  const up = iconButton(copy.up, 'M12 20V4m-7 7 7-7 7 7', 'up'); navigation.append(home, up); toolbar.prepend(navigation)
   const status = doc.createElement('p'); status.className = 'dshm-picker__status'; status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite')
   const error = doc.createElement('p'); error.className = 'dshm-picker__status dshm-picker__error'; error.setAttribute('role', 'alert'); error.hidden = true
   const list = doc.createElement('ul'); list.className = 'dshm-picker__list'; list.setAttribute('aria-label', copy.title)
@@ -208,7 +220,7 @@ function openDirectoryDialog(doc: Document, getProps: () => DirectoryFlowProps, 
   const createCancel = button(copy.cancel, 'create-cancel'); const createConfirm = button(copy.createAction, 'create-confirm')
   createActions.append(createCancel, createConfirm)
   createPanel.append(createParent, createTitle, createError, createStatus, createActions)
-  footer.append(create, retry, cancel, confirm); panel.append(header, toolbar, navigation, status, error, list, createPanel, footer); dialog.append(panel)
+  footer.append(create, retry, cancel, confirm); panel.append(header, toolbar, status, error, list, createPanel, footer); dialog.append(panel)
   const browser = new MobileDirectoryBrowser(readDirectories)
   const creator = new MobileDirectoryCreator(createDirectory, created => { browser.navigate(created) })
   let creationNotice = false
