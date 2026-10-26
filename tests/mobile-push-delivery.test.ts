@@ -826,6 +826,52 @@ describe('push delivery coordination', () => {
     expect(testTtl).toBe(60)
     expect(maximum).toBe(4)
   })
+
+  it('sends a Test notification that navigates to the same-origin bare root without any resolver row or Session', async () => {
+    const { registry, store, registrations } = await makeRegistry()
+    const resolveTarget = vi.fn(async (item: PushSource) => ({ sessionId: item.targetSessionId, interaction: 'current' as const }))
+    const sessionExists = vi.fn(async () => true)
+    let testPayload: { notification?: { title?: string; navigate?: string } } | undefined
+    const sender = senderDouble(async sendInput => {
+      testPayload = JSON.parse(sendInput.payload)
+      return { kind: 'accepted' }
+    })
+    const delivery = new PushDelivery({ host: hostDouble({ sessionExists, resolveTarget }), registry, sender })
+    opened.push(() => delivery.close())
+    delivery.attachOrigin({ scopeId: 'scope-a', origin: 'https://mobile.example.test', authorizedDevices: async () => [{ id: 'device-a', expiresAt: Date.now() + 60_000 }] })
+    await delivery.start()
+
+    await expect(delivery.test({ ...owner('device-a'), installationId: registrations[0]!.installationId })).resolves.toBeUndefined()
+    expect(testPayload?.notification?.title).toBe('Test notification')
+    // The Test tap target is the bare app root: no mobile-push reference is emitted, so no
+    // resolver row, Session lookup or fabricated target can ever be involved in a Test tap.
+    expect(testPayload?.notification?.navigate).toBe('/')
+    expect(store.inspect().references).toHaveLength(0)
+    expect(store.inspect().pending).toHaveLength(0)
+    expect(store.inspect().receipts).toHaveLength(0)
+    expect(sessionExists).not.toHaveBeenCalled()
+    expect(resolveTarget).not.toHaveBeenCalled()
+  })
+
+  it('keeps ordinary alert payloads on the opaque one-time reference shape with a persisted resolver row', async () => {
+    const { registry, store, registrations } = await makeRegistry()
+    let alertNavigate: string | undefined
+    const sender = senderDouble(async sendInput => {
+      alertNavigate = (JSON.parse(sendInput.payload) as { notification?: { navigate?: string } }).notification?.navigate
+      return { kind: 'accepted' }
+    })
+    const delivery = new PushDelivery({ host: hostDouble(), registry, sender })
+    opened.push(() => delivery.close())
+    delivery.attachOrigin({ scopeId: 'scope-a', origin: 'https://mobile.example.test', authorizedDevices: async () => [{ id: 'device-a', expiresAt: Date.now() + 60_000 }] })
+    await delivery.start()
+
+    delivery.observe(source('alert-shape-control'))
+    await vi.waitFor(() => expect(store.inspect().references).toHaveLength(1))
+    expect(alertNavigate).toMatch(/^\/\?mobile-push=[A-Za-z0-9_-]{1,256}$/u)
+    expect(alertNavigate?.endsWith(store.inspect().references[0]!.reference)).toBe(true)
+    await expect(delivery.resolve(owner(registrations[0]!.deviceId), store.inspect().references[0]!.reference))
+      .resolves.toEqual({ sessionId: 'session-a', interaction: 'current' })
+  })
 })
 
 // Compile-time anchor: persistent authorization is distinct from an expiring Session.

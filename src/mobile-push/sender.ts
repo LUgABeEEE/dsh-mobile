@@ -42,7 +42,7 @@ function validatePayload(payload: unknown): payload is string {
       && typeof notification.body === 'string' && notification.body.length > 0
       && (notification.lang === 'en' || notification.lang === 'zh-CN' || notification.lang === 'it')
       && typeof notification.navigate === 'string'
-      && /^\/\?mobile-push=[A-Za-z0-9_-]{1,256}$/u.test(notification.navigate)
+      && (notification.navigate === '/' || /^\/\?mobile-push=[A-Za-z0-9_-]{1,256}$/u.test(notification.navigate))
       && typeof notification.tag === 'string' && /^[A-Za-z0-9._:-]{1,128}$/u.test(notification.tag)
   } catch {
     return false

@@ -318,6 +318,23 @@ describe('bounded Apple Web Push sender', () => {
     expect(request).not.toHaveBeenCalled()
   })
 
+  it('accepts the exact bare-root test navigation and still rejects deceptive or external navigate forms', async () => {
+    const rootFixture = senderFor(201)
+    const rootInput = input()
+    rootInput.payload = JSON.stringify({ web_push: 8030, notification: { title: 'Test notification', body: 'Your notification settings are working.', lang: 'en', navigate: '/', tag: 'test-tag' } })
+    expect(await rootFixture.sender.send(rootInput)).toEqual({ kind: 'accepted' })
+    expect(rootFixture.requestCount()).toBe(1)
+
+    // The sender is category-free: only the exact root or the existing opaque-reference route pass.
+    const unused = senderFor(200)
+    for (const navigate of ['', '/ ', '/?x=1', '/sessions/opaque-123', '/#fragment', '//attacker.example/', 'https://attacker.example/']) {
+      const rejected = input()
+      rejected.payload = JSON.stringify({ web_push: 8030, notification: { title: 'x', body: 'y', lang: 'en', navigate, tag: 't' } })
+      expect(await unused.sender.send(rejected), navigate).toEqual({ kind: 'permanent' })
+    }
+    expect(unused.requestCount()).toBe(0)
+  })
+
   it('rejects oversized payloads and caps response streams without losing 2xx acceptance', async () => {
     const oversizedPayload = input()
     oversizedPayload.payload = JSON.stringify({ web_push: 8030, notification: { title: 'x', body: 'z'.repeat(3100), lang: 'en', navigate: '/?mobile-push=x', tag: 't' } })

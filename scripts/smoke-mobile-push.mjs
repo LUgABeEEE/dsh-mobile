@@ -1720,18 +1720,62 @@ async function runFullSmoke({ negativeControl = false, pairDiagnostic = false } 
     assert.equal(await restoredResponseChoice.isChecked(), false, 'Category preference did not persist in actual registry')
     cases.push('category preference persisted through real preferences route and reloaded config')
 
-    // Only the explicit Test POST is intercepted; all config/enroll/preferences/resolve traffic is real.
-    let syntheticTestPosts = 0
-    await phone.route(url => new URL(url).pathname === '/mobile-access/push/test', async route => {
-      assert.equal(route.request().method(), 'POST')
-      syntheticTestPosts++
-      await route.fulfill({ status: 200, contentType: 'application/json', body: '{}' })
-    })
+    // WB-2: the REAL authenticated Test route is exercised end to end. One explicit UI click
+    // POSTs /mobile-access/push/test; the packed default Sender delivers to the nonce-owned
+    // synthetic provider; the decrypted payload must navigate the bare same-origin root with no
+    // mobile-push reference, and the tap must stay resolver-free and notice-free.
+    const testPostsBeforeClick = observations.pushRequests.filter(item => item.path === '/mobile-access/push/test').length
+    const testResponsePromise = phone.waitForResponse(response => new URL(response.url()).pathname === '/mobile-access/push/test'
+      && response.request().method() === 'POST', { timeout: CLIENT_TIMEOUT_MS })
     await restoredSettings.getByRole('button', { name: 'Send test', exact: true }).click()
+    const testResponse = await testResponsePromise
+    assert.equal(testResponse.status(), 200, `Real authenticated Test route returned ${String(testResponse.status())}`)
     await restoredSettings.getByText(/Accepted by the push provider; lock-screen delivery is not confirmed\./u).waitFor({ state: 'visible', timeout: CLIENT_TIMEOUT_MS })
-    assert.equal(syntheticTestPosts, 1, 'Only the explicit Test POST should be replaced by synthetic provider acceptance')
-    cases.push('UI provider-accepted wording shown only after the explicitly intercepted synthetic Test POST')
-    await phone.unroute(url => new URL(url).pathname === '/mobile-access/push/test')
+    // The shared requireCsrf mutation gate covers the Test route too: an explicitly empty token is
+    // preserved by the page fetch wrapper and rejected before the mutation body is read.
+    const testCsrfStatus = await phone.evaluate(async installationId => {
+      const response = await fetch('/mobile-access/push/test', { method: 'POST', credentials: 'same-origin',
+        headers: { 'content-type': 'application/json', 'x-dsh-mobile-csrf': '' }, body: JSON.stringify({ installationId }) })
+      return response.status
+    }, installationId)
+    assert.equal(testCsrfStatus, 403, `Paired Gateway did not reject the invalid-CSRF Test mutation: ${testCsrfStatus}`)
+    // One installation may request one Test per minute; the explicit click consumed it, and an
+    // immediate authenticated repeat must be rate limited at the real route.
+    const testRateLimitStatus = await phone.evaluate(async installationId => {
+      const response = await fetch('/mobile-access/push/test', { method: 'POST', credentials: 'same-origin',
+        headers: { 'content-type': 'application/json' }, body: JSON.stringify({ installationId }) })
+      return response.status
+    }, installationId)
+    assert.equal(testRateLimitStatus, 429, `Immediate repeat Test POST was not rate limited: ${testRateLimitStatus}`)
+    assert.equal(observations.pushRequests.filter(item => item.path === '/mobile-access/push/test').length, testPostsBeforeClick + 3,
+      'Exactly the one clicked Test POST plus the two deliberate probes may reach the route (no automatic replay)')
+    const testTransport = await waitForJson(evidenceFile, value => value.processId === initialChildPid
+      && value.requestsAccepted >= 1 && typeof value.bodyBase64 === 'string', 'real packed Test send at the synthetic provider')
+    const testPayload = await decryptCaptured(testTransport.bodyBase64, transportSeed, installedEcePath)
+    assert.equal(testPayload.web_push, 8030)
+    assert.equal(testPayload.notification?.title, 'Test notification')
+    assert.equal(testPayload.notification?.navigate, '/', 'Test notification must navigate the bare same-origin app root')
+    // Test tap: landing on the decrypted bare-root URL must stay authenticated and must involve no
+    // push resolver request and no missing-conversation notice. DSH may restore the last active app
+    // UI at the root; no Session/list state is forced or asserted here.
+    const resolvePostsBeforeTestTap = observations.pushRequests.filter(item => item.path === '/mobile-access/push/resolve').length
+    const testTap = await phone.goto(`${gatewayOrigin}/`, { waitUntil: 'domcontentloaded', timeout: CLIENT_TIMEOUT_MS })
+    assert.equal(testTap?.status(), 200, 'Bare-root Test tap did not land on the authenticated Gateway page')
+    await phone.waitForFunction(() => document.querySelector('.dshm-shell') !== null, undefined, { timeout: CLIENT_TIMEOUT_MS })
+    await phone.waitForFunction(() => location.pathname === '/' && location.search === '', undefined, { timeout: CLIENT_TIMEOUT_MS })
+    const testTapBoundary = await phone.evaluate(() => ({
+      authenticatedMarker: document.querySelector('meta[name="dsh-mobile-gateway"][content="authenticated"]') !== null,
+      missingConversationNoticeVisible: [...document.querySelectorAll('body *')].some(element => element.children.length === 0
+        && /no longer available/u.test(element.textContent ?? '')) }))
+    assert.equal(testTapBoundary.authenticatedMarker, true, 'Test tap landing was not the authenticated mobile page')
+    assert.equal(testTapBoundary.missingConversationNoticeVisible, false, 'Test tap must not show a missing-conversation notice')
+    assert.equal(observations.pushRequests.filter(item => item.path === '/mobile-access/push/resolve').length, resolvePostsBeforeTestTap,
+      'Test tap must not trigger a push resolver request')
+    const testRouteEvidence = { realRouteStatus: testResponse.status(), csrfNegativeStatus: testCsrfStatus, rateLimitStatus: testRateLimitStatus,
+      providerAcceptedCount: testTransport.requestsAccepted, payloadTitle: testPayload.notification?.title, navigate: testPayload.notification?.navigate,
+      tapStatus: testTap?.status() ?? null, resolverPostsDuringTap: 0, missingNotice: false }
+    pairDiagnosticDetail(runtimeDiagnosticFd, pairDiagnosticRunId, 'snapshot', 'test-notification-boundary', testRouteEvidence)
+    cases.push('real authenticated Test route sent through the default packed Sender; decrypted payload navigates the bare root with no resolver request or missing-target notice')
 
     // The test-only Host plugin uses public Agent/session/UserQuestions services; its fake model is never invoked.
     const targetSessionId = `push-smoke-${randomUUID()}`
@@ -1799,8 +1843,8 @@ async function runFullSmoke({ negativeControl = false, pairDiagnostic = false } 
     assert.equal(firstFixtureResult.publicQuestionProjection?.leaseDisposed, true, 'Public projection read lease was not disposed')
     let firstTransport
     try {
-      firstTransport = await waitForJson(evidenceFile, value => value.requestsAccepted >= 1 && typeof value.bodyBase64 === 'string',
-        'real packed Delivery→Sender synthetic provider response')
+      firstTransport = await waitForJson(evidenceFile, value => value.requestsAccepted >= 2 && typeof value.bodyBase64 === 'string',
+        'real packed Delivery→Sender synthetic provider response (Test send plus question A)')
     } catch (error) {
       const [publicConfigAfterWait, notificationAfterWait, transportAfterWait, askSettlementAfterWait] = await Promise.all([
         observePublicPushConfig(phone, installationId, gatewayOrigin).catch(() => ({ httpStatus: null, sameOrigin: false, installationIdMatches: false,
@@ -2125,7 +2169,7 @@ async function runFullSmoke({ negativeControl = false, pairDiagnostic = false } 
     assert.equal(noHistoryFanout?.processId, dsh.pid)
     assert.equal(noHistoryFanout?.requestsAccepted, restartedBaseline.transport.requestsAccepted, 'Persisted source history must not fan out on restart')
     assert.equal(noHistoryFanout?.appleRequestsBlocked, restartedBaseline.transport.appleRequestsBlocked)
-    assert.equal(firstAcceptedBeforeRestart, 1, 'Expected exactly the one genuine pre-restart synthetic provider send (question A)')
+    assert.equal(firstAcceptedBeforeRestart, 2, 'Expected exactly the two genuine pre-restart synthetic provider sends (Test notification plus question A)')
     // Recovery boundary: record the persisted reference row and the public cold projection state of
     // the first question around the post-restart recovery tap, so a denial is diagnosed exactly.
     const observeFirstCommand = await runFixtureCommand('observe-question', targetSessionId)
@@ -2437,7 +2481,9 @@ async function runFullSmoke({ negativeControl = false, pairDiagnostic = false } 
     assert.equal(finalTransport?.appleRequestsBlocked, restartedBaseline.transport.appleRequestsBlocked,
       'Unowned Apple network attempts beyond the restarted preflight baseline were observed')
     assert(finalTransport?.requestsAccepted >= 1)
-    assert.equal(syntheticTestPosts, 1)
+    assert.equal(testRouteEvidence.realRouteStatus, 200, 'The real Test route evidence was not a successful authenticated send')
+    assert.equal(observations.pushRequests.filter(item => item.path === '/mobile-access/push/test').length, testPostsBeforeClick + 3,
+      'No further Test POST may appear after the clicked send and its two probes (no replay)')
     cases.push('no Service Worker or CacheStorage delta; no Host prompt/model invocation')
 
     // Retain only redacted summary evidence, never subscription credentials or notification references.
@@ -2471,7 +2517,7 @@ async function runFullSmoke({ negativeControl = false, pairDiagnostic = false } 
       cases,
       effects: { expiredSession, warmTap, pushController: { mountedRowCount: pushRowCount, subscribeCallsBeforeEnable,
         subscribeCallsAfterEnable, successfulEnrollCount, settingsDiagnostic: pushSettingsDiagnostic }, workerCounts: workersAfter.calls, serviceWorkerScopes: workersAfter.workers,
-        cacheKeys: workersAfter.cacheKeys, promptAttempts, syntheticTestPosts },
+        cacheKeys: workersAfter.cacheKeys, promptAttempts, testNotification: testRouteEvidence },
       limits: ['Synthetic PushManager and local Apple HTTPS acceptance are not Apple/iPhone delivery evidence.',
         'The paired-expiry case removes short-session cookies; it does not simulate server-side Session TTL.',
         'Chromium cross-document navigation does not establish iOS Home Screen warm-tap or in-flight preservation behavior.',

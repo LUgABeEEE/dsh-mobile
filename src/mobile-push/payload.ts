@@ -31,7 +31,10 @@ const messages: Readonly<Record<PushLocale, Readonly<Record<PushCategory, readon
   },
 }
 
-function validateNavigate(navigate: string): void {
+function validateNavigate(navigate: string, category: PushCategory): void {
+  // Test notifications have no source Session, so their tap target is the bare same-origin app
+  // root; every alert category keeps the opaque one-time reference route unchanged.
+  if (category === 'test' && navigate === '/') return
   if (typeof navigate !== 'string' || !/^\/\?mobile-push=[A-Za-z0-9_-]{1,256}$/u.test(navigate)) {
     throw new TypeError('push_navigation_invalid')
   }
@@ -44,7 +47,7 @@ export function buildDeclarativePayload(
   navigate: string,
   tag: string,
 ): string {
-  validateNavigate(navigate)
+  validateNavigate(navigate, category)
   if (!(locale in messages) || !(category in messages[locale])
     || typeof tag !== 'string' || !/^[A-Za-z0-9._:-]{1,128}$/u.test(tag)) {
     throw new TypeError('push_payload_invalid')

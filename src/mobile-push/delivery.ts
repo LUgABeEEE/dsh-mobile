@@ -434,7 +434,8 @@ export class PushDelivery {
     const registration = snapshot.registrations.find(row => sameKey(row, work.key))
     const keys = snapshot.keys
     if (!registration || !keys) { work.reject(new Error('push_test_unavailable')); return }
-    const reference = randomBytes(18).toString('base64url')
+    // A Test notification has no source Session: it navigates to the bare same-origin app root
+    // with no mobile-push reference, so a tap can never hit the resolver or a fabricated target.
     const controller = new AbortController()
     const workId = `test:${randomUUID()}`
     this.#inFlight.set(workId, { controller, key: work.key, origin })
@@ -442,7 +443,7 @@ export class PushDelivery {
     try {
       result = await this.#sender.send({
         registration,
-        payload: buildDeclarativePayload('test', registration.locale, `/?mobile-push=${reference}`, `test-${randomUUID()}`),
+        payload: buildDeclarativePayload('test', registration.locale, '/', `test-${randomUUID()}`),
         ttlSeconds: 60, subject: origin.origin, keys, signal: controller.signal,
         beforeRequest: async signal => !signal.aborted && !controller.signal.aborted && await this.#guardKey(work.key, fakeSource, origin, false, registration.generation) === 'allowed',
       })

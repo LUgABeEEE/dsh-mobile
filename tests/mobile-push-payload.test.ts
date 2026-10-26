@@ -42,4 +42,31 @@ describe('declarative Web Push payloads', () => {
     expect(() => buildDeclarativePayload('response', 'en', '/?mobile-push=opaque-123', 'x'.repeat(4000))).toThrow()
     expect(() => buildDeclarativePayload('response', 'en', '/?mobile-push=opaque-123', '')).toThrow()
   })
+
+  it('allows the exact bare app root only for the test category', () => {
+    const testTitles = [['en', 'Test notification'], ['zh-CN', '测试通知'], ['it', 'Notifica di prova']] as const
+    for (const [locale, title] of testTitles) {
+      const payload = JSON.parse(buildDeclarativePayload('test', locale, '/', 'push-tag-1'))
+      expect(payload.notification.navigate).toBe('/')
+      expect(payload.notification.title).toBe(title)
+    }
+    // The Test exception is category-scoped: alerts never gain the bare-root navigation.
+    expect(() => buildDeclarativePayload('question', 'en', '/', 'push-tag-1')).toThrow()
+    expect(() => buildDeclarativePayload('response', 'zh-CN', '/', 'push-tag-1')).toThrow()
+    expect(() => buildDeclarativePayload('goal', 'it', '/', 'push-tag-1')).toThrow()
+    // Test keeps the ordinary opaque-reference form available and rejects every other root-relative,
+    // querying, hashing or external navigation exactly like the alert categories.
+    expect(() => buildDeclarativePayload('test', 'en', '/?mobile-push=opaque-123', 'push-tag-1')).not.toThrow()
+    for (const navigate of [
+      '',
+      '/ ',
+      '/?x=1',
+      '/sessions/opaque-123',
+      '/#fragment',
+      '//attacker.example/',
+      'https://attacker.example/',
+    ]) {
+      expect(() => buildDeclarativePayload('test', 'en', navigate, 'push-tag-1')).toThrow()
+    }
+  })
 })
