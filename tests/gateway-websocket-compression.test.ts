@@ -13,7 +13,7 @@ import { MemoryDeviceStore } from '../src/storage.js'
 const cleanups: Array<() => Promise<void>> = []
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup() })
 
-async function fixture(compression = true, maxWebSockets = 4, holdLogin = false) {
+async function fixture(compression: boolean | 'default' = true, maxWebSockets = 4, holdLogin = false) {
   const directory = await mkdtemp(join(tmpdir(), 'dsh-mobile-ws-integration-'))
   cleanups.push(() => rm(directory, { recursive: true, force: true }))
   const sockets = new Set<Socket>()
@@ -71,7 +71,7 @@ async function fixture(compression = true, maxWebSockets = 4, holdLogin = false)
     listenHost: '127.0.0.1', listenPort: 0,
     upstreamOrigin: origin, publicAuthorities: ['127.0.0.1'], allowedCidrs: ['127.0.0.0/8'],
     stateFile: join(directory, 'devices.json'), tls: { mode: 'disabled' }, maxWebSockets,
-    websocketCompression: { paths: compression ? ['/api/remote.mux'] : [] },
+    ...(compression === 'default' ? {} : { websocketCompression: { paths: compression ? ['/api/remote.mux'] : [] } }),
   })
   const gateway = new MobileAccessGateway(Object.freeze({ ...resolved, discovery: false }),
     new MemoryDeviceStore(), undefined, `${origin}/?token=fixture-login`)
@@ -111,6 +111,14 @@ function message(client: WebSocket): Promise<string> {
 }
 
 describe('authenticated gateway compression integration', () => {
+  it('compresses the default live path without explicit configuration', async () => {
+    const f = await fixture('default')
+    const connection = await f.connect('/api/remote.mux')
+    expect(connection.result).toBe('open')
+    expect(connection.client.extensions).toBe('permessage-deflate')
+    connection.client.terminate()
+  })
+
   it('compresses only opted-in connections and forwards the gateway signed cookie and HTTP Origin', async () => {
     const f = await fixture()
     const connection = await f.connect('/api/remote.mux?probe=one%2Btwo')
