@@ -1723,9 +1723,15 @@ async function runFullSmoke({ negativeControl = false, pairDiagnostic = false } 
           draft: document.querySelector('[data-conversation-session] [data-composer-input][contenteditable="true"]')?.textContent }))
       : { restoredWithinBound: false,
           landedOnSession: await phone.evaluate(() => document.querySelector('[data-conversation-session]')?.getAttribute('data-conversation-session') ?? null).catch(() => null) }
+    // Draft measurement semantics (controller precision 2026-10-26): before = B observed before the
+    // tap; after = visibility in the CURRENT document after the tap; the history return landed on the
+    // last-active session (A), so B's editor is NOT observed post-return and B-draft persistence is
+    // explicitly cannot-verify rather than lost/retained.
     const warmTap = { documentChanged: beforeWarmTap.documentId !== afterWarmTap.documentId,
-      draftBefore: beforeWarmTap.draft, draftAfterTapDocument: afterWarmTap.draft ?? null,
-      returnToDraftSession, draftRetainedAfterReturn: returnToDraftSession.draft === unsentDraft,
+      draftBeforeInDraftSession: beforeWarmTap.draft, draftVisibilityInDocumentAfterTap: afterWarmTap.draft ?? null,
+      historyReturn: { restoredToDraftSession: returnSettled.completed,
+        landedOnSession: returnToDraftSession.restoredWithinBound === false ? returnToDraftSession.landedOnSession ?? null : draftSessionId },
+      draftSessionPersistence: returnSettled.completed && returnToDraftSession.draft === unsentDraft ? 'retained' : 'cannot-verify',
       targetOpened: afterWarmTap.sessionId === targetSessionId, queryCleared: afterWarmTap.query === '' }
     pairDiagnosticDetail(runtimeDiagnosticFd, pairDiagnosticRunId, 'snapshot', 'warm-tap-measured-effects', warmTap)
     assert.equal(warmTapResult.sessionIdMatched, true, 'Warm tap actual resolver did not reopen the owned Session')
