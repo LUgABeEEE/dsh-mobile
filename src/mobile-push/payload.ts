@@ -32,8 +32,10 @@ const messages: Readonly<Record<PushLocale, Readonly<Record<PushCategory, readon
 }
 
 function validateNavigate(navigate: string, category: PushCategory): void {
-  // Test notifications have no source Session, so their tap target is the bare same-origin app
-  // root; every alert category keeps the opaque one-time reference route unchanged.
+  // Internal route templates stay root-relative (Test has no source Session, so its tap target is
+  // the bare app root; every alert category keeps the opaque one-time reference route unchanged).
+  // The sender resolves this template against the registration origin before encryption because
+  // WebKit's declarative parser applies `navigate` without any base URL.
   if (category === 'test' && navigate === '/') return
   if (typeof navigate !== 'string' || !/^\/\?mobile-push=[A-Za-z0-9_-]{1,256}$/u.test(navigate)) {
     throw new TypeError('push_navigation_invalid')

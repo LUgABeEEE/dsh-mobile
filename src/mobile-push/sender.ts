@@ -74,6 +74,24 @@ function canonicalOrigin(origin: string): string | undefined {
   }
 }
 
+/**
+ * WebKit's declarative push parser resolves `navigate` without any base URL, so the encrypted wire
+ * payload must carry an absolute URL. The already-validated relative template is resolved against
+ * the canonical registration origin and the serialized copy is budget-checked again because the
+ * origin adds bytes the payload template never counted.
+ */
+function bindNavigationOrigin(payload: string, origin: string): string | undefined {
+  let parsed: { web_push?: unknown; notification?: { navigate?: unknown } }
+  try { parsed = JSON.parse(payload) } catch { return undefined }
+  if (typeof parsed?.notification?.navigate !== 'string') return undefined
+  let resolved: URL
+  try { resolved = new URL(parsed.notification.navigate, origin) } catch { return undefined }
+  if (resolved.origin !== origin) return undefined
+  const bound = JSON.stringify({ ...parsed, notification: { ...parsed.notification, navigate: resolved.href } })
+  if (Buffer.byteLength(bound, 'utf8') > MAX_PAYLOAD_BYTES) return undefined
+  return bound
+}
+
 function retryAfterMs(value: string | string[] | undefined, now: number): number | undefined {
   const raw = Array.isArray(value) ? value[0] : value
   if (!raw) return undefined
@@ -238,6 +256,8 @@ export class PushSender {
         || !validatePayload(input.payload)) return { kind: 'permanent' }
       const origin = canonicalOrigin(input.registration.origin)
       if (!origin) return { kind: 'permanent' }
+      const wirePayload = bindNavigationOrigin(input.payload, origin)
+      if (!wirePayload) return { kind: 'permanent' }
       const subject = validSubject(input.subject, origin)
       if (!subject) return { kind: 'permanent' }
       let subscription
@@ -254,7 +274,7 @@ export class PushSender {
         timeout: ATTEMPT_TIMEOUT_MS,
       }
       let details: ReturnType<typeof webPush.generateRequestDetails>
-      try { details = webPush.generateRequestDetails(subscription, input.payload, options) } catch { return { kind: 'permanent' } }
+      try { details = webPush.generateRequestDetails(subscription, wirePayload, options) } catch { return { kind: 'permanent' } }
       if (controller.signal.aborted || performance.now() - started >= this.budgetMs) return { kind: 'retry' }
       const requestConfig = requestOptions(resolved.url, details, resolved.addresses[0]!)
       const beforeRequest = input.beforeRequest

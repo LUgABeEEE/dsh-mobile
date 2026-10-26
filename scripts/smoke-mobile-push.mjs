@@ -449,7 +449,8 @@ async function transportSelfTest() {
     // Child A — full three-preload chain, production-shaped synthetic request, delta-counted evidence.
     const positiveNonce = randomBytes(24).toString('hex')
     const endpoint = `https://n-${positiveNonce}.push.apple.com/${positiveNonce}`
-    const plaintext = JSON.stringify({ web_push: 8030, notification: { title: 'Fixture', body: 'Synthetic only', lang: 'en', navigate: '/?mobile-push=selftest-ref', tag: 'push-selftest' } })
+    const selfTestNavigate = 'https://wire-selftest.example.test/?mobile-push=selftest-ref'
+    const plaintext = JSON.stringify({ web_push: 8030, notification: { title: 'Fixture', body: 'Synthetic only', lang: 'en', navigate: selfTestNavigate, tag: 'push-selftest' } })
     const positive = await runGuardedChild({
       label: 'positive',
       nonce: positiveNonce,
@@ -508,7 +509,9 @@ async function transportSelfTest() {
     assert.equal(positiveGuard?.connectBlocked, 0)
     assert.equal(positiveGuard?.httpBlocked, 0)
     const decrypted = await decryptCaptured(positiveTransport.bodyBase64, keys)
-    assert.deepEqual(decrypted, { web_push: 8030, notification: { title: 'Fixture', body: 'Synthetic only', lang: 'en', navigate: '/?mobile-push=selftest-ref', tag: 'push-selftest' } })
+    assert.deepEqual(decrypted, { web_push: 8030, notification: { title: 'Fixture', body: 'Synthetic only', lang: 'en', navigate: selfTestNavigate, tag: 'push-selftest' } })
+    assert.equal(new URL(decrypted.notification.navigate).href, selfTestNavigate,
+      'self-test wire navigate must stay an absolute URL parsable without a base URL')
     assert.equal(localHits, 1, 'unrelated loopback HTTP traffic must pass through unchanged')
     checks.push('three-preload chain active before main (guard marker, helper marker, preflight attestation with PID match)',
       'nonce-scoped Apple DNS returned only the controlled global address after the preflight baseline',
@@ -1754,7 +1757,13 @@ async function runFullSmoke({ negativeControl = false, pairDiagnostic = false } 
     const testPayload = await decryptCaptured(testTransport.bodyBase64, transportSeed, installedEcePath)
     assert.equal(testPayload.web_push, 8030)
     assert.equal(testPayload.notification?.title, 'Test notification')
-    assert.equal(testPayload.notification?.navigate, '/', 'Test notification must navigate the bare same-origin app root')
+    // The wire navigate must already be absolute — WebKit's declarative parser applies it without
+    // any base URL — so parse it the same way and require the bare root of the registered origin.
+    const testNavigate = new URL(testPayload.notification?.navigate)
+    assert.equal(testNavigate.origin, gatewayOrigin, 'Test notification navigate must be bound to the registered HTTPS origin')
+    assert.equal(testNavigate.pathname, '/', 'Test notification must navigate the bare same-origin app root')
+    assert.equal(testNavigate.search, '', 'Test notification must carry no mobile-push query')
+    assert.equal(testNavigate.hash, '', 'Test notification must carry no fragment')
     // Test tap: landing on the decrypted bare-root URL must stay authenticated and must involve no
     // push resolver request and no missing-conversation notice. DSH may restore the last active app
     // UI at the root; no Session/list state is forced or asserted here.
@@ -1868,7 +1877,9 @@ async function runFullSmoke({ negativeControl = false, pairDiagnostic = false } 
     const payload = await decryptCaptured(firstTransport.bodyBase64, transportSeed, installedEcePath)
     assert.equal(payload.web_push, 8030)
     assert.equal(typeof payload.notification?.navigate, 'string')
-    const firstUrl = new URL(payload.notification.navigate, gatewayOrigin)
+    // Ordinary alerts keep the opaque-ref resolver behavior; the wire value itself must already be
+    // absolute (no base URL here) and same-origin with the Gateway that enrolled the registration.
+    const firstUrl = new URL(payload.notification.navigate)
     assert.equal(firstUrl.origin, gatewayOrigin)
     assert.equal(firstUrl.pathname, '/')
     const reference = firstUrl.searchParams.get('mobile-push')
@@ -2277,7 +2288,7 @@ async function runFullSmoke({ negativeControl = false, pairDiagnostic = false } 
     const postRestartTransport = await waitForJson(evidenceFileRestart, value => value.processId === dsh.pid
       && value.requestsAccepted >= 1 && typeof value.bodyBase64 === 'string', 'fresh post-restart synthetic provider send')
     const postRestartPayload = await decryptCaptured(postRestartTransport.bodyBase64, transportSeed, installedEcePath)
-    const postRestartUrl = new URL(postRestartPayload.notification.navigate, gatewayOrigin)
+    const postRestartUrl = new URL(postRestartPayload.notification.navigate)
     assert.equal(postRestartUrl.origin, gatewayOrigin)
     const postRestartReference = postRestartUrl.searchParams.get('mobile-push')
     assert.match(postRestartReference ?? '', /^[A-Za-z0-9_-]{1,256}$/u)

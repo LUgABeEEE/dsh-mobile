@@ -1,6 +1,8 @@
 import { execFileSync, spawnSync } from 'node:child_process'
+import { createECDH, randomBytes } from 'node:crypto'
 import { EventEmitter } from 'node:events'
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { basename, dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { Readable } from 'node:stream'
@@ -10,7 +12,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { buildDeclarativePayload } from '../src/mobile-push/payload.js'
 import { createVapidKeys, PushSender } from '../src/mobile-push/sender.js'
 import { canonicalPushEndpoint, resolveAppleEndpoint, validatePushSubscription } from '../src/mobile-push/endpoint.js'
-import type { PushRegistration } from '../src/mobile-push/contracts.js'
+import { MAX_PAYLOAD_BYTES, type PushRegistration } from '../src/mobile-push/contracts.js'
 
 const GENERATOR_POINT = 'BGsX0fLhLEJH-Lzm5WOkQPJ3A32BLeszoPShOUXYmMKWT-NC4v4af5uO5-tKfA-eFivOM1drMV7Oy7ZAaDe_UfU'
 const AUTH_KEY = 'AAAAAAAAAAAAAAAAAAAAAA'
@@ -505,5 +507,130 @@ describe('bounded Apple Web Push sender', () => {
     for (const subject of ['https://localhost/', 'https://127.0.0.1/', 'https://[::1]/']) {
       expect(await fixture.sender.send({ ...input(), subject })).toEqual({ kind: 'permanent' })
     }
+  })
+})
+
+interface WireNotification { title?: unknown; body?: unknown; lang?: unknown; navigate?: unknown; tag?: unknown }
+interface WirePayload { web_push?: unknown; notification?: WireNotification }
+
+// The only fakes in this block are DNS and the final HTTPS request boundary: the captured body is
+// decrypted with the packed http_ece exactly like a real push provider would.
+const WIRE_ORIGIN = 'https://mobile.example:8443'
+const packageRequire = createRequire(resolve(process.cwd(), 'package.json'))
+const installedHttpEcePath = createRequire(packageRequire.resolve('web-push')).resolve('http_ece')
+interface HttpEce { decrypt(body: Buffer, params: { privateKey: ReturnType<typeof createECDH>; authSecret: string; version: string }): Buffer }
+const httpEce = createRequire(installedHttpEcePath)(installedHttpEcePath) as HttpEce
+const wireReceiver = createECDH('prime256v1')
+wireReceiver.generateKeys()
+const wireAuthSecret = randomBytes(16).toString('base64url')
+const wireSubscription = {
+  endpoint: ENDPOINT,
+  keys: { p256dh: wireReceiver.getPublicKey(undefined, 'uncompressed').toString('base64url'), auth: wireAuthSecret },
+}
+
+function decryptWireBody(body: Buffer | undefined): WirePayload {
+  expect(body).toBeInstanceOf(Buffer)
+  const plaintext = httpEce.decrypt(body!, { privateKey: wireReceiver, authSecret: wireAuthSecret, version: 'aes128gcm' })
+  return JSON.parse(plaintext.toString('utf8')) as WirePayload
+}
+
+function wireInput(payload: string, origin: string = WIRE_ORIGIN, signal: AbortSignal = new AbortController().signal) {
+  return {
+    registration: { ...registration, origin, subscription: wireSubscription } satisfies PushRegistration,
+    payload,
+    ttlSeconds: 60,
+    subject: '',
+    keys: createVapidKeys(),
+    signal,
+  }
+}
+
+describe('encrypted wire navigation binding', () => {
+  it.each([
+    ['test root', 'test', '/', 'https://mobile.example:8443/', ''],
+    ['question opaque reference', 'question', '/?mobile-push=opaque-123', 'https://mobile.example:8443/?mobile-push=opaque-123', '?mobile-push=opaque-123'],
+  ] as const)('encrypts the %s route as an absolute same-origin URL parsable without a base', async (_case, category, navigate, expectedHref, expectedSearch) => {
+    const payload = buildDeclarativePayload(category, 'en', navigate, 'test-tag')
+    const fixture = senderFor(201)
+    expect(await fixture.sender.send(wireInput(payload))).toEqual({ kind: 'accepted' })
+    expect(fixture.requestCount()).toBe(1)
+    const decrypted = decryptWireBody(fixture.request?.body)
+    const sent = JSON.parse(payload) as WirePayload
+    // WebKit's declarative parser resolves `navigate` with a null base URL, so this single-argument
+    // parse must succeed on the decrypted wire value exactly as the device would apply it.
+    const wireNavigate = new URL(String(decrypted.notification?.navigate))
+    expect(wireNavigate.href).toBe(expectedHref)
+    expect(wireNavigate.origin).toBe(WIRE_ORIGIN)
+    expect(wireNavigate.pathname).toBe('/')
+    expect(wireNavigate.search).toBe(expectedSearch)
+    expect(wireNavigate.hash).toBe('')
+    expect(decrypted).toEqual({ web_push: 8030, notification: { ...sent.notification, navigate: expectedHref } })
+    // Nothing route- or text-identifying may appear outside the encryption envelope. These probes
+    // deliberately use long, meaningful strings; a lone '/' could occur in any ciphertext.
+    const wire = fixture.request?.body?.toString('utf8') ?? ''
+    expect(wire).not.toContain(WIRE_ORIGIN)
+    expect(wire).not.toContain('mobile-push')
+    if (navigate !== '/') expect(wire).not.toContain(navigate)
+    expect(wire).not.toContain(String(sent.notification?.title))
+    expect(wire).not.toContain(String(sent.notification?.body))
+  })
+
+  it('re-checks the serialized wire byte budget after origin binding', async () => {
+    const longOrigin = `https://${'m'.repeat(48)}.example:8443`
+    const originBytes = Buffer.byteLength(longOrigin, 'utf8')
+    const internalBytes = (targetBytes: number): string => {
+      const make = (bodyLength: number): string => JSON.stringify({
+        web_push: 8030,
+        notification: { title: 'x', body: 'b'.repeat(bodyLength), lang: 'en', navigate: '/', tag: 't' },
+      })
+      let bodyLength = Math.max(1, targetBytes - 96)
+      let payload = make(bodyLength)
+      while (Buffer.byteLength(payload, 'utf8') < targetBytes) payload = make(++bodyLength)
+      return payload
+    }
+
+    const exactPayload = internalBytes(MAX_PAYLOAD_BYTES - originBytes)
+    expect(Buffer.byteLength(exactPayload, 'utf8')).toBe(MAX_PAYLOAD_BYTES - originBytes)
+    const exact = senderFor(201)
+    expect(await exact.sender.send(wireInput(exactPayload, longOrigin))).toEqual({ kind: 'accepted' })
+    expect(exact.requestCount()).toBe(1)
+    expect(new URL(String(decryptWireBody(exact.request?.body).notification?.navigate)).href).toBe(`${longOrigin}/`)
+
+    const overPayload = internalBytes(MAX_PAYLOAD_BYTES - originBytes + 1)
+    expect(Buffer.byteLength(overPayload, 'utf8')).toBe(MAX_PAYLOAD_BYTES - originBytes + 1)
+    const over = senderFor(200)
+    expect(await over.sender.send(wireInput(overPayload, longOrigin))).toEqual({ kind: 'permanent' })
+    expect(over.requestCount()).toBe(0)
+  })
+
+  it.each([
+    ['absolute same-origin', 'https://mobile.example:8443/'],
+    ['absolute off-origin', 'https://attacker.example/'],
+    ['scheme-relative', '//attacker.example/'],
+    ['credential-bearing', 'https://user:pass@mobile.example:8443/'],
+    ['backslash host', '\\\\attacker.example\\'],
+    ['backslash path', '/\\attacker.example'],
+    ['fragment', '/#fragment'],
+    ['opaque reference with fragment', '/?mobile-push=opaque-123#f'],
+  ])('rejects the %s navigation route before any request', async (_case, navigate) => {
+    const fixture = senderFor(200)
+    const payload = JSON.stringify({ web_push: 8030, notification: { title: 'x', body: 'y', lang: 'en', navigate, tag: 't' } })
+    expect(await fixture.sender.send(wireInput(payload))).toEqual({ kind: 'permanent' })
+    expect(fixture.requestCount()).toBe(0)
+  })
+
+  it.each([
+    ['plain HTTP', 'http://mobile.example:8443'],
+    ['trailing slash', 'https://mobile.example:8443/'],
+    ['path suffix', 'https://mobile.example:8443/path'],
+    ['query suffix', 'https://mobile.example:8443?q=1'],
+    ['fragment suffix', 'https://mobile.example:8443#f'],
+    ['embedded credentials', 'https://user:pass@mobile.example:8443'],
+    ['non-canonical host case', 'https://Mobile.Example:8443'],
+  ])('rejects the %s registration origin before any request', async (_case, origin) => {
+    const fixture = senderFor(200)
+    const payload = buildDeclarativePayload('question', 'en', '/?mobile-push=opaque-123', 'test-tag')
+    expect(await fixture.sender.send(wireInput(payload, origin))).toEqual({ kind: 'permanent' })
+    expect(fixture.requestCount()).toBe(0)
   })
 })
