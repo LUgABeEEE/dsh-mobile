@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { createWorkspaceDirectory } from '../src/computer-images.js'
+import { createWorkspaceDirectory, workspaceDirectoryChildPath } from '../src/computer-images.js'
 
 const roots: string[] = []
 
@@ -17,6 +17,26 @@ async function ownedRoot (): Promise<string> {
 }
 
 describe('workspace directory creation', () => {
+  it.each(['D:child', 'C:child', 'file:stream', 'CON', 'con.txt', 'LPT1.log', 'COM¹', 'child.', 'child ', '.. ', '<child>', 'child?'])('rejects reserved or drive-relative Windows name %s', name => {
+    expect(() => workspaceDirectoryChildPath('C:\\projects', name, 'win32')).toThrowError(expect.objectContaining({ code: 'directory_create_invalid' }))
+  })
+
+  it('keeps drive and UNC children under their immediate parent', () => {
+    expect(workspaceDirectoryChildPath('C:\\projects', '新项目', 'win32')).toBe('C:\\projects\\新项目')
+    expect(workspaceDirectoryChildPath('\\\\server\\share', 'child', 'win32')).toBe('\\\\server\\share\\child')
+    expect(workspaceDirectoryChildPath('/projects', 'colon:name', 'linux')).toBe('/projects/colon:name')
+  })
+
+  it('requires an explicit parent rather than creating in the user home', () => {
+    expect(() => workspaceDirectoryChildPath('', 'child')).toThrowError(expect.objectContaining({ code: 'directory_create_invalid' }))
+  })
+
+  it('does not create anything when already cancelled', async () => {
+    const root = await ownedRoot()
+    const controller = new AbortController(); controller.abort(new Error('cancelled'))
+    await expect(createWorkspaceDirectory(root, 'child', controller.signal)).rejects.toBe(controller.signal.reason)
+    await expect(stat(join(root, 'child'))).rejects.toMatchObject({ code: 'ENOENT' })
+  })
   it('creates one child directory and returns its absolute path', async () => {
     const root = await ownedRoot()
     const created = await createWorkspaceDirectory(root, 'projects')

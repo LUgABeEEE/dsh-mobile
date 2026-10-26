@@ -32,6 +32,7 @@ export interface MobileDirectorySnapshot {
   readonly error: MobileDirectoryFailure | null
   readonly hostBusy: boolean
   readonly committed: boolean
+  readonly creating: boolean
 }
 
 /** Accept portable absolute spellings; the Host remains authoritative for its platform. */
@@ -65,7 +66,7 @@ export function parseMobileDirectoryListing(value: unknown): MobileDirectoryList
 }
 
 const CLOSED: MobileDirectorySnapshot = Object.freeze({
-  open: false, phase: 'idle', listing: null, draft: '', error: null, hostBusy: false, committed: false,
+  open: false, phase: 'idle', listing: null, draft: '', error: null, hostBusy: false, committed: false, creating: false,
 })
 
 /** Read navigation stops on close; committing is final until the owner withdraws this flow. */
@@ -110,6 +111,12 @@ export class MobileDirectoryBrowser {
   setHostBusy(hostBusy: boolean): void {
     if (this.disposed || this.snapshot.hostBusy === hostBusy) return
     this.publish({ ...this.snapshot, hostBusy })
+  }
+
+  /** Block navigation/adoption while this flow's child-folder editor owns interaction. */
+  setCreating(creating: boolean): void {
+    if (this.disposed || this.snapshot.creating === creating) return
+    this.publish({ ...this.snapshot, creating })
   }
 
   /** Read a folder or the initial home; superseded results cannot publish into the new request. */
@@ -167,7 +174,7 @@ export class MobileDirectoryBrowser {
 
   /** Cancel reading immediately; a committed/Host-busy adoption cannot be reported as cancelled. */
   cancel(): boolean {
-    if (!this.canNavigate()) return false
+    if (!this.canClose()) return false
     this.withdrawRead()
     this.publish(CLOSED)
     return true
@@ -183,10 +190,151 @@ export class MobileDirectoryBrowser {
     if (this.taskFailures.length > 0) throw new AggregateError(this.taskFailures, 'Mobile directory observers failed during a listing')
   }
 
-  private canNavigate(): boolean { return !this.disposed && this.snapshot.open && !this.snapshot.hostBusy && !this.snapshot.committed }
+  private canClose(): boolean { return !this.disposed && this.snapshot.open && !this.snapshot.hostBusy && !this.snapshot.committed }
+  private canNavigate(): boolean { return this.canClose() && !this.snapshot.creating }
   private current(generation: number): boolean { return !this.disposed && this.snapshot.open && generation === this.generation }
   private withdrawRead(): void { this.generation++; this.activeRead?.abort(); this.activeRead = undefined }
   private publish(snapshot: MobileDirectorySnapshot): void {
+    this.snapshot = Object.freeze(snapshot)
+    for (const listener of this.listeners) listener()
+  }
+}
+
+/** Fixed categories for a single explicit folder-creation request. */
+export type MobileDirectoryCreateFailure = 'invalid-name' | 'directory-exists' | 'directory-create-failed' | 'unauthorized' | 'invalid-response' | 'request-failed' | 'timeout'
+
+/** A creation failure without raw response bodies or filesystem details. */
+export class MobileDirectoryCreateError extends Error {
+  constructor(readonly code: MobileDirectoryCreateFailure) {
+    super(`Mobile directory creation failed: ${code}`)
+    this.name = 'MobileDirectoryCreateError'
+  }
+}
+
+/** Portable single-segment validation; the Host additionally enforces its filesystem rules. */
+export function isMobileDirectoryName(name: string): boolean {
+  return name.trim() !== '' && name.length <= 255 && name !== '.' && name !== '..' && !/[\\/\0]/u.test(name)
+}
+
+/** One child-folder editor; pending includes cancelled work whose transport has not settled. */
+export interface MobileDirectoryCreateSnapshot {
+  readonly open: boolean
+  readonly parent: string | null
+  readonly name: string
+  readonly pending: boolean
+  readonly error: MobileDirectoryCreateFailure | null
+}
+
+const CREATE_CLOSED: MobileDirectoryCreateSnapshot = Object.freeze({ open: false, parent: null, name: '', pending: false, error: null })
+
+/** Owns one non-replayed write, its deadline, cancellation and physical teardown. */
+export class MobileDirectoryCreator {
+  private snapshot = CREATE_CLOSED
+  private readonly listeners = new Set<() => void>()
+  private readonly tasks = new Set<Promise<void>>()
+  private readonly failures: unknown[] = []
+  private active: AbortController | undefined
+  private generation = 0
+  private disposed = false
+
+  constructor(
+    private readonly create: (parent: string, name: string, signal: AbortSignal) => Promise<string>,
+    private readonly onCreated: (path: string) => void,
+    private readonly deadlineMs = 30_000,
+  ) {}
+
+  getSnapshot = (): MobileDirectoryCreateSnapshot => this.snapshot
+
+  /** Subscribe to this editor; the returned disposer withdraws the observer. */
+  subscribe(listener: () => void): () => void {
+    this.listeners.add(listener)
+    return () => { this.listeners.delete(listener) }
+  }
+
+  /** Open against one already confirmed parent; cancelled physical work retains admission. */
+  open(parent: string): boolean {
+    if (this.disposed || this.snapshot.open || this.tasks.size > 0 || !isMobileDirectoryPath(parent)) return false
+    this.publish({ ...CREATE_CLOSED, open: true, parent })
+    return true
+  }
+
+  /** Edit only while no write is in flight; typing never starts a filesystem operation. */
+  setName(name: string): void {
+    if (this.disposed || !this.snapshot.open || this.snapshot.pending) return
+    this.publish({ ...this.snapshot, name, error: null })
+  }
+
+  /** Admit one explicit creation. Repeated clicks/Enter cannot replay an admitted request. */
+  submit(): boolean {
+    if (this.disposed || !this.snapshot.open || this.snapshot.pending || this.tasks.size > 0 || this.snapshot.parent === null) return false
+    const name = this.snapshot.name.trim()
+    if (!isMobileDirectoryName(name)) {
+      this.publish({ ...this.snapshot, error: 'invalid-name' })
+      return false
+    }
+    const parent = this.snapshot.parent
+    const generation = this.generation
+    const controller = new AbortController()
+    this.active = controller
+    this.publish({ ...this.snapshot, pending: true, error: null })
+    if (!this.current(generation) || controller.signal.aborted) {
+      if (this.active === controller) this.active = undefined
+      if (!this.disposed) this.publish({ ...this.snapshot, pending: false })
+      return false
+    }
+    const timer = setTimeout(() => {
+      controller.abort(new MobileDirectoryCreateError('timeout'))
+      if (this.current(generation)) this.publish({ ...this.snapshot, error: 'timeout' })
+    }, this.deadlineMs)
+    const task = (async (): Promise<void> => {
+      let created: string | undefined
+      try {
+        created = await this.create(parent, name, controller.signal)
+        controller.signal.throwIfAborted()
+        if (!isMobileDirectoryPath(created)) throw new MobileDirectoryCreateError('invalid-response')
+      } catch (error) {
+        created = undefined
+        if (this.current(generation)) {
+          const failure: unknown = controller.signal.aborted ? controller.signal.reason : error
+          this.publish({ ...this.snapshot, error: failure instanceof MobileDirectoryCreateError ? failure.code : 'request-failed' })
+        }
+      } finally {
+        clearTimeout(timer)
+        if (this.active === controller) this.active = undefined
+        if (!this.disposed) this.publish({ ...this.snapshot, pending: false })
+      }
+      if (created !== undefined && this.current(generation)) {
+        this.publish(CREATE_CLOSED)
+        this.onCreated(created)
+      }
+    })()
+    this.tasks.add(task)
+    void task.then(() => { this.tasks.delete(task) }, error => { this.tasks.delete(task); this.failures.push(error) })
+    return true
+  }
+
+  /** Withdraw the editor and late results; an already completed mkdir is not rolled back. */
+  close(): boolean {
+    if (this.disposed || !this.snapshot.open) return false
+    this.generation++
+    this.active?.abort()
+    this.publish({ ...CREATE_CLOSED, pending: this.active !== undefined })
+    return true
+  }
+
+  /** Stop admission synchronously and await every accepted write before completion. */
+  async dispose(): Promise<void> {
+    this.disposed = true
+    this.generation++
+    this.active?.abort()
+    this.snapshot = CREATE_CLOSED
+    this.listeners.clear()
+    await Promise.allSettled([...this.tasks])
+    if (this.failures.length > 0) throw new AggregateError(this.failures, 'Mobile directory creation observers failed')
+  }
+
+  private current(generation: number): boolean { return !this.disposed && this.snapshot.open && generation === this.generation }
+  private publish(snapshot: MobileDirectoryCreateSnapshot): void {
     this.snapshot = Object.freeze(snapshot)
     for (const listener of this.listeners) listener()
   }

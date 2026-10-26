@@ -11,6 +11,7 @@ import { createMobileProfile, launchDsh, removeTemporaryRoot, openPairing, pairM
   dismissOnboarding, CLIENT_TIMEOUT_MS, sanitized, within } from './mobile-boot-fixture.mjs'
 import { packBundle } from './packed-profile.mjs'
 import { completeSmoke, recordSmokeFailure } from './negative-control.mjs'
+import { browsePickerOwnsFlow } from './directory-picker-composition.mjs'
 
 const repository = fileURLToPath(new URL('..', import.meta.url))
 const mobileRoot = process.env.DSH_BOOT_SMOKE_MOBILE_ROOT === undefined ? repository : resolve(process.env.DSH_BOOT_SMOKE_MOBILE_ROOT)
@@ -74,6 +75,12 @@ async function interceptListing(route) {
     }
     upstream = await route.fetch({ url: url.href, timeout: CLIENT_TIMEOUT_MS })
     record.status = upstream.status()
+    if (entry?.kind === 'lose-create-response') {
+      assert.equal(record.method, 'POST', 'The unknown-outcome control intercepted a read')
+      assert.equal(record.status, 201, 'The unknown-outcome control never completed the real mkdir')
+      await route.abort('connectionreset')
+      return
+    }
     if (entry?.kind === 'hold') {
       entry.request = route.request()
       entry.entered.resolve({ status: upstream.status(), body: await upstream.json() })
@@ -127,6 +134,8 @@ async function openFlow(source, ready = true) {
 }
 
 async function cancelFlow() {
+  const createCancel = phone.locator(`${selectors.dialog} [data-dshm-picker-create-cancel]`)
+  if (await createCancel.isVisible()) await createCancel.click()
   const cancel = phone.locator(`${selectors.dialog} ${selectors.cancel}`)
   assert.equal(await cancel.isEnabled(), true, 'Picker cancellation must remain available')
   await cancel.click()
@@ -251,8 +260,7 @@ try {
   // resolves `browse`, whose own web picker then fills the directory-flow slots
   // and carries the official folder creation. The plugin owns the flow only when
   // DSH resolved the native interaction, which a remote browser cannot open.
-  const browseHost = await phone.evaluate(() => (globalThis.__DSH_BOOT__?.entries ?? [])
-    .some(entry => typeof entry?.id === 'string' && entry.id.includes('dsh-client-ui-directory-picker-browse')))
+  const browseHost = await browsePickerOwnsFlow(phone)
   if (browseHost) {
     assert.equal(await phone.locator('.dshm-picker').count(), 0, 'The plugin kept its own picker on a browse host')
     assert.equal(await phone.locator('style[data-plugin="dsh-mobile-directory-picker"]').count(), 0,
@@ -318,6 +326,26 @@ try {
         await mkdir(resolve(evidence), { recursive: true })
         await phone.screenshot({ path: join(resolve(evidence), `${mode.name}.png`) })
       }
+      await phone.locator(`${selectors.dialog} [data-dshm-picker-create]`).click()
+      const hiddenParents = await phone.locator(selectors.dialog).evaluate(dialog => [...dialog.querySelectorAll(
+        '.dshm-picker__toolbar,.dshm-picker__navigation,.dshm-picker__list,.dshm-picker__footer',
+      )].map(node => ({ hidden: node.hidden, display: getComputedStyle(node).display })))
+      assert.equal(hiddenParents.length, 4, 'Creation overlay is missing its parent surfaces')
+      assert(hiddenParents.every(node => node.hidden && node.display === 'none'),
+        `${mode.name}: main picker controls remain visible beneath creation: ${JSON.stringify(hiddenParents)}`)
+      const createGeometry = await phone.locator(selectors.dialog).evaluate(dialog => [...dialog.querySelectorAll('button,input')]
+        .filter(node => node.getClientRects().length > 0)
+        .map(node => {
+          const box = node.getBoundingClientRect()
+          const hit = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2)
+          return { ...box.toJSON(), hit: hit === node || node.contains(hit) }
+        }))
+      assert(createGeometry.every(box => box.width >= 44 && box.height >= 44 && box.hit
+        && box.left >= 0 && box.top >= 0 && box.right <= mode.width + 1 && box.bottom <= mode.height + 1),
+      `${mode.name}: creation controls are clipped, covered or undersized: ${JSON.stringify(createGeometry)}`)
+      await phone.keyboard.press('Escape')
+      assert.equal(await phone.locator(selectors.dialog).isVisible(), true, `${mode.name}: Escape closed the parent instead of the creation layer`)
+      assert.equal(await phone.locator(`${selectors.dialog} [data-dshm-picker-create-name]`).isVisible(), false)
       await cancelFlow()
       pass(`${mode.name}: localized dialog and touch controls fit the viewport (${measured.background}; ${measured.foreground})`)
     }
@@ -386,9 +414,31 @@ try {
     await navigateTo(folders)
     const createdFolder = join(folders, 'smoke-created')
     await phone.locator(`${selectors.dialog} [data-dshm-picker-create]`).click()
+    const childBack = await phone.evaluate(() => {
+      const event = new Event('dsh-mobile:native-back', { cancelable: true })
+      window.dispatchEvent(event)
+      return event.defaultPrevented
+    })
+    assert.equal(childBack, true, 'Native Back did not consume the child creation layer')
+    assert.equal(await phone.locator(selectors.dialog).isVisible(), true, 'Native Back closed the parent directory dialog')
+    assert.equal(await phone.locator(`${selectors.dialog} [data-dshm-picker-create-name]`).isVisible(), false)
+    await phone.locator(`${selectors.dialog} [data-dshm-picker-create]`).click()
     await phone.locator(`${selectors.dialog} [data-dshm-picker-create-name]`).fill('smoke-created')
+    await phone.locator(`${selectors.dialog} [data-dshm-picker-create-name]`).evaluate(input => {
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', isComposing: true, bubbles: true, cancelable: true }))
+    })
+    assert.equal(requests.filter(request => request.method === 'POST').length, 0, 'An IME composition key started folder creation')
+    const creating = holdNextListing()
     await phone.locator(`${selectors.dialog} [data-dshm-picker-create-confirm]`).click()
-    await phone.waitForTimeout(1500)
+    const admitted = await within(creating.entered.promise, CLIENT_TIMEOUT_MS, () => 'Folder creation never reached the Gateway')
+    assert.equal(admitted.status, 201)
+    await phone.locator(`${selectors.dialog} [data-dshm-picker-create-name]`).evaluate(input => {
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+    })
+    assert.equal(requests.filter(request => request.method === 'POST').length, 1, 'Repeated Enter duplicated an in-flight creation')
+    creating.release.resolve()
+    await within(creating.done.promise, CLIENT_TIMEOUT_MS, () => 'Creation response delivery did not settle')
+    await directoryReady(createdFolder)
     assert(existsSync(createdFolder), 'the created folder is missing on the host')
     assert(requests.some(request => request.method === 'POST'), 'the picker did not issue an explicit create request')
     pass('the remote entry creates a real host directory and lists it')
@@ -397,17 +447,31 @@ try {
     await phone.locator(`${selectors.dialog} [data-dshm-picker-create]`).click()
     await phone.locator(`${selectors.dialog} [data-dshm-picker-create-name]`).fill('smoke-created')
     await phone.locator(`${selectors.dialog} [data-dshm-picker-create-confirm]`).click()
-    await phone.waitForTimeout(1200)
     const duplicate = phone.locator(`${selectors.dialog} [data-dshm-picker-create-error]`).first()
-    assert(await duplicate.isVisible(), 'a duplicate folder name produced no readable error')
+    await duplicate.waitFor({ state: 'visible', timeout: CLIENT_TIMEOUT_MS })
     pass('a duplicate folder name is reported instead of writing again')
+    await phone.locator(`${selectors.dialog} [data-dshm-picker-create-cancel]`).click()
+    await phone.locator(`${selectors.dialog} [data-dshm-picker-create]`).click()
+    await phone.locator(`${selectors.dialog} [data-dshm-picker-create-name]`).fill('smoke-unknown-created')
+    nextListing = { kind: 'lose-create-response' }
+    await phone.locator(`${selectors.dialog} [data-dshm-picker-create-confirm]`).click()
+    const unknownMessage = 'The creation result is unknown'
+    await phone.locator(`${selectors.dialog} [data-dshm-picker-create-error]`).filter({ hasText: unknownMessage })
+      .waitFor({ state: 'visible', timeout: CLIENT_TIMEOUT_MS })
+    assert(existsSync(join(folders, 'smoke-unknown-created')), 'The lost response control did not leave the completed directory in place')
+    await phone.locator(`${selectors.dialog} [data-dshm-picker-create-cancel]`).click()
+    const unknownNotice = phone.locator(`${selectors.dialog} .dshm-picker__panel > .dshm-picker__status`).filter({ hasText: unknownMessage })
+    await unknownNotice.waitFor({ state: 'visible', timeout: CLIENT_TIMEOUT_MS })
+    await navigateTo(folders)
+    await unknownNotice.waitFor({ state: 'hidden', timeout: CLIENT_TIMEOUT_MS })
+    pass('a lost creation response stays unknown until a fresh directory read; stopping did not roll back mkdir')
     await cancelFlow()
 
     await adoptWorkspace('hero', heroWorkspace)
     await adoptWorkspace('sidebar', sidebarWorkspace)
     assert(requests.some(request => request.path === heroWorkspace && request.status === 200), 'Absolute path never reached the real Gateway')
     const writes = requests.filter(request => request.method === 'POST')
-    assert.equal(writes.length, 2, `the create flow issued ${writes.length} writes instead of the two user-initiated ones`)
+    assert.equal(writes.length, 3, `the create flow issued ${writes.length} writes instead of the three user-initiated ones`)
   }
   assert.deepEqual(pageErrors, [], `Page errors: ${sanitized(pageErrors.join(' | '))}`)
   assert.deepEqual(prompts, [], 'The smoke attempted a model request')

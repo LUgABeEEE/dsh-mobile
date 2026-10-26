@@ -2177,9 +2177,10 @@ export class MobileAccessGateway {
         try {
           if (request.method === 'POST') {
             const body = await readJsonObject(request, MAX_CONTROL_BODY_BYTES)
-            const name = typeof body.name === 'string' ? body.name : ''
-            const parent = typeof body.path === 'string' ? body.path : null
-            const created = await createWorkspaceDirectory(parent, name, operation.signal)
+            if (typeof body.path !== 'string' || body.path.length === 0 || typeof body.name !== 'string') {
+              throw new HttpError(400, 'directory_create_invalid')
+            }
+            const created = await createWorkspaceDirectory(body.path, body.name, operation.signal)
             operation.signal.throwIfAborted()
             sendJson(response, 201, created, this.tlsEnabled)
           } else {

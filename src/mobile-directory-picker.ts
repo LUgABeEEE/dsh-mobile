@@ -1,6 +1,7 @@
 /** Dedicated Mobile directory-flow occupant; stock DSH retains its own chooser. */
 import { useEffect, useRef } from 'react'
-import { isMobileDirectoryPath, MobileDirectoryBrowser, MobileDirectoryReadError, type MobileDirectoryFailure } from './mobile-directory-browser.js'
+import { isMobileDirectoryName, isMobileDirectoryPath, MobileDirectoryBrowser, MobileDirectoryCreator,
+  MobileDirectoryCreateError, MobileDirectoryReadError, type MobileDirectoryFailure } from './mobile-directory-browser.js'
 
 interface DirectoryPickerSlots {
   readonly slots: {
@@ -27,6 +28,8 @@ const MESSAGES = {
     'request-failed': '读取目录失败，请检查连接后重试', timeout: '读取目录超时，请重试或取消', failedOpen: '无法打开目录选择器，请重新连接后重试',
     create: '新建文件夹', createTitle: '新建文件夹名称', createAction: '创建', createInvalid: '请输入单个文件夹名称，不能包含路径分隔符。',
     createExists: '同名文件夹已存在。', createFailed: '无法创建文件夹，请检查该目录的写入权限后重试。',
+    createParent: '创建位置', creating: '正在创建文件夹…', createStopping: '正在结束创建请求…',
+    createUnknown: '无法确认创建结果，文件夹可能已创建。请返回并重新读取目录，确认后再决定是否重试。',
   },
   en: {
     title: 'Select workspace directory', path: 'Directory path', go: 'Go', home: 'Home', up: 'Up one level', cancel: 'Cancel', close: 'Close', open: 'Open', retry: 'Retry',
@@ -36,6 +39,8 @@ const MESSAGES = {
     'request-failed': 'Could not load this directory. Check the connection and retry.', timeout: 'Loading timed out. Retry or cancel.', failedOpen: 'Could not open the directory picker. Reconnect and retry.',
     create: 'New folder', createTitle: 'New folder name', createAction: 'Create', createInvalid: 'Enter a single folder name without path separators.',
     createExists: 'A folder with that name already exists.', createFailed: 'Could not create the folder. Check write access to this directory and retry.',
+    createParent: 'Create in', creating: 'Creating folder…', createStopping: 'Finishing the creation request…',
+    createUnknown: 'The creation result is unknown; the folder may already exist. Go back and reload the directory before deciding whether to retry.',
   },
   it: {
     title: 'Seleziona la cartella del workspace', path: 'Percorso della cartella', go: 'Vai', home: 'Home', up: 'Cartella superiore', cancel: 'Annulla', close: 'Chiudi', open: 'Apri', retry: 'Riprova',
@@ -45,11 +50,13 @@ const MESSAGES = {
     'request-failed': 'Impossibile caricare la cartella. Controlla la connessione e riprova.',
     create: 'Nuova cartella', createTitle: 'Nome della nuova cartella', createAction: 'Crea', createInvalid: 'Inserisci un singolo nome di cartella senza separatori di percorso.',
     createExists: 'Esiste già una cartella con questo nome.', createFailed: 'Impossibile creare la cartella. Controlla i permessi di scrittura e riprova.', timeout: 'Caricamento scaduto. Riprova o annulla.', failedOpen: 'Impossibile aprire la selezione della cartella. Riconnettiti e riprova.',
+    createParent: 'Crea in', creating: 'Creazione della cartella…', createStopping: 'Chiusura della richiesta di creazione…',
+    createUnknown: 'Esito della creazione sconosciuto: la cartella potrebbe già esistere. Torna indietro e ricarica la directory prima di riprovare.',
   },
 } as const
 type Locale = keyof typeof MESSAGES
 
-/** Authenticated read-only Gateway route; no native picker or Host service is replaced. */
+/** Authenticated directory browsing/creation route; no native picker or Host service is replaced. */
 export const WORKSPACE_DIRECTORIES_PATH = '/mobile-access/workspace-directories'
 
 /** Ask only this plugin's live directory dialog to handle a routed native Back. */
@@ -71,7 +78,7 @@ function localeOf(doc: Document): Locale {
 }
 
 /** Create one child directory through the same authenticated route that lists them. */
-async function createDirectory(path: string | null, name: string, signal: AbortSignal): Promise<string> {
+async function createDirectory(path: string, name: string, signal: AbortSignal): Promise<string> {
   const response = await fetch(WORKSPACE_DIRECTORIES_PATH, {
     method: 'POST',
     credentials: 'same-origin',
@@ -88,18 +95,8 @@ async function createDirectory(path: string | null, name: string, signal: AbortS
     throw new MobileDirectoryCreateError(code)
   }
   const payload = await response.json() as { path?: unknown }
-  if (typeof payload?.path !== 'string') throw new MobileDirectoryCreateError('invalid-response')
+  if (typeof payload?.path !== 'string' || !isMobileDirectoryPath(payload.path)) throw new MobileDirectoryCreateError('invalid-response')
   return payload.path
-}
-
-/** A failed folder creation reported by the authenticated route. */
-type MobileDirectoryCreateFailure = 'directory-exists' | 'directory-create-failed' | 'unauthorized' | 'invalid-response' | 'request-failed'
-
-class MobileDirectoryCreateError extends Error {
-  constructor(readonly code: MobileDirectoryCreateFailure) {
-    super(`Mobile directory creation failed: ${code}`)
-    this.name = 'MobileDirectoryCreateError'
-  }
 }
 
 async function readDirectories(path: string | null, signal: AbortSignal): Promise<unknown> {
@@ -117,7 +114,7 @@ async function readDirectories(path: string | null, signal: AbortSignal): Promis
 const STYLES = `
 dialog.dshm-picker{position:fixed;inset:0;box-sizing:border-box;width:100%;max-width:none;height:100%;max-height:none;margin:0;padding:max(16px,env(safe-area-inset-top)) max(16px,env(safe-area-inset-right)) max(16px,env(safe-area-inset-bottom)) max(16px,env(safe-area-inset-left));border:0;background:transparent;color:var(--dsw-alias-label-primary,#16181d);font:400 14px/1.5 system-ui;overflow:hidden}
 dialog.dshm-picker[open]{display:grid;place-items:center}dialog.dshm-picker::backdrop{background:rgb(0 0 0 / 42%)}
-.dshm-picker__panel{display:flex;flex-direction:column;box-sizing:border-box;width:min(680px,100%);height:min(500px,100%);min-height:0;overflow:hidden;border:0;border-radius:28px;box-shadow:0 0 0 .5px rgba(0 0 0 / 16%),0 3px 8px rgba(0 0 0 / 4%);background:var(--dsw-alias-bg-layer-1,#fff);box-shadow:0 16px 56px rgb(0 0 0 / 18%)}
+.dshm-picker__panel{display:flex;flex-direction:column;box-sizing:border-box;width:min(680px,100%);height:min(500px,100%);min-height:0;overflow:hidden;border:0;border-radius:28px;box-shadow:0 0 0 .5px rgba(0 0 0 / 16%),0 3px 8px rgba(0 0 0 / 4%);background:var(--dsw-alias-bg-layer-1,#fff)}
 .dshm-picker__header{display:flex;align-items:center;flex:none;gap:8px;padding:16px 14px 8px 24px;border-bottom:1px solid var(--dsw-alias-border-l2,#dde0e4)}
 .dshm-picker__title{flex:1;min-width:0;margin:0;font-size:16px;font-weight:510;line-height:24px;overflow-wrap:anywhere}
 .dshm-picker__toolbar{display:flex;flex-wrap:wrap;gap:8px;flex:none;padding:12px 16px 8px}.dshm-picker__path-label{flex:1;min-width:min(180px,100%);display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--dsw-alias-label-secondary,#606873)}
@@ -131,9 +128,9 @@ dialog.dshm-picker[open]{display:grid;place-items:center}dialog.dshm-picker::bac
 .dshm-picker__row:active:not(:disabled),.dshm-picker__button:active:not(:disabled){background:var(--dsw-alias-interactive-bg-active,#e4e8ee)}
 .dshm-picker__button{flex:none;box-sizing:border-box;min-width:48px;min-height:48px;padding:10px 14px;border:1px solid var(--dsw-alias-border-l3,#cfd5dd);border-radius:10px;background:transparent;color:inherit;font:500 14px/1.4 system-ui;cursor:pointer;touch-action:manipulation}
 .dshm-picker :is(button,input):focus-visible{outline:2px solid var(--dsw-alias-state-business-primary,#2563eb);outline-offset:2px}.dshm-picker button:disabled{opacity:.5;cursor:default}
-.dshm-picker__create[hidden]{display:none}.dshm-picker__create{flex:none;display:flex;flex-direction:column;gap:8px;padding:12px 16px;border-top:1px solid var(--dsw-alias-border-l2,#dde0e4)}
+.dshm-picker [hidden]{display:none!important}.dshm-picker__create{flex:1;min-height:0;overflow:auto;display:flex;flex-direction:column;gap:8px;padding:12px 16px}
 .dshm-picker__create-title{margin:0;font-size:13px;color:var(--dsw-alias-label-secondary,#606873)}
-.dshm-picker__create-input{box-sizing:border-box;width:100%;min-width:0;min-height:44px;padding:10px 12px;border:1px solid var(--dsw-alias-border-l3,#cfd5dd);border-radius:10px;background:var(--dsw-alias-bg-layer-2,#f7f8fa);color:var(--dsw-alias-label-primary,#0f1115);font:400 16px/1.4 inherit}
+.dshm-picker__create-input{box-sizing:border-box;width:100%;min-width:0;min-height:48px;padding:10px 12px;border:1px solid var(--dsw-alias-border-l3,#cfd5dd);border-radius:10px;background:var(--dsw-alias-bg-layer-2,#f7f8fa);color:var(--dsw-alias-label-primary,#0f1115);font:inherit;font-size:16px;line-height:1.4}
 .dshm-picker__create-actions{display:flex;justify-content:flex-end;gap:8px}.dshm-picker__create-error{color:var(--dsw-alias-state-error-primary,#b42318)}
 .dshm-picker__create-trigger{margin-right:auto}
 .dshm-picker__status{flex:none;margin:0;padding:8px 16px;font-size:13px;color:var(--dsw-alias-label-secondary,#606873);overflow-wrap:anywhere}.dshm-picker__error{color:var(--dsw-alias-state-error-primary,#b42318)}
@@ -147,7 +144,7 @@ interface DirectoryDialogOwner { setHostBusy(value: boolean): void; dispose(): P
 /**
  * Whether DSH's own browse directory picker is already mounted on this page.
  *
- * DSH composes that surface itself since 0.2.1: `directory-picker` resolves to
+ * DSH's adaptive `directory-picker` resolves to
  * `@deepseek-ai/dsh-host-directory-picker-auto`, which mounts the Host backend
  * and the Client face together and picks `browse` whenever the host is remotely
  * reachable. Its client face fills the same directory-flow slots this plugin
@@ -157,10 +154,12 @@ interface DirectoryDialogOwner { setHostBusy(value: boolean): void; dispose(): P
  *
  * @returns true when the upstream browse surface owns those slots on this page.
  */
-export function hasUpstreamBrowsePicker (view: Window & typeof globalThis): boolean {
-  const graph = (view as unknown as { __DSH_BOOT__?: { entries?: { id?: unknown }[] } }).__DSH_BOOT__
-  const entries = Array.isArray(graph?.entries) ? graph.entries : []
-  return entries.some(entry => typeof entry?.id === 'string' && entry.id.includes('dsh-client-ui-directory-picker-browse'))
+export function hasUpstreamBrowsePicker(view: object): boolean {
+  if (!('__DSH_BOOT__' in view)) return false
+  const graph = view.__DSH_BOOT__
+  if (typeof graph !== 'object' || graph === null || !('entries' in graph) || !Array.isArray(graph.entries)) return false
+  return graph.entries.some((entry: unknown) => typeof entry === 'object' && entry !== null
+    && 'id' in entry && entry.id === '@deepseek-ai/dsh-client-ui-directory-picker-browse')
 }
 
 function openDirectoryDialog(doc: Document, getProps: () => DirectoryFlowProps, trackDisposal: (task: Promise<void>) => void): DirectoryDialogOwner {
@@ -198,77 +197,79 @@ function openDirectoryDialog(doc: Document, getProps: () => DirectoryFlowProps, 
   const create = button(copy.create, 'create'); create.classList.add('dshm-picker__create-trigger')
   const cancel = button(copy.cancel, 'cancel'); const confirm = button(copy.open, 'confirm'); confirm.classList.add('dshm-picker__confirm')
   const createPanel = doc.createElement('div'); createPanel.className = 'dshm-picker__create'; createPanel.hidden = true
-  const createTitle = doc.createElement('p'); createTitle.className = 'dshm-picker__create-title'; createTitle.textContent = copy.createTitle
+  const createTitle = doc.createElement('label'); createTitle.className = 'dshm-picker__create-title'; createTitle.textContent = copy.createTitle
   const createInput = doc.createElement('input'); createInput.type = 'text'; createInput.className = 'dshm-picker__create-input'
   createInput.setAttribute('data-dshm-picker-create-name', ''); createInput.spellcheck = false; createInput.autocomplete = 'off'; createInput.maxLength = 255
+  createTitle.append(createInput)
+  const createParent = doc.createElement('p'); createParent.className = 'dshm-picker__status'
+  const createStatus = doc.createElement('p'); createStatus.className = 'dshm-picker__status'; createStatus.setAttribute('role', 'status'); createStatus.setAttribute('aria-live', 'polite')
   const createError = doc.createElement('p'); createError.className = 'dshm-picker__status dshm-picker__create-error'; createError.setAttribute('role', 'alert'); createError.setAttribute('data-dshm-picker-create-error', ''); createError.hidden = true
   const createActions = doc.createElement('div'); createActions.className = 'dshm-picker__create-actions'
   const createCancel = button(copy.cancel, 'create-cancel'); const createConfirm = button(copy.createAction, 'create-confirm')
   createActions.append(createCancel, createConfirm)
-  createPanel.append(createTitle, createInput, createError, createActions)
+  createPanel.append(createParent, createTitle, createError, createStatus, createActions)
   footer.append(create, retry, cancel, confirm); panel.append(header, toolbar, navigation, status, error, list, createPanel, footer); dialog.append(panel)
   const browser = new MobileDirectoryBrowser(readDirectories)
+  const creator = new MobileDirectoryCreator(createDirectory, created => { browser.navigate(created) })
+  let creationNotice = false
+  let creationNoticeListing: ReturnType<MobileDirectoryBrowser['getSnapshot']>['listing'] = null
   const closeCreate = (): void => {
-    createPanel.hidden = true
-    createInput.value = ''
-    createError.hidden = true
-    create.focus()
-  }
-  const submitCreate = async (): Promise<void> => {
-    const name = createInput.value.trim()
-    if (name === '' || name === '.' || name === '..' || name.includes('/') || name.includes('\\')) {
-      createError.textContent = copy.createInvalid
-      createError.hidden = false
-      return
+    const child = creator.getSnapshot()
+    if (child.pending || child.error === 'timeout' || child.error === 'request-failed' || child.error === 'invalid-response') {
+      creationNotice = true
+      creationNoticeListing = browser.getSnapshot().listing
     }
-    const controller = new AbortController()
-    createAbort = controller
-    createConfirm.disabled = true
-    try {
-      const created = await createDirectory(currentPath, name, controller.signal)
-      createPanel.hidden = true
-      createInput.value = ''
-      createError.hidden = true
-      browser.navigate(created)
-    } catch (error) {
-      const code = error instanceof MobileDirectoryCreateError ? error.code : 'request-failed'
-      createError.textContent = code === 'directory-exists' ? copy.createExists
-        : code === 'unauthorized' ? copy.unauthorized
-          : code === 'invalid-response' ? copy['invalid-response'] : copy.createFailed
-      createError.hidden = false
-    } finally {
-      createConfirm.disabled = false
-      if (createAbort === controller) createAbort = undefined
-    }
+    if (creator.close()) { if (create.disabled) close.focus(); else create.focus() }
   }
-  create.addEventListener('click', () => { createPanel.hidden = false; createInput.focus(); createInput.select() })
+  create.addEventListener('click', () => {
+    const parent = browser.getSnapshot().listing?.path
+    if (!browser.canConfirm() || parent === undefined || !creator.open(parent)) return
+    creationNotice = false
+    createInput.focus(); createInput.select()
+  })
   createCancel.addEventListener('click', closeCreate)
-  createConfirm.addEventListener('click', () => { void submitCreate() })
+  createConfirm.addEventListener('click', () => { creator.submit() })
+  createInput.addEventListener('input', () => { creator.setName(createInput.value) })
   createInput.addEventListener('keydown', (event) => {
-    if (event.key === 'Enter') { event.preventDefault(); void submitCreate() }
+    if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); creator.submit() }
   })
   let disposed = false
   let closedByOwner = false
   let renderedListing: ReturnType<MobileDirectoryBrowser['getSnapshot']>['listing']
-  let currentPath: string | null = null
-  let createAbort: AbortController | undefined
   let disposal: Promise<void> | undefined
   const render = (): void => {
     if (disposed) return
     const state = browser.getSnapshot()
+    if (creationNotice && state.listing !== creationNoticeListing) creationNotice = false
+    const child = creator.getSnapshot()
     const adopting = state.committed || state.hostBusy
-    path.disabled = adopting
+    const blocked = adopting || state.creating
+    path.disabled = blocked
     if (path.value !== state.draft) path.value = state.draft
     path.setAttribute('aria-invalid', String(state.error === 'bad-path'))
-    go.disabled = adopting || state.phase === 'loading' || !isMobileDirectoryPath(state.draft)
-    home.disabled = adopting; up.disabled = adopting || state.listing?.parent === undefined
+    go.disabled = blocked || state.phase === 'loading' || !isMobileDirectoryPath(state.draft)
+    home.disabled = blocked; up.disabled = blocked || state.listing?.parent === undefined
     confirm.disabled = !browser.canConfirm(); cancel.disabled = adopting; close.disabled = adopting
-    retry.hidden = state.phase !== 'error' || state.error === 'bad-path'; retry.disabled = adopting
-    status.textContent = adopting ? copy.adopting : state.phase === 'loading' ? copy.loading
+    retry.hidden = state.phase !== 'error' || state.error === 'bad-path'; retry.disabled = blocked
+    create.disabled = !browser.canConfirm()
+    title.textContent = child.open ? copy.create : copy.title
+    toolbar.hidden = child.open; navigation.hidden = child.open; list.hidden = child.open; footer.hidden = child.open
+    createPanel.hidden = !child.open
+    if (createInput.value !== child.name) createInput.value = child.name
+    createInput.disabled = child.pending
+    createInput.setAttribute('aria-invalid', String(child.error === 'invalid-name'))
+    createConfirm.disabled = child.pending || !isMobileDirectoryName(child.name.trim())
+    createParent.textContent = `${copy.createParent}: ${child.parent ?? ''}`
+    createError.textContent = child.error === null ? '' : child.error === 'invalid-name' ? copy.createInvalid
+      : child.error === 'directory-exists' ? copy.createExists : child.error === 'directory-create-failed' ? copy.createFailed
+        : child.error === 'unauthorized' ? copy.unauthorized : copy.createUnknown
+    createError.hidden = child.error === null
+    createStatus.textContent = child.pending && child.error === null ? copy.creating : ''
+    createStatus.hidden = createStatus.textContent === ''
+    status.textContent = child.pending ? copy.createStopping : creationNotice ? copy.createUnknown : adopting ? copy.adopting : state.phase === 'loading' ? copy.loading
       : state.listing?.truncated === true ? copy.truncated : state.listing?.entries.length === 0 ? copy.empty : ''
-    currentPath = state.listing?.path ?? null
-    status.hidden = status.textContent === ''
-    error.textContent = state.error === null ? '' : copy[state.error]; error.hidden = state.error === null
+    status.hidden = child.open || status.textContent === ''
+    error.textContent = state.error === null ? '' : copy[state.error]; error.hidden = child.open || state.error === null
     list.setAttribute('aria-busy', String(state.phase === 'loading'))
     if (renderedListing !== state.listing) {
       renderedListing = state.listing; list.replaceChildren()
@@ -284,11 +285,18 @@ function openDirectoryDialog(doc: Document, getProps: () => DirectoryFlowProps, 
         row.append(icon, name); row.addEventListener('click', () => { browser.navigate(entry.path) }); item.append(row); list.append(item)
       }
     }
-    for (const row of list.querySelectorAll('button')) row.disabled = adopting
+    for (const row of list.querySelectorAll('button')) row.disabled = blocked
   }
   const unsubscribe = browser.subscribe(render)
+  const unsubscribeCreate = creator.subscribe(() => {
+    const child = creator.getSnapshot()
+    browser.setCreating(child.open || child.pending)
+    render()
+  })
   const requestClose = (): void => {
+    if (creator.getSnapshot().open) { closeCreate(); return }
     if (disposed || !browser.cancel()) return
+    creator.close()
     // Close the modal immediately; the React owner withdraws its open edge separately.
     closedByOwner = true
     if (dialog.open) dialog.close()
@@ -304,7 +312,8 @@ function openDirectoryDialog(doc: Document, getProps: () => DirectoryFlowProps, 
   }
   const dispose = (): Promise<void> => {
     if (disposal !== undefined) return disposal
-    disposed = true; unsubscribe()
+    disposed = true; unsubscribe(); unsubscribeCreate()
+    const creationStopped = creator.dispose()
     const stopped = browser.dispose()
     const failures: unknown[] = []
     const clean = (action: () => void): void => { try { action() } catch (error) { failures.push(error) } }
@@ -315,7 +324,7 @@ function openDirectoryDialog(doc: Document, getProps: () => DirectoryFlowProps, 
     clean(() => { dialog.remove() })
     clean(() => { if (trigger?.isConnected) trigger.focus({ preventScroll: true }) })
     disposal = (async () => {
-      try { await stopped } catch (error) { failures.push(error) }
+      for (const result of await Promise.allSettled([stopped, creationStopped])) if (result.status === 'rejected') failures.push(result.reason)
       if (failures.length > 0) throw new AggregateError(failures, 'Mobile directory dialog disposal failed')
     })()
     return disposal
