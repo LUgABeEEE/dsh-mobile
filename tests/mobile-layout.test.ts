@@ -729,6 +729,24 @@ describe('dedicated mobile layout boot', () => {
     expect(MOBILE_LAYOUT_STYLES).toContain('.dshm-drawer[data-open=true]{width:340px')
   })
 
+  it('keeps its own chrome opaque when a skin makes the theme layers translucent', () => {
+    // The drawer and the details panel sit above the conversation on a phone.
+    // A skin may set --dsw-alias-bg-layer-1 translucent, or leave it unresolved,
+    // which is invalid at computed-value time. Compositing the theme color over
+    // the CSS Canvas system color keeps conversation text from bleeding through.
+    for (const selector of ['.dshm-drawer{position:fixed', '.dshm-details{position:fixed']) {
+      const start = MOBILE_LAYOUT_STYLES.indexOf(selector)
+      expect(start).toBeGreaterThan(-1)
+      const rule = MOBILE_LAYOUT_STYLES.slice(start, MOBILE_LAYOUT_STYLES.indexOf('}', start))
+      expect(rule).toContain('background-color:Canvas')
+      expect(rule).toContain('background-image:linear-gradient(var(--dsw-alias-bg-layer-1')
+    }
+    const navStart = MOBILE_LAYOUT_STYLES.indexOf('.dshm-panelNav{display:flex')
+    const nav = MOBILE_LAYOUT_STYLES.slice(navStart, MOBILE_LAYOUT_STYLES.indexOf('}', navStart))
+    expect(nav).toContain('background-color:Canvas')
+    expect(nav).toContain('background-image:linear-gradient(var(--dsw-alias-bg-base')
+  })
+
   it('sets a minimum editable font while preserving the content-font preference', () => {
     // Stock menus portal into document.body (model picker search, trigger
     // menus), outside .dshm-shell, so the 16px floor must scope from the body
