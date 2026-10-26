@@ -32,6 +32,12 @@ const makePublisher = (): Publisher => {
 
 const modeOf = async (path: string): Promise<number> => (await stat(path)).mode & 0o777
 
+// Windows ignores the writeFile mode and reports normal-file permission bits, so the
+// 0600 privacy guarantee is only observable on POSIX (same guard as the file-logger tests).
+const expectPrivateMode = async (path: string): Promise<void> => {
+  if (process.platform !== 'win32') expect(await modeOf(path)).toBe(0o600)
+}
+
 describe('push integration fixture JSON publication', () => {
   it('exports one canonical atomic publisher reused by the generated Host writers', () => {
     expect(typeof fixture.atomicJsonPublisher).toBe('function')
@@ -58,11 +64,11 @@ describe('push integration fixture JSON publication', () => {
       // The unpublished candidate is already complete, private and in the same directory.
       expect(JSON.parse(await readFile(candidate, 'utf8'))).toEqual({ phase: 'second', ok: true })
       expect(dirname(candidate)).toBe(root)
-      expect(await modeOf(candidate)).toBe(0o600)
+      await expectPrivateMode(candidate)
       releaseBarrier()
       await publishing
       expect(JSON.parse(await readFile(target, 'utf8'))).toEqual({ phase: 'second', ok: true })
-      expect(await modeOf(target)).toBe(0o600)
+      await expectPrivateMode(target)
       expect(await readdir(root)).toEqual([basename(target)])
     } finally {
       await rm(root, { recursive: true, force: true })
@@ -76,7 +82,7 @@ describe('push integration fixture JSON publication', () => {
       const target = join(home, 'push-integration-fixture-settlement.json')
       await makePublisher()(target, { outcome: 'resolved' })
       expect(JSON.parse(await readFile(target, 'utf8'))).toEqual({ outcome: 'resolved' })
-      expect(await modeOf(target)).toBe(0o600)
+      await expectPrivateMode(target)
       expect(await readdir(home)).toEqual([basename(target)])
     } finally {
       await rm(root, { recursive: true, force: true })
@@ -123,7 +129,11 @@ describe('push integration fixture JSON publication', () => {
       await writeFile(bystander, 'keep\n')
       const target = join(root, 'push-integration-fixture-result.json')
       await mkdir(target)
-      await expect(makePublisher()(target, { phase: 'second', ok: true })).rejects.toMatchObject({ code: 'EISDIR' })
+      const publication = makePublisher()(target, { phase: 'second', ok: true })
+      // Every platform must observe an actual rename failure; POSIX reports EISDIR for
+      // renaming onto a directory while Windows surfaces a different native error.
+      await expect(publication).rejects.toMatchObject({ syscall: 'rename' })
+      if (process.platform !== 'win32') await expect(publication).rejects.toMatchObject({ code: 'EISDIR' })
       expect(await readFile(bystander, 'utf8')).toBe('keep\n')
       expect((await stat(target)).isDirectory()).toBe(true)
       expect((await readdir(root)).sort()).toEqual(['bystander.json', basename(target)])
@@ -151,8 +161,8 @@ describe('push integration fixture JSON publication', () => {
         .toEqual({ phase: 'fixture-ready', ok: true })
       expect(JSON.parse(await readFile(join(home, 'push-integration-fixture-settlement.json'), 'utf8')))
         .toEqual({ outcome: 'resolved' })
-      expect(await modeOf(join(home, 'push-integration-fixture-result.json'))).toBe(0o600)
-      expect(await modeOf(join(home, 'push-integration-fixture-settlement.json'))).toBe(0o600)
+      await expectPrivateMode(join(home, 'push-integration-fixture-result.json'))
+      await expectPrivateMode(join(home, 'push-integration-fixture-settlement.json'))
       expect((await readdir(home)).sort()).toEqual(['push-integration-fixture-result.json', 'push-integration-fixture-settlement.json'])
       const source = await readFile(join(built.packageRoot, 'lib', 'index.mjs'), 'utf8')
       const canonicalSource = typeof fixture.atomicJsonPublisher === 'function'
