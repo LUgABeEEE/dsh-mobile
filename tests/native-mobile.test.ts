@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { MOBILE_PLUGIN_OVERLAY_BAND, MOBILE_SHELL_LAYERS } from '../src/mobile-layers.js'
 import { activeSessionForSoftEnter, applyNativeMobileLanguageMarker, BROWSER_COMPOSER_EDITOR_QUERY, bindBrowserComposerSoftEnter, bindComposerSoftEnter, bindHistoryAutoLoadGate, composerIsLandingHero, createDocumentCompositionGuard, createHeaderStripPanController, createHistoryAutoLoadGate, createSwitchComputerHold, dispatchComposerImageDrop, drawerScrimVisible, HISTORY_INTENT_LISTENER_OPTIONS, HISTORY_SCROLL_QUIET_MS, installNativeMobileSurface, installStockMobileBack, isBrowserTouchEnterLineBreak, isComposerMediaOriginCurrent, isSoftKeyboardEnterLineBreak, markNativeMobileSettings, measureHeaderStripOverflow, nativeAppOwnsComposerEnter, NATIVE_MOBILE_OVERLAY_QUERY, NATIVE_MOBILE_STYLES, NATIVE_MOBILE_TOGGLE_QUERY, preflightComposerImageDrop, resolveBrowserComposerEditor, resolveComposerSessionOrigin, resolveHistoryGateIdentity, resolveNativeMobileFrame, resolveNativeMobileLanguage, shouldAutoLoadEarlier, stockMainPanelOpen, syncHistoryLoaderLabel, SWITCH_COMPUTER_CLICK_SUPPRESSION_MS, SWITCH_COMPUTER_LONG_PRESS_MS, SWITCH_COMPUTER_MOVE_TOLERANCE_PX, SWITCH_COMPUTER_NATIVE_ACTION } from '../src/native-mobile.js'
 
 interface FakeElementOptions {
@@ -43,7 +44,14 @@ describe('native mobile presentation', () => {
 
   it('raises public floating surfaces above narrow drawers without intercepting empty space', () => {
     const [, overlay] = NATIVE_MOBILE_STYLES.split(`@media ${NATIVE_MOBILE_OVERLAY_QUERY}`)
-    expect(overlay).toContain('html.dsh-native-mobile-active [data-shell-overlay] { z-index:300 !important; pointer-events:none !important; }')
+    // The slot layer and the right panel are modal shell surfaces: they must
+    // clear a plugin portal opened from inside them, while the navigation
+    // drawer must lose to that same portal. Assert the relation, not a number.
+    expect(overlay).toContain(`html.dsh-native-mobile-active [data-shell-overlay] { z-index:${MOBILE_SHELL_LAYERS.overlay} !important; pointer-events:none !important; }`)
+    expect(overlay).toContain(`[data-dsh-mobile-sidebar] { position:fixed !important; z-index:${MOBILE_SHELL_LAYERS.drawer} !important;`)
+    expect(MOBILE_SHELL_LAYERS.drawer).toBeLessThan(MOBILE_PLUGIN_OVERLAY_BAND.min)
+    expect(MOBILE_SHELL_LAYERS.overlay).toBeGreaterThan(MOBILE_PLUGIN_OVERLAY_BAND.max)
+    expect(MOBILE_SHELL_LAYERS.details).toBeGreaterThan(MOBILE_PLUGIN_OVERLAY_BAND.max)
     expect(overlay).not.toContain('[data-shell-overlay] > * { pointer-events:auto')
   })
 
@@ -118,9 +126,10 @@ describe('native mobile presentation', () => {
     // collapsed the sidebar.
     const [neutral] = NATIVE_MOBILE_STYLES.split(`@media ${NATIVE_MOBILE_OVERLAY_QUERY}`)
     expect(neutral).toContain('.dsh-native-mobile-backdrop,.dsh-mobile-branch-toast,.dsh-mobile-media-toast { display:none; }')
-    expect(NATIVE_MOBILE_STYLES).toContain('.dsh-native-mobile-backdrop { display:block; position:fixed; z-index:235;')
-    expect(NATIVE_MOBILE_STYLES).toContain('.dsh-mobile-branch-toast,.dsh-mobile-media-toast { display:block; position:fixed;')
+    expect(NATIVE_MOBILE_STYLES).toContain(`.dsh-native-mobile-backdrop { display:block; position:fixed; z-index:${MOBILE_SHELL_LAYERS.scrim};`)
+    expect(NATIVE_MOBILE_STYLES).toContain(`.dsh-mobile-branch-toast,.dsh-mobile-media-toast { display:block; position:fixed; z-index:${MOBILE_SHELL_LAYERS.toast};`)
     expect(NATIVE_MOBILE_STYLES).toContain('.dsh-native-mobile-backdrop[hidden] { display:none; }')
+    expect(MOBILE_SHELL_LAYERS.scrim).toBeLessThan(MOBILE_SHELL_LAYERS.drawer)
   })
 
   it('shows the drawer scrim only while the overlay drawer is open', () => {

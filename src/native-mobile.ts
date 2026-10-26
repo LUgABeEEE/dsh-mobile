@@ -7,6 +7,7 @@
  */
 import { installTaskCompletionWatcher, type TaskNotifyKind } from './task-notify.js'
 import { MOBILE_COMPOSER_TOOLBAR_STYLES } from './mobile-composer-toolbar.js'
+import { MOBILE_SHELL_LAYERS } from './mobile-layers.js'
 import { pickBrowserFiles } from './browser-file-picker.js'
 
 export const NATIVE_MOBILE_OVERLAY_QUERY = '(max-width:720px)'
@@ -77,9 +78,10 @@ export const NATIVE_MOBILE_STYLES = `
      columns; the stock shell-overlay retains its own descendant hit policy. */
   html.dsh-native-mobile-active [data-dsh-mobile-frame] { pointer-events:none !important; }
   html.dsh-native-mobile-active [data-dsh-mobile-frame] > :is([data-dsh-mobile-sidebar],[data-dsh-mobile-center],[class*="_rightbarCol"]) { pointer-events:auto !important; }
-  /* Floating slot surfaces paint above mobile drawers; their empty layer
-     stays click-through and each stock occupant retains its own hit policy. */
-  html.dsh-native-mobile-active [data-shell-overlay] { z-index:300 !important; pointer-events:none !important; }
+  /* The floating slot layer and the right panel are modal shell surfaces, so
+     they stay above the plugin band; their empty container keeps its own
+     click-through policy and each occupant keeps its own hit policy. */
+  html.dsh-native-mobile-active [data-shell-overlay] { z-index:${MOBILE_SHELL_LAYERS.overlay} !important; pointer-events:none !important; }
   [data-dsh-mobile-center] { grid-column:2 !important; width:100vw !important; min-width:0 !important; }
   [data-dsh-mobile-center] > * { min-width:0 !important; }
   [data-dsh-mobile-header] { box-sizing:border-box !important; width:calc(100% - 16px) !important; margin:0 8px !important; min-width:0; padding-top:max(4px,env(safe-area-inset-top)) !important; padding-right:8px !important; padding-left:42px !important; }
@@ -98,8 +100,14 @@ export const NATIVE_MOBILE_STYLES = `
   [data-dsh-mobile-header] [class*="_tabs"] { box-sizing:border-box !important; width:max-content !important; max-width:calc(100% - 58px) !important; min-height:28px !important; height:28px !important; margin-top:0 !important; padding-left:6px !important; padding-right:6px !important; overflow-x:auto; scrollbar-width:none; }
   [data-dsh-mobile-header] [class*="_tab"] { padding-bottom:5px !important; }
   [data-dsh-mobile-header] [class*="_tabs"]::-webkit-scrollbar { display:none; }
-  [data-dsh-mobile-sidebar] { position:fixed !important; z-index:240 !important; inset:0 auto 0 0 !important; width:0 !important; overflow:visible !important; }
-  [data-dsh-mobile-sidebar-root] { position:fixed !important; z-index:241 !important; inset:max(env(safe-area-inset-top),0px) auto 0 0 !important; height:auto !important; transition:width 180ms var(--dsh-mobile-motion-ease),box-shadow 180ms ease !important; }
+  /* These values come from MOBILE_SHELL_LAYERS in mobile-layers.ts. Both layer
+     systems paint the same dedicated page, and these important rules win
+     below 720px, so a mismatch would give a narrow phone and a wide phone
+     different stacking. The drawer and its collapsed toggle stay below the
+     third-party plugin band so a body portal menu is not covered; the detail
+     panel stays above it because it is a modal surface. */
+  [data-dsh-mobile-sidebar] { position:fixed !important; z-index:${MOBILE_SHELL_LAYERS.drawer} !important; inset:0 auto 0 0 !important; width:0 !important; overflow:visible !important; }
+  [data-dsh-mobile-sidebar-root] { position:fixed !important; z-index:${MOBILE_SHELL_LAYERS.drawerRoot} !important; inset:max(env(safe-area-inset-top),0px) auto 0 0 !important; height:auto !important; transition:width 180ms var(--dsh-mobile-motion-ease),box-shadow 180ms ease !important; }
   [data-dsh-mobile-sidebar][data-open="true"] [data-dsh-mobile-sidebar-root] { width:min(88vw,340px) !important; padding-top:0 !important; box-shadow:18px 0 46px rgb(15 23 42 / 18%); }
   /* Extra panel/footer seats may exceed a short drawer. Keep a bounded
      workspace scrollport and let the drawer scroll to the remaining seats. */
@@ -108,7 +116,7 @@ export const NATIVE_MOBILE_STYLES = `
   [data-dsh-mobile-sidebar][data-open="true"] [data-dsh-mobile-sidebar-root] [class*="_logoRow"] { height:52px !important; padding:4px 0 4px 4px !important; margin-bottom:4px !important; }
   [data-dsh-mobile-sidebar][data-open="false"] [data-dsh-mobile-sidebar-root] { width:0 !important; border:0 !important; background:transparent !important; box-shadow:none !important; overflow:visible !important; }
   [data-dsh-mobile-sidebar][data-open="false"] [data-dsh-mobile-sidebar-root] > :not(:has([data-dsh-mobile-toggle])) { display:none !important; }
-  [data-dsh-mobile-sidebar][data-open="false"] [data-dsh-mobile-sidebar-root] > :has([data-dsh-mobile-toggle]) { position:fixed !important; z-index:244 !important; top:env(safe-area-inset-top) !important; left:0 !important; box-sizing:border-box !important; width:50px !important; height:52px !important; padding:4px !important; border:0 !important; background:transparent !important; }
+  [data-dsh-mobile-sidebar][data-open="false"] [data-dsh-mobile-sidebar-root] > :has([data-dsh-mobile-toggle]) { position:fixed !important; z-index:${MOBILE_SHELL_LAYERS.drawerToggle} !important; top:env(safe-area-inset-top) !important; left:0 !important; box-sizing:border-box !important; width:50px !important; height:52px !important; padding:4px !important; border:0 !important; background:transparent !important; }
    [data-dsh-mobile-sidebar][data-open="false"] [data-dsh-mobile-sidebar-root] > :has([data-dsh-mobile-toggle]) > :not([data-dsh-mobile-toggle]) { display:none !important; }
    /* The stock settings shell is mounted under the collapsed sidebar. Let
       its fixed overlay escape the zero-width drawer while it is open. */
@@ -116,10 +124,10 @@ export const NATIVE_MOBILE_STYLES = `
    [data-dsh-mobile-sidebar]:has([data-dsh-mobile-settings]) > * { width:100vw !important; overflow:visible !important; }
    [data-dsh-mobile-toggle] { width:44px !important; height:44px !important; min-width:44px !important; min-height:44px !important; }
   [data-dsh-mobile-sidebar][data-open="false"] [data-dsh-mobile-toggle] > svg[class*="_railFish"] { transform:translateY(-4px) !important; }
-  .dsh-native-mobile-backdrop { display:block; position:fixed; z-index:235; inset:env(safe-area-inset-top) 0 0; border:0; background:rgb(15 23 42 / 32%); }
+  .dsh-native-mobile-backdrop { display:block; position:fixed; z-index:${MOBILE_SHELL_LAYERS.scrim}; inset:env(safe-area-inset-top) 0 0; border:0; background:rgb(15 23 42 / 32%); }
   .dsh-native-mobile-backdrop:not([hidden]) { animation:dsh-mobile-fade-in var(--dsh-mobile-motion-duration) ease-out; }
   .dsh-native-mobile-backdrop[hidden] { display:none; }
-  [data-dsh-mobile-details] { position:fixed !important; z-index:250 !important; inset:0 0 0 auto !important; width:min(94vw,460px) !important; max-width:none !important; transform:translateX(100%); transition:transform var(--dsh-mobile-motion-duration) var(--dsh-mobile-motion-ease); background:var(--dsw-alias-bg-layer-1, #fff); box-shadow:-18px 0 46px rgb(15 23 42 / 18%); }
+  [data-dsh-mobile-details] { position:fixed !important; z-index:${MOBILE_SHELL_LAYERS.details} !important; inset:0 0 0 auto !important; width:min(94vw,460px) !important; max-width:none !important; transform:translateX(100%); transition:transform var(--dsh-mobile-motion-duration) var(--dsh-mobile-motion-ease); background:var(--dsw-alias-bg-layer-1, #fff); box-shadow:-18px 0 46px rgb(15 23 42 / 18%); }
   [data-dsh-mobile-details][data-open="true"] { transform:translateX(0); }
   [data-dsh-mobile-handle] { display:none !important; }
   [data-dsh-mobile-settings] { flex-direction:column !important; width:100vw !important; height:100dvh !important; max-width:none !important; border-radius:0 !important; animation:dsh-mobile-panel-in var(--dsh-mobile-motion-duration) var(--dsh-mobile-motion-ease); }
@@ -233,7 +241,7 @@ export const NATIVE_MOBILE_STYLES = `
   [data-dsh-mobile-center] [role="dialog"][aria-label*="Context"] [class*="_rows"] > [class*="_row"] { display:flex !important; align-items:center !important; justify-content:space-between !important; width:100% !important; min-width:0 !important; white-space:nowrap !important; }
   [data-dsh-mobile-center] [role="dialog"][aria-label*="上下文"] :is(dt,dd),
   [data-dsh-mobile-center] [role="dialog"][aria-label*="Context"] :is(dt,dd) { white-space:nowrap !important; word-break:keep-all !important; }
-  .dsh-mobile-branch-toast,.dsh-mobile-media-toast { display:block; position:fixed; z-index:330; top:max(12px,env(safe-area-inset-top)); left:50%; max-width:calc(100vw - 32px); box-sizing:border-box; padding:7px 14px; border:1px solid rgb(15 23 42 / 10%); border-radius:999px; background:rgb(15 23 42 / 92%); color:#fff; font-size:13px; line-height:20px; text-align:center; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; opacity:0; pointer-events:none; transform:translate(-50%,-8px); transition:opacity 160ms ease,transform 160ms ease; }
+  .dsh-mobile-branch-toast,.dsh-mobile-media-toast { display:block; position:fixed; z-index:${MOBILE_SHELL_LAYERS.toast}; top:max(12px,env(safe-area-inset-top)); left:50%; max-width:calc(100vw - 32px); box-sizing:border-box; padding:7px 14px; border:1px solid rgb(15 23 42 / 10%); border-radius:999px; background:rgb(15 23 42 / 92%); color:#fff; font-size:13px; line-height:20px; text-align:center; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; opacity:0; pointer-events:none; transform:translate(-50%,-8px); transition:opacity 160ms ease,transform 160ms ease; }
   .dsh-mobile-branch-toast[data-visible="true"],.dsh-mobile-media-toast[data-visible="true"] { opacity:1; transform:translate(-50%,0); }
   /* Fallback only: when the native Add group has no item to clone, keep the
      camera action on the same row metrics and tokens as the native menu. */
