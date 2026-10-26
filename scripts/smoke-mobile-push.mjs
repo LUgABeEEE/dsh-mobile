@@ -1460,6 +1460,25 @@ async function runFullSmoke({ negativeControl = false, pairDiagnostic = false } 
     await attachPhoneObservers(phone)
     phone.setDefaultNavigationTimeout(15_000)
     phone.setDefaultTimeout(10_000)
+    // Capture the module system the DSH shell creates so later native-Switch paint
+    // assertions can render the shell's own public component test-only (same wrap
+    // pattern as scripts/smoke-mobile-settings.mjs); no page behavior is changed.
+    await traced('arm-module-loader-capture', () => phone.addInitScript(() => {
+      let moduleLoader
+      Object.defineProperty(window, '__ModuleLoader__', {
+        configurable: true,
+        get: () => moduleLoader,
+        set: value => {
+          moduleLoader = value
+          const create = value.create
+          value.create = function (...args) {
+            const modules = create.apply(this, args)
+            window.__pushSmokeModules = modules
+            return modules
+          }
+        },
+      })
+    }))
 
     // Credential-free fixed assets must work on the public route before pairing.
     const unauthManifest = await traced('get-public-prepair-manifest', () => phone.request.get(`${gatewayOrigin}/mobile-access/push/manifest.webmanifest`, { timeout: 5_000 }))
@@ -1652,43 +1671,109 @@ async function runFullSmoke({ negativeControl = false, pairDiagnostic = false } 
     pairDiagnosticDetail(runtimeDiagnosticFd, pairDiagnosticRunId, 'snapshot', 'settings-row-visible', pushSettingsDiagnostic)
     pushRowCount = pushSettingsDiagnostic.exactEnglishLocatorCount
     assert.equal(pushRowCount, 1, 'Exactly one mounted Web Push settings row/controller is expected')
-    // Presentation acceptance for the mounted category rows: measured geometry of the
-    // packed client, matching the isolated rendered fixture (smoke-mobile-push-settings.mjs).
-    const mountedCategoryGeometry = await phone.evaluate(() => {
+    // Presentation acceptance for the mounted category rows: the controls must be the
+    // actual public DSH Switch. Component identity (same shell-owned track class), DOM
+    // semantics and track/thumb geometry are compared with the real "Show coding view"
+    // toggle mounted by General settings on the same page — state-independent checks.
+    // Label typography must equal the General row title (14px/20px regular). Native
+    // paint is compared per matching aria-checked state after the Responses toggle.
+    const mountedNativeSwitch = await phone.evaluate(() => {
       const group = document.querySelector('.dsh-mobile-push-categories')
-      if (!group) return { missing: true }
+      if (group === null) return { missing: 'group' }
+      // The General "Show coding view" toggle names its own Switch with the row title
+      // (DeveloperToolsRow passes label: t("developerTools.title")); locate it directly.
+      const referenceSwitch = [...document.querySelectorAll('button[role="switch"]')]
+        .find(control => control.getAttribute('aria-label') === 'Show coding view') ?? null
+      const referenceRow = referenceSwitch?.closest('[class*="_row"]') ?? null
+      const referenceTitle = referenceRow?.querySelector('[class*="_title"]') ?? null
+      if (referenceSwitch === null || referenceTitle === null) return { missing: 'reference' }
+      const trackClassOf = element => [...element.classList].find(name => /_switch_/u.test(name)) ?? null
+      const referenceTitleStyle = getComputedStyle(referenceTitle)
       const groupRect = group.getBoundingClientRect()
-      const rows = [...group.querySelectorAll('label')].map(label => {
-        const input = label.querySelector('input')
-        const text = label.querySelector('.dsh-mobile-push-categoryName') ?? label.firstChild
-        const l = label.getBoundingClientRect(), i = input.getBoundingClientRect(), t = text.getBoundingClientRect()
-        return { labelHeight: l.height, labelWidth: l.width, labelRight: l.right, labelTop: l.top, labelBottom: l.bottom,
-          inputWidth: i.width, inputHeight: i.height, inputRight: i.right, inputLeft: i.left, inputTop: i.top, inputBottom: i.bottom,
-          textRight: t.right }
+      const rows = [...group.querySelectorAll('.dsh-mobile-push-category')].map(row => {
+        const control = row.querySelector('button[role="switch"]')
+        const text = row.querySelector('.dsh-mobile-push-categoryName')
+        if (control === null || text === null) return { missingControl: true }
+        const l = row.getBoundingClientRect(), c = control.getBoundingClientRect(), t = text.getBoundingClientRect()
+        const textStyle = getComputedStyle(text)
+        const thumb = control.querySelector('span')
+        const thumbBox = thumb ? thumb.getBoundingClientRect() : null
+        return { missingControl: false, rowHeight: l.height, rowWidth: l.width, rowRight: l.right, rowTop: l.top, rowBottom: l.bottom,
+          controlRight: c.right, controlLeft: c.left, controlTop: c.top, controlBottom: c.bottom, textRight: t.right,
+          controlWidth: c.width, controlHeight: c.height, controlType: control.getAttribute('type'), controlRole: control.getAttribute('role'),
+          trackClass: trackClassOf(control), thumbWidth: thumbBox?.width ?? null, thumbHeight: thumbBox?.height ?? null,
+          typography: `${textStyle.fontSize}/${textStyle.lineHeight}/${textStyle.fontWeight}` }
       })
-      return { missing: false, rows, groupLeft: groupRect.left, groupRight: groupRect.right,
+      const referenceBox = referenceSwitch.getBoundingClientRect()
+      const referenceThumb = referenceSwitch.querySelector('span')
+      const referenceThumbBox = referenceThumb ? referenceThumb.getBoundingClientRect() : null
+      return { missing: false, rows, paintedInputs: group.querySelectorAll('input').length,
+        reference: { checked: referenceSwitch.getAttribute('aria-checked'), trackClass: trackClassOf(referenceSwitch),
+          width: referenceBox.width, height: referenceBox.height, thumbWidth: referenceThumbBox?.width ?? null, thumbHeight: referenceThumbBox?.height ?? null,
+          typography: referenceTitleStyle ? `${referenceTitleStyle.fontSize}/${referenceTitleStyle.lineHeight}/${referenceTitleStyle.fontWeight}` : null },
+        groupLeft: groupRect.left, groupRight: groupRect.right,
         docScrollWidth: document.scrollingElement.scrollWidth, viewportWidth: document.documentElement.clientWidth }
     })
-    assert.equal(mountedCategoryGeometry.missing, false, 'Mounted settings must render the push category group')
-    assert.equal(mountedCategoryGeometry.rows.length, 6, 'Mounted push settings must render six category rows')
-    const mountedAvailableWidth = mountedCategoryGeometry.groupRight - mountedCategoryGeometry.groupLeft
-    mountedCategoryGeometry.rows.forEach((row, index) => {
-      assert.ok(row.labelHeight >= 47.5, `Mounted category row ${index} must keep a >=48px full-row target (got ${row.labelHeight}px)`)
-      assert.ok(Math.abs(row.labelWidth - mountedAvailableWidth) <= 1.5, `Mounted category row ${index} must fill the settings section width`)
-      assert.ok(row.textRight <= row.inputLeft - 2, `Mounted category row ${index} must keep its label left of the switch`)
-      assert.ok(row.labelRight - row.inputRight <= 1.5, `Mounted category row ${index} must right-align its switch`)
-      assert.ok(row.inputWidth >= 40 && row.inputWidth <= 52 && row.inputHeight >= 24 && row.inputHeight <= 32,
-        `Mounted category row ${index} switch must stay fixed-size (got ${row.inputWidth}x${row.inputHeight}px)`)
-      assert.ok(row.inputTop >= row.labelTop - 1 && row.inputBottom <= row.labelBottom + 1, `Mounted category row ${index} switch must stay on its row`)
+    assert.equal(mountedNativeSwitch.missing, false,
+      `Mounted settings must expose the push category group and the Show coding view reference row (missing=${String(mountedNativeSwitch.missing)})`)
+    assert.equal(mountedNativeSwitch.rows.length, 6, 'Mounted push settings must render six category rows')
+    assert.equal(mountedNativeSwitch.paintedInputs, 0, 'Mounted push settings must not render painted input switches')
+    const referenceSwitchMetrics = mountedNativeSwitch.reference
+    assert.ok(referenceSwitchMetrics.trackClass !== null, 'Show coding view reference switch has no shell track class to compare')
+    mountedNativeSwitch.rows.forEach((row, index) => {
+      assert.equal(row.missingControl, false, `Mounted category row ${index} must carry a native Switch control`)
+      assert.equal(row.controlType, 'button', `Mounted category row ${index} control must be a native button`)
+      assert.equal(row.controlRole, 'switch', `Mounted category row ${index} control must keep role=switch`)
+      assert.equal(row.trackClass, referenceSwitchMetrics.trackClass,
+        `Mounted category row ${index} must use the same shell Switch component class as the Show coding view toggle`)
+      assert.equal(row.typography, referenceSwitchMetrics.typography,
+        `Mounted category row ${index} label typography must equal the General row title (${referenceSwitchMetrics.typography})`)
+      assert.equal(row.typography, '14px/20px/400', `Mounted category row ${index} label must be 14px/20px regular weight`)
+      assert.ok(Math.abs(row.controlWidth - referenceSwitchMetrics.width) <= 0.5 && Math.abs(row.controlHeight - referenceSwitchMetrics.height) <= 0.5,
+        `Mounted category row ${index} track geometry must equal the Show coding view toggle (${row.controlWidth}x${row.controlHeight} vs ${referenceSwitchMetrics.width}x${referenceSwitchMetrics.height})`)
+      assert.ok(Math.abs((row.thumbWidth ?? -1) - referenceSwitchMetrics.thumbWidth) <= 0.5 && Math.abs((row.thumbHeight ?? -1) - referenceSwitchMetrics.thumbHeight) <= 0.5,
+        `Mounted category row ${index} thumb geometry must equal the Show coding view toggle`)
+      assert.ok(row.rowHeight >= 47.5, `Mounted category row ${index} must keep a >=48px full-row target (got ${row.rowHeight}px)`)
+      assert.ok(Math.abs(row.rowWidth - (mountedNativeSwitch.groupRight - mountedNativeSwitch.groupLeft)) <= 1.5, `Mounted category row ${index} must fill the settings section width`)
+      assert.ok(row.textRight <= row.controlLeft - 2, `Mounted category row ${index} must keep its label left of the switch`)
+      assert.ok(row.rowRight - row.controlRight <= 1.5, `Mounted category row ${index} must right-align its switch`)
+      assert.ok(row.controlTop >= row.rowTop - 1 && row.controlBottom <= row.rowBottom + 1, `Mounted category row ${index} switch must stay on its row`)
     })
-    assert.ok(mountedCategoryGeometry.docScrollWidth <= mountedCategoryGeometry.viewportWidth + 1,
+    assert.ok(mountedNativeSwitch.docScrollWidth <= mountedNativeSwitch.viewportWidth + 1,
       'Mounted push category rows must not overflow the phone viewport horizontally')
+    // Touch targets: the associated label row and the native switch track must both be
+    // hittable across their box without clipping — measured, not toggled, so no extra
+    // preference mutation is introduced beyond the existing Responses flow. The row is
+    // scrolled into view first: elementFromPoint needs the target inside the scrollport,
+    // and the settings overlay may mount the push group below the fold.
+    await phone.locator('.dsh-mobile-push-category').first().scrollIntoViewIfNeeded()
+    const touchTargets = await phone.evaluate(() => {
+      const row = document.querySelector('.dsh-mobile-push-category')
+      const control = row?.querySelector('button[role="switch"]') ?? null
+      if (row === undefined || row === null || control === null) return { missing: true }
+      const probe = element => {
+        const box = element.getBoundingClientRect()
+        const center = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2)
+        const edges = [box.x + 4, box.right - 4].every(x => {
+          const edge = document.elementFromPoint(x, box.y + box.height / 2)
+          return edge !== null && (edge === element || element.contains(edge) || element.closest('label') === edge?.closest('label'))
+        })
+        return { width: box.width, height: box.height, left: box.left, right: box.right, viewport: innerWidth,
+          hit: center !== null && (center === element || element.contains(center) || element.closest('label') === center?.closest('label')), edges }
+      }
+      return { missing: false, row: probe(row), control: probe(control) }
+    })
+    assert.equal(touchTargets.missing, false, 'Mounted category touch targets could not be probed')
+    assert.ok(touchTargets.row.height >= 47.5 && touchTargets.row.width >= 44, 'Mounted category full-row touch target is too small')
+    assert.ok(touchTargets.row.hit && touchTargets.row.edges, 'Mounted category full-row touch target is clipped or blocked')
+    assert.ok(touchTargets.control.hit && touchTargets.control.edges, 'Mounted native Switch track touch target is clipped or blocked')
+    assert.ok(touchTargets.control.left >= -1 && touchTargets.control.right <= touchTargets.control.viewport + 1, 'Mounted native Switch track overflows the viewport')
     const mountedEvidenceDir = process.env.DSH_PUSH_EVIDENCE_DIR
     if (typeof mountedEvidenceDir === 'string' && mountedEvidenceDir !== '' && isAbsolute(mountedEvidenceDir)) {
       await mkdir(mountedEvidenceDir, { recursive: true })
       await settings.screenshot({ path: join(mountedEvidenceDir, `task8-${pairDiagnosticRunId}-push-settings-mounted-categories.png`) })
     }
-    cases.push('mounted push category rows measured at full-width >=48px label-left/switch-right geometry inside the phone viewport')
+    cases.push('mounted push categories render the real shell Switch (Show coding view identity/geometry) with 14px/20px labels and full-row touch targets')
     const enable = settings.getByRole('button', { name: 'Enable', exact: true })
     await enable.waitFor({ state: 'visible', timeout: CLIENT_TIMEOUT_MS })
     subscribeCallsBeforeEnable = await phone.evaluate(() => window.__dshPushSmokeCounts().subscribeCalls ?? 0)
@@ -1727,10 +1812,11 @@ async function runFullSmoke({ negativeControl = false, pairDiagnostic = false } 
     cases.push('paired Gateway rejected a same-origin mutation with an explicitly invalid CSRF token')
 
     // Persist one category through the actual Host registry route and re-read after a page reload.
-    const responseChoice = settings.locator('.dsh-mobile-push-categories label').filter({ hasText: 'Responses' }).locator('input')
+    // The toggle is the mounted native Switch itself, activated with a real touch tap.
+    const responseChoice = settings.getByRole('switch', { name: 'Responses', exact: true })
     await responseChoice.waitFor({ state: 'visible', timeout: CLIENT_TIMEOUT_MS })
-    assert.equal(await responseChoice.isChecked(), true)
-    await responseChoice.uncheck()
+    assert.equal(await responseChoice.getAttribute('aria-checked'), 'true', 'Responses category must start enabled before the tap')
+    await responseChoice.tap()
     await phone.waitForResponse(response => new URL(response.url()).pathname === '/mobile-access/push/preferences'
       && response.status() === 200, { timeout: CLIENT_TIMEOUT_MS })
     await phone.reload({ waitUntil: 'domcontentloaded' })
@@ -1755,10 +1841,84 @@ async function runFullSmoke({ negativeControl = false, pairDiagnostic = false } 
     await openMobileSettings(phone)
     const restoredSettings = phone.locator('.dsh-mobile-settings_row').filter({ has: phone.getByText('Web push notifications', { exact: true }) })
     await restoredSettings.waitFor({ state: 'visible', timeout: CLIENT_TIMEOUT_MS })
-    const restoredResponseChoice = restoredSettings.locator('.dsh-mobile-push-categories label').filter({ hasText: 'Responses' }).locator('input')
+    const restoredResponseChoice = restoredSettings.getByRole('switch', { name: 'Responses', exact: true })
     await restoredResponseChoice.waitFor({ state: 'visible', timeout: CLIENT_TIMEOUT_MS })
-    assert.equal(await restoredResponseChoice.isChecked(), false, 'Category preference did not persist in actual registry')
+    assert.equal(await restoredResponseChoice.getAttribute('aria-checked'), 'false', 'Category preference did not persist in actual registry')
     cases.push('category preference persisted through real preferences route and reloaded config')
+
+    // Native paint acceptance, matched-state only: the persisted Responses-off category
+    // gives a natural off state; the Show coding view reference toggle is compared in
+    // whatever state it is mounted in. The on state is compared against the shell's own
+    // public Switch rendered test-only from the captured module system into an isolated
+    // offscreen container — the same real component and stylesheet, zero Host mutation.
+    const nativePaintComparison = await phone.evaluate(async () => {
+      const modules = window.__pushSmokeModules
+      const group = document.querySelector('.dsh-mobile-push-categories')
+      const referenceSwitch = [...document.querySelectorAll('button[role="switch"]')]
+        .find(control => control.getAttribute('aria-label') === 'Show coding view') ?? null
+      if (modules === undefined || group === null || referenceSwitch === null) return { missing: true, hasModules: modules !== undefined, hasGroup: group !== null, hasReference: referenceSwitch !== null }
+      const paint = element => {
+        const style = getComputedStyle(element)
+        const thumb = element.querySelector('span')
+        const thumbStyle = thumb ? getComputedStyle(thumb) : null
+        return { trackClass: [...element.classList].find(name => /_switch_/u.test(name)) ?? null, background: style.backgroundColor,
+          thumbTransform: thumbStyle?.transform ?? null, thumbBackground: thumbStyle?.backgroundColor ?? null }
+      }
+      const categorySwitches = [...group.querySelectorAll('button[role="switch"]')]
+      const offCategory = categorySwitches.find(control => control.getAttribute('aria-checked') === 'false') ?? null
+      const onCategory = categorySwitches.find(control => control.getAttribute('aria-checked') === 'true') ?? null
+      const [react, reactDom, primitives] = await Promise.all([
+        modules.import('react'), modules.import('react-dom/client'), modules.import('@deepseek-ai/dsh-client-ui-primitives'),
+      ])
+      const container = document.createElement('div')
+      container.dataset.pushSmokeSwitchProof = 'true'
+      container.setAttribute('aria-hidden', 'true')
+      container.style.cssText = 'position:fixed;left:-9999px;top:0;'
+      document.body.append(container)
+      const root = reactDom.createRoot(container)
+      let proofOn = null, proofOff = null
+      try {
+        // A distinct key per state mounts a FRESH native control: the shell thumb animates
+        // its transform over .12s on state change, so reusing one node would read a
+        // mid-transition matrix. Static initial paint per state is what is compared.
+        const renderState = async checked => {
+          await new Promise(resolve => {
+            root.render(react.createElement(primitives.Switch, { key: checked ? 'push-smoke-proof-on' : 'push-smoke-proof-off',
+              checked, label: `push smoke native proof ${String(checked)}`, onChange: () => undefined }))
+            const settled = () => {
+              if (container.querySelector(`button[role="switch"][aria-checked="${String(checked)}"]`) !== null) resolve()
+              else requestAnimationFrame(settled)
+            }
+            requestAnimationFrame(settled)
+          })
+          const proof = container.querySelector('button[role="switch"]')
+          return proof === null ? null : paint(proof)
+        }
+        proofOn = await renderState(true)
+        proofOff = await renderState(false)
+      } finally {
+        root.unmount()
+        container.remove()
+      }
+      return { missing: false, referenceChecked: referenceSwitch.getAttribute('aria-checked'), reference: paint(referenceSwitch),
+        offCategory: offCategory === null ? null : paint(offCategory), onCategory: onCategory === null ? null : paint(onCategory), proofOn, proofOff }
+    })
+    assert.equal(nativePaintComparison.missing, false, 'Native paint comparison could not find the mounted switches or captured module system')
+    const samePaint = (a, b, what) => {
+      assert.ok(a !== null && b !== null, `${what}: missing switch to compare`)
+      assert.equal(a.trackClass, b.trackClass, `${what}: track class mismatch`)
+      assert.equal(a.background, b.background, `${what}: track background mismatch (${a.background} vs ${b.background})`)
+      assert.equal(a.thumbTransform, b.thumbTransform, `${what}: thumb transform mismatch`)
+      assert.equal(a.thumbBackground, b.thumbBackground, `${what}: thumb background mismatch`)
+    }
+    assert.ok(nativePaintComparison.proofOn !== null && nativePaintComparison.proofOff !== null, 'Test-only shell Switch render produced no measurable control')
+    assert.notEqual(nativePaintComparison.proofOn.background, nativePaintComparison.proofOff.background, 'Shell Switch on/off paint states are indistinguishable')
+    samePaint(nativePaintComparison.proofOn, nativePaintComparison.onCategory, 'on-state category switch vs shell Switch')
+    samePaint(nativePaintComparison.proofOff, nativePaintComparison.offCategory, 'off-state category switch vs shell Switch')
+    if (nativePaintComparison.referenceChecked === 'false') samePaint(nativePaintComparison.proofOff, nativePaintComparison.reference, 'off-state Show coding view reference vs shell Switch')
+    else if (nativePaintComparison.referenceChecked === 'true') samePaint(nativePaintComparison.proofOn, nativePaintComparison.reference, 'on-state Show coding view reference vs shell Switch')
+    else assert.fail(`Show coding view reference switch has unexpected aria-checked state ${String(nativePaintComparison.referenceChecked)}`)
+    cases.push('mounted category Switch paint matched the real shell Switch and Show coding view reference per aria-checked state')
 
     // WB-2: the REAL authenticated Test route is exercised end to end. One explicit UI click
     // POSTs /mobile-access/push/test; the packed default Sender delivers to the nonce-owned

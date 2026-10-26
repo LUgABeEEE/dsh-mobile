@@ -48,21 +48,18 @@ export const NATIVE_MOBILE_STYLES = `
  .dsh-mobile-settings_fontFamily > span { flex:1 1 100px; }
  .dsh-mobile-settings_fontFamily input { box-sizing:border-box; flex:1 1 180px; width:100%; min-width:0; min-height:48px; padding:8px 12px; border:0.5px solid var(--dsw-alias-border-l2); border-radius:10px; background:var(--dsw-alias-bg-module-platform); color:var(--dsw-alias-label-primary); font:inherit; }
  .dsh-mobile-settings_fontFamily input:focus-visible,.dsh-mobile-settings_fontDetails > summary:focus-visible { outline:2px solid var(--dsw-alias-label-primary-bluish,#2563eb); outline-offset:2px; }
- /* Push category rows: compact label-left / switch-right full-row targets.
-    The real checkbox keeps native keyboard/focus semantics; only its paint is
-    replaced. The switch rules outrank the broad settings input width:100%
-    rule below by specificity (0,2,1 vs 0,1,1) inside the overlay query, so
-    the global setting is never weakened. */
+ /* Push category rows: compact label-left / native-Switch-right rows. The control is
+    the actual public @deepseek-ai/dsh-client-ui-primitives Switch provided by the DSH
+    web shell: its track/thumb paint, dimensions, focus ring and motion are owned by
+    the shell stylesheet and are never re-created, resized or overridden here. Each
+    row is a label associated with its switch button, so the full 48px row remains
+    one tap target while the button keeps native keyboard semantics. Category names
+    match the General settings row title typography (14px/20px, regular weight). */
  .dsh-mobile-push-categories { display:flex; flex-direction:column; width:100%; margin:8px 0 4px; border-top:0.5px solid var(--dsw-alias-border-l2,#e8ebef); }
  .dsh-mobile-push-category { display:flex; align-items:center; justify-content:space-between; gap:12px; box-sizing:border-box; width:100%; min-height:48px; padding:6px 0; border-bottom:0.5px solid var(--dsw-alias-border-l2,#e8ebef); cursor:pointer; }
- .dsh-mobile-push-categoryName { flex:1 1 auto; min-width:0; color:var(--dsw-alias-label-primary,#171a21); font-size:inherit; line-height:1.45; overflow-wrap:anywhere; }
- .dsh-mobile-push-categories input.dsh-mobile-push-switch { appearance:none; -webkit-appearance:none; flex:0 0 auto; box-sizing:border-box; width:44px; min-width:44px; max-width:44px; height:26px; min-height:26px; margin:0; border:0; border-radius:999px; background-color:var(--dsw-alias-border-l2,#c9d3e0); background-image:radial-gradient(circle,#fff 0 8.5px,rgb(15 23 42 / 22%) 9px 10px,transparent 10.5px); background-repeat:no-repeat; background-size:20px 20px; background-position:4px center; transition:background-position 160ms var(--dsh-mobile-motion-ease,ease-out),background-color 160ms ease-out; cursor:pointer; }
- .dsh-mobile-push-categories input.dsh-mobile-push-switch:checked { background-color:var(--dsw-alias-label-primary-bluish,#2563eb); background-position:calc(100% - 4px) center; }
- .dsh-mobile-push-categories input.dsh-mobile-push-switch:focus-visible { outline:2px solid var(--dsw-alias-label-primary-bluish,#2563eb); outline-offset:2px; }
- .dsh-mobile-push-categories input.dsh-mobile-push-switch:disabled { opacity:.55; cursor:wait; }
+ .dsh-mobile-push-categoryName { flex:1 1 auto; min-width:0; color:var(--dsw-alias-label-primary,#171a21); font-size:14px; line-height:20px; font-weight:400; overflow-wrap:anywhere; }
  html.dsh-native-mobile-active [data-dsh-mobile-settings-header] { box-sizing:border-box !important; height:56px !important; min-height:56px !important; padding:4px 12px !important; }
  html.dsh-native-mobile-active [data-dsh-mobile-settings-header] [class*="_close"] { box-sizing:border-box !important; flex:none !important; width:48px !important; min-width:48px !important; height:48px !important; min-height:48px !important; }
- @media (prefers-reduced-motion:reduce) { .dsh-mobile-push-categories input.dsh-mobile-push-switch { transition:none; } }
  /* The mobile row replaces the Host-backed font control, not the theme selector. */
  html.dsh-native-mobile-active [data-slot="settings.general.item"]:has([data-mobile-font-setting]) > :not([data-mobile-font-setting])[class*="_row"]:has([class*="_control"] > [class*="_stepper"] > [class*="_arrows"]) { display:none !important; }
 @media ${NATIVE_MOBILE_OVERLAY_QUERY} {

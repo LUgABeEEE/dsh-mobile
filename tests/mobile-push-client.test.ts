@@ -1,4 +1,6 @@
 import { createHash, generateKeyPairSync } from 'node:crypto'
+import { createElement } from 'react'
+import type { ReactElement } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 vi.mock('react', async importOriginal => {
   const react = await importOriginal<typeof import('react')>()
@@ -10,6 +12,11 @@ import { createMobilePushBrowserApi } from '../src/mobile-push/browser-api.js'
 import { browserPushEnvironment, createMobilePushController, type MobilePushApiAdapter, type MobilePushEnvironment } from '../src/mobile-push/client.js'
 import type { PushConfig, PushEnrollment, PushEnrollmentResult, PushOwner, PushPreferences, PushSubscriptionData, VapidKeys } from '../src/mobile-push/contracts.js'
 import { MOBILE_PUSH_SETTINGS_COPY, MobilePushSettings } from '../src/mobile-push/settings.js'
+import { requirePublicMobilePushSwitch, type MobilePushSwitchProps } from '../src/mobile-push/switch-component.js'
+
+/** Stand-in sharing only the public Switch render signature; native rendering is proven by the strict packed smoke. */
+const publicSwitchProbe = (props: MobilePushSwitchProps): ReactElement =>
+  createElement('button', { type: 'button', role: 'switch', 'aria-checked': props.checked, 'aria-label': props.label })
 
 const preferences: PushPreferences = { question: true, plan: true, approval: true, response: true, goal: true, failure: true }
 const subscriptionData: PushSubscriptionData = { endpoint: 'https://push.example/sub', keys: { p256dh: 'p256dh', auth: 'auth' } }
@@ -102,10 +109,10 @@ describe('mobile push browser controller', () => {
     expect(enable?.props?.disabled).not.toBe(true)
   })
 
-  it.each(['en', 'zh', 'it'] as const)('renders six %s category switch rows with localized label-left text', locale => {
+  it.each(['en', 'zh', 'it'] as const)('renders six %s categories through the injected public Switch with localized labels left', locale => {
     const snapshot = { state: 'ready' as const, preferences }
     const controller = { subscribe: vi.fn(() => () => undefined), getSnapshot: () => snapshot, enableFromGesture: vi.fn(), disable: vi.fn(), updatePreferences: vi.fn(), sendTest: vi.fn(), start: vi.fn(), stop: vi.fn(), refresh: vi.fn() }
-    const row = MobilePushSettings({ controller, locale }) as unknown as { props: { children: unknown } }
+    const row = MobilePushSettings({ controller, locale, switchComponent: publicSwitchProbe }) as unknown as { props: { children: unknown } }
     const visit = (value: unknown): Array<{ type: unknown; props?: Record<string, unknown> }> => {
       if (Array.isArray(value)) return value.flatMap(visit)
       if (typeof value !== 'object' || value === null || !('type' in value)) return []
@@ -116,42 +123,43 @@ describe('mobile push browser controller', () => {
     const copy = MOBILE_PUSH_SETTINGS_COPY[locale]
     const categoryKeys = ['question', 'plan', 'approval', 'response', 'goal', 'failure'] as const
     type CategoryKey = (typeof categoryKeys)[number]
-    const rows = elements.filter(element => element.type === 'label' && String(element.props?.className).includes('dsh-mobile-push-category'))
+    const rows = elements.filter(element => element.type === 'label' && element.props?.className === 'dsh-mobile-push-category')
     expect(rows).toHaveLength(6)
-    rows.forEach((label, index) => {
+    rows.forEach((categoryRow, index) => {
       const key = categoryKeys[index] as CategoryKey
-      const children = Array.isArray(label.props?.children) ? label.props.children : [label.props?.children]
+      const children = Array.isArray(categoryRow.props?.children) ? categoryRow.props.children : [categoryRow.props?.children]
       const name = children.findIndex(child => (child as { props?: { className?: string } })?.props?.className === 'dsh-mobile-push-categoryName')
-      const input = children.findIndex(child => (child as { type?: string })?.type === 'input')
+      const control = children.findIndex(child => (child as { type?: unknown })?.type === publicSwitchProbe)
       expect(name).toBeGreaterThanOrEqual(0)
-      expect(input).toBeGreaterThanOrEqual(0)
-      expect(name).toBeLessThan(input)
+      expect(control).toBeGreaterThanOrEqual(0)
+      expect(name).toBeLessThan(control)
       expect((children[name] as { props?: { children?: unknown } }).props?.children).toBe(copy.categories[index])
-      expect((children[input] as { props?: Record<string, unknown> }).props).toMatchObject({ type: 'checkbox', role: 'switch', checked: preferences[key] })
-      expect(String((children[input] as { props?: { className?: string } }).props?.className)).toContain('dsh-mobile-push-switch')
+      const switchProps = (children[control] as { props?: Record<string, unknown> }).props
+      expect(switchProps).toMatchObject({ checked: preferences[key], label: copy.categories[index] })
+      expect(switchProps?.onChange).toBeTypeOf('function')
     })
+    expect(elements.some(element => element.type === 'input')).toBe(false)
   })
 
-  it('sends exactly one guarded update per category switch change and preserves the other five', () => {
+  it('sends exactly one guarded update per public Switch boolean change and preserves the other five', () => {
     const snapshot = { state: 'ready' as const, preferences }
     const controller = { subscribe: vi.fn(() => () => undefined), getSnapshot: () => snapshot, enableFromGesture: vi.fn(), disable: vi.fn(), updatePreferences: vi.fn(), sendTest: vi.fn(), start: vi.fn(), stop: vi.fn(), refresh: vi.fn() }
-    const row = MobilePushSettings({ controller, locale: 'en' }) as unknown as { props: { children: unknown } }
+    const row = MobilePushSettings({ controller, locale: 'en', switchComponent: publicSwitchProbe }) as unknown as { props: { children: unknown } }
     const visit = (value: unknown): Array<{ type: unknown; props?: Record<string, unknown> }> => {
       if (Array.isArray(value)) return value.flatMap(visit)
       if (typeof value !== 'object' || value === null || !('type' in value)) return []
       const element = value as { type: unknown; props?: Record<string, unknown> }
       return [element, ...visit(element.props?.children)]
     }
-    const labels = visit(row).filter(element => element.type === 'label' && String(element.props?.className).includes('dsh-mobile-push-category'))
-    expect(labels).toHaveLength(6)
+    const controls = visit(row).filter(element => element.type === publicSwitchProbe)
+    expect(controls).toHaveLength(6)
     const categoryKeys = ['question', 'plan', 'approval', 'response', 'goal', 'failure'] as const
     type CategoryKey = (typeof categoryKeys)[number]
-    labels.forEach((label, index) => {
+    controls.forEach((control, index) => {
       const key = categoryKeys[index] as CategoryKey
-      const children = Array.isArray(label.props?.children) ? label.props.children : [label.props?.children]
-      const input = children.find(child => (child as { type?: string })?.type === 'input') as { props?: { onChange?: (event: { currentTarget: { checked: boolean } }) => void } } | undefined
-      expect(input?.props?.onChange).toBeTypeOf('function')
-      input?.props?.onChange?.({ currentTarget: { checked: !preferences[key] } })
+      const onChange = control.props?.onChange as (next: boolean) => void
+      expect(onChange).toBeTypeOf('function')
+      onChange(!preferences[key])
       expect(controller.updatePreferences).toHaveBeenLastCalledWith({ ...preferences, [key]: !preferences[key] })
     })
     expect(controller.updatePreferences).toHaveBeenCalledTimes(6)
@@ -160,10 +168,26 @@ describe('mobile push browser controller', () => {
   it('renders category switches without requesting any controller action', () => {
     const snapshot = { state: 'ready' as const, preferences }
     const controller = { subscribe: vi.fn(() => () => undefined), getSnapshot: () => snapshot, enableFromGesture: vi.fn(), disable: vi.fn(), updatePreferences: vi.fn(), sendTest: vi.fn(), start: vi.fn(), stop: vi.fn(), refresh: vi.fn() }
-    MobilePushSettings({ controller, locale: 'en' })
+    MobilePushSettings({ controller, locale: 'en', switchComponent: publicSwitchProbe })
     for (const action of [controller.enableFromGesture, controller.disable, controller.updatePreferences, controller.sendTest, controller.start, controller.stop, controller.refresh]) {
       expect(action).not.toHaveBeenCalled()
     }
+  })
+
+  it('withdraws category controls when no public Switch component can be resolved', () => {
+    const snapshot = { state: 'ready' as const, preferences }
+    const controller = { subscribe: vi.fn(() => () => undefined), getSnapshot: () => snapshot, enableFromGesture: vi.fn(), disable: vi.fn(), updatePreferences: vi.fn(), sendTest: vi.fn(), start: vi.fn(), stop: vi.fn(), refresh: vi.fn() }
+    expect(requirePublicMobilePushSwitch()).toBeUndefined()
+    const row = MobilePushSettings({ controller, locale: 'en' }) as unknown as { props: { children: unknown } }
+    const visit = (value: unknown): Array<{ type: unknown; props?: Record<string, unknown> }> => {
+      if (Array.isArray(value)) return value.flatMap(visit)
+      if (typeof value !== 'object' || value === null || !('type' in value)) return []
+      const element = value as { type: unknown; props?: Record<string, unknown> }
+      return [element, ...visit(element.props?.children)]
+    }
+    const elements = visit(row)
+    expect(elements.some(element => String(element.props?.className ?? '').includes('dsh-mobile-push-categories'))).toBe(false)
+    expect(elements.some(element => element.type === 'button' && element.props?.children === 'Enable')).toBe(true)
   })
 
   it('provides localized action copy in English, Chinese and Italian', () => {

@@ -97,7 +97,10 @@ export default defineConfig([{
   dts: false,
   sourcemap: true,
   clean: false,
-  deps: { neverBundle: ['react'], alwaysBundle: [/^@noble\/hashes(?:\/|$)/u] },
+  // react stays external as the loader-provided React; the primitives module is the
+  // DSH web shell's seeded public Switch provider, required lazily at push-category
+  // render time and resolved by the module-loader factory require, never bundled.
+  deps: { neverBundle: ['react', '@deepseek-ai/dsh-client-ui-primitives'], alwaysBundle: [/^@noble\/hashes(?:\/|$)/u] },
   outputOptions: {
     entryFileNames: 'client.js',
     banner: 'window.__ModuleLoader__.load({ id: "dsh-mobile", factory: (require) => {',

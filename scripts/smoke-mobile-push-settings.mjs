@@ -6,12 +6,20 @@
  * NATIVE_MOBILE_STYLES stylesheet and the repository's declared React and
  * react-dom test dependencies (aliased to one React copy at bundle time),
  * serves the result on an allocated loopback port, and measures actual
- * Chromium geometry and interaction behavior for the six category rows.
+ * Chromium geometry, semantics and interaction behavior for the six category rows.
+ *
+ * The category controls are rendered through the component's public Switch seam
+ * using a fixture-owned stand-in that mirrors only the public DOM contract
+ * (button[type=button][role=switch][aria-checked][aria-label]). It proves
+ * wiring, row layout, typography and one-key updates — never native paint:
+ * the strict packed smoke is the rendering authority and compares the real
+ * @deepseek-ai/dsh-client-ui-primitives Switch with the mounted
+ * "Show coding view" control on the same page.
  *
  * No DSH runtime, push provider, service worker, permission prompt or user
- * profile is involved: the only double is the controller prop the component
- * itself consumes, and every controller/environment effect is recorded and
- * asserted to stay empty across render.
+ * profile is involved: the only doubles are the controller prop and the Switch
+ * stand-in the component consumes, and every controller/environment effect is
+ * recorded and asserted to stay empty across render.
  *
  * Usage: node scripts/smoke-mobile-push-settings.mjs [--evidence-dir <dir>]
  * Env: DSH_PUSH_SETTINGS_REACT_DOM=<absolute react-dom package dir> overrides
@@ -103,6 +111,13 @@ const controller = {
 document.getElementById('owning-styles').textContent = NATIVE_MOBILE_STYLES
 const mount = document.querySelector('[data-slot="settings.general.item"]') as HTMLElement
 const rootElement = createRoot(mount)
+// Fixture stand-in for the shell-provided public Switch: public DOM semantics only
+// (button[type=button][role=switch][aria-checked][aria-label] + thumb span), injected
+// through the component's switchComponent seam. Native paint/dimensions are the
+// strict packed smoke's authority; this fixture asserts wiring, layout and updates.
+const publicSwitchStandIn = (props: { checked: boolean; label: string; onChange: (next: boolean) => void }) =>
+  createElement('button', { type: 'button', role: 'switch', 'aria-checked': props.checked, 'aria-label': props.label, className: 'dsh-mobile-push-fixture-switch', onClick: () => { props.onChange(!props.checked) } },
+    createElement('span', { className: 'dsh-mobile-push-fixture-thumb' }))
 const painted = async (): Promise<number> => {
   await new Promise(resolve => { requestAnimationFrame(() => { requestAnimationFrame(resolve) }) })
   return performance.now()
@@ -111,7 +126,7 @@ const fixture = {
   basePreferences: { question: true, plan: true, approval: false, response: true, goal: false, failure: true },
   render(options: { locale: 'en' | 'zh' | 'it'; state: string; preferences: FixturePreferences | null }): Promise<number> {
     snapshot = { state: options.state, preferences: options.preferences ? { ...options.preferences } : undefined }
-    rootElement.render(createElement(MobilePushSettings, { controller, locale: options.locale }))
+    rootElement.render(createElement(MobilePushSettings, { controller, locale: options.locale, switchComponent: publicSwitchStandIn }))
     return painted()
   },
 }
@@ -155,6 +170,11 @@ html.fixture-dark body { background:#12161d; }
 body { margin:0; font-family:system-ui,-apple-system,'PingFang SC',sans-serif; }
 #fixture-root { box-sizing:border-box; width:100%; padding:8px; }
 html.fixture-large-text #fixture-root { font-size:20px; }
+/* Fixture-owned layout-only stand-in styling; sized like the public control so row
+   geometry is realistic. It is deliberately never asserted as native paint — the
+   strict packed smoke owns native rendering evidence. */
+.dsh-mobile-push-fixture-switch { flex:0 0 auto; box-sizing:border-box; width:36px; height:20px; padding:2px; border:0; border-radius:999px; background:#9aa4b1; cursor:pointer; }
+.dsh-mobile-push-fixture-thumb { display:block; width:16px; height:16px; border-radius:50%; background:#fff; }
 </style>
 <style id="owning-styles"></style>
 </head>
@@ -185,39 +205,43 @@ const geometryProbe = `(() => {
   const group = document.querySelector('.dsh-mobile-push-categories')
   if (!group) return { missing: true }
   const groupRect = group.getBoundingClientRect()
-  const rows = [...group.querySelectorAll('label')].map(label => {
-    const input = label.querySelector('input')
-    const text = label.querySelector('.dsh-mobile-push-categoryName') ?? label.firstChild
-    const l = label.getBoundingClientRect(), i = input.getBoundingClientRect(), t = text.getBoundingClientRect()
-    const cs = getComputedStyle(input)
-    return { labelHeight: l.height, labelWidth: l.width, labelLeft: l.left, labelRight: l.right, labelTop: l.top, labelBottom: l.bottom,
-      inputWidth: i.width, inputHeight: i.height, inputLeft: i.left, inputRight: i.right, inputTop: i.top, inputBottom: i.bottom,
-      textLeft: t.left, textRight: t.right, appearance: cs.appearance, inputChecked: input.checked }
+  const rows = [...group.querySelectorAll('.dsh-mobile-push-category')].map(row => {
+    const control = row.querySelector('button[role="switch"]')
+    if (!control) return { missingControl: true }
+    const text = row.querySelector('.dsh-mobile-push-categoryName')
+    const l = row.getBoundingClientRect(), c = control.getBoundingClientRect(), t = text.getBoundingClientRect()
+    const cs = getComputedStyle(text)
+    return { rowHeight: l.height, rowWidth: l.width, rowLeft: l.left, rowRight: l.right, rowTop: l.top, rowBottom: l.bottom,
+      controlWidth: c.width, controlHeight: c.height, controlLeft: c.left, controlRight: c.right, controlTop: c.top, controlBottom: c.bottom,
+      textLeft: t.left, textRight: t.right, fontSize: cs.fontSize, lineHeight: cs.lineHeight, fontWeight: cs.fontWeight,
+      switchType: control.getAttribute('type'), switchRole: control.getAttribute('role'), switchChecked: control.getAttribute('aria-checked'),
+      switchLabel: control.getAttribute('aria-label'), hasThumb: control.querySelector('span') !== null }
   })
   return { missing: false, rows, groupLeft: groupRect.left, groupRight: groupRect.right, groupBottom: groupRect.bottom,
-    groupScrollOverflow: group.scrollWidth - group.clientWidth,
+    groupScrollOverflow: group.scrollWidth - group.clientWidth, paintedInputs: group.querySelectorAll('input').length,
     actionsTop: document.querySelector('.dsh-mobile-push-actions')?.getBoundingClientRect().top ?? null,
     docScrollWidth: document.scrollingElement.scrollWidth, viewportWidth: document.documentElement.clientWidth,
-    firstLabelText: document.querySelector('.dsh-mobile-push-categories label')?.textContent ?? null }
+    firstLabelText: document.querySelector('.dsh-mobile-push-categoryName')?.textContent ?? null }
 })()`
 
 async function assertGeometry(page, caseName) {
   const metrics = await page.evaluate(geometryProbe)
   if (!check(caseName, 'category group renders', metrics.missing !== true, metrics.missing ? 'no .dsh-mobile-push-categories element' : 'present')) return null
   check(caseName, 'six category rows', metrics.rows.length === 6, `rows=${metrics.rows.length}`)
+  check(caseName, 'no painted input controls remain', metrics.paintedInputs === 0, `inputs=${metrics.paintedInputs}`)
   const available = metrics.groupRight - metrics.groupLeft
-  const widths = metrics.rows.map(row => row.inputWidth)
-  check(caseName, 'switch widths consistent', Math.max(...widths) - Math.min(...widths) <= 1, `spread=${Math.max(...widths) - Math.min(...widths)}`)
   for (const [index, row] of metrics.rows.entries()) {
     const rowName = `row ${index} (${categoryKeys[index]})`
-    check(caseName, `${rowName} min 48px full-row target`, row.labelHeight >= 47.5, `height=${row.labelHeight}`)
-    check(caseName, `${rowName} fills available width`, Math.abs(row.labelWidth - available) <= 1.5, `width=${row.labelWidth} available=${available}`)
-    check(caseName, `${rowName} switch on same row`, row.inputTop >= row.labelTop - 1 && row.inputBottom <= row.labelBottom + 1, `input=${row.inputTop}..${row.inputBottom} label=${row.labelTop}..${row.labelBottom}`)
-    check(caseName, `${rowName} label left of switch`, row.textLeft >= row.labelLeft - 1 && row.textRight <= row.inputLeft - 2, `textRight=${row.textRight} inputLeft=${row.inputLeft}`)
-    check(caseName, `${rowName} switch right-aligned`, row.labelRight - row.inputRight <= 1.5, `gap=${row.labelRight - row.inputRight}`)
-    check(caseName, `${rowName} switch fixed size`, row.inputWidth >= 40 && row.inputWidth <= 52 && row.inputHeight >= 24 && row.inputHeight <= 32, `${row.inputWidth}x${row.inputHeight}`)
-    check(caseName, `${rowName} switch not stretched`, row.inputWidth < row.labelWidth / 2, `input=${row.inputWidth} label=${row.labelWidth}`)
-    check(caseName, `${rowName} native appearance replaced`, row.appearance === 'none', `appearance=${row.appearance}`)
+    check(caseName, `${rowName} has a Switch control`, row.missingControl !== true, 'no button[role=switch] in row')
+    if (row.missingControl === true) continue
+    check(caseName, `${rowName} min 48px row height`, row.rowHeight >= 47.5, `height=${row.rowHeight}`)
+    check(caseName, `${rowName} fills available width`, Math.abs(row.rowWidth - available) <= 1.5, `width=${row.rowWidth} available=${available}`)
+    check(caseName, `${rowName} switch on same row`, row.controlTop >= row.rowTop - 1 && row.controlBottom <= row.rowBottom + 1, `control=${row.controlTop}..${row.controlBottom} row=${row.rowTop}..${row.rowBottom}`)
+    check(caseName, `${rowName} label left of switch`, row.textLeft >= row.rowLeft - 1 && row.textRight <= row.controlLeft - 2, `textRight=${row.textRight} controlLeft=${row.controlLeft}`)
+    check(caseName, `${rowName} switch right-aligned`, row.rowRight - row.controlRight <= 1.5, `gap=${row.rowRight - row.controlRight}`)
+    check(caseName, `${rowName} switch not stretched`, row.controlWidth > 0 && row.controlWidth < row.rowWidth / 2, `control=${row.controlWidth} row=${row.rowWidth}`)
+    check(caseName, `${rowName} label 14px/20px regular weight`, row.fontSize === '14px' && row.lineHeight === '20px' && row.fontWeight === '400', `${row.fontSize}/${row.lineHeight}/${row.fontWeight}`)
+    check(caseName, `${rowName} public Switch DOM semantics`, row.switchType === 'button' && row.switchRole === 'switch' && (row.switchChecked === 'true' || row.switchChecked === 'false') && typeof row.switchLabel === 'string' && row.switchLabel.length > 0 && row.hasThumb === true, JSON.stringify({ type: row.switchType, role: row.switchRole, checked: row.switchChecked, label: row.switchLabel, hasThumb: row.hasThumb }))
   }
   check(caseName, 'no group horizontal overflow', metrics.groupScrollOverflow <= 1, `overflow=${metrics.groupScrollOverflow}`)
   check(caseName, 'no document horizontal overflow', metrics.docScrollWidth <= metrics.viewportWidth + 1, `scroll=${metrics.docScrollWidth} viewport=${metrics.viewportWidth}`)
@@ -273,64 +297,60 @@ try {
         document.documentElement.classList.toggle('fixture-large-text', configuration.largeText)
       }, { dark: testCase.dark, largeText: testCase.largeText })
       await page.evaluate(locale => window.__pushSettingsFixture.render({ locale, state: 'ready', preferences: { ...window.__pushSettingsFixture.basePreferences } }), testCase.locale)
-      await page.waitForFunction(() => document.querySelectorAll('.dsh-mobile-push-categories label').length === 6, undefined, { timeout: 10_000 })
+      await page.waitForFunction(() => document.querySelectorAll('.dsh-mobile-push-categories .dsh-mobile-push-category').length === 6, undefined, { timeout: 10_000 })
       const metrics = await assertGeometry(page, caseName)
       if (metrics) metricsLog.push({ case: caseName, metrics })
       check(caseName, 'localized first label', (metrics?.firstLabelText ?? '').startsWith(localizedFirstLabels[testCase.locale]), `label=${metrics?.firstLabelText}`)
 
       if (testCase.reducedMotion === 'reduce') {
-        check(caseName, 'reduced motion honored', await page.evaluate(() => matchMedia('(prefers-reduced-motion: reduce)').matches
-          && [...document.querySelectorAll('.dsh-mobile-push-categories input')].every(input => getComputedStyle(input).transitionDuration === '0s')), 'switch transition disabled under prefers-reduced-motion')
+        // Rendering stability under reduced motion is covered by the geometry checks above;
+        // Switch transition paint is owned by the DSH shell, not this fixture.
+        check(caseName, 'reduced motion honored', await page.evaluate(() => matchMedia('(prefers-reduced-motion: reduce)').matches), 'page did not report prefers-reduced-motion')
       }
 
       if (testCase.behavior) {
-        const labels = page.locator('.dsh-mobile-push-categories label')
-        // Full-row tap: clicking the far-left text area of the label toggles only that category.
-        await labels.nth(2).click({ position: { x: 6, y: 10 } })
+        const rows = page.locator('.dsh-mobile-push-categories label')
+        const switches = page.locator('.dsh-mobile-push-categories button[role="switch"]')
+        const switchCount = await switches.count()
+        if (!check(caseName, 'six public Switch controls rendered', switchCount === 6, `switches=${switchCount}`)) {
+          console.error(`PUSH SETTINGS FIXTURE: FAIL (${failures.length} assertion${failures.length === 1 ? '' : 's'}; later cases skipped)`)
+          for (const failure of failures) console.error(`  - ${failure}`)
+          throw new Error(`${caseName}: cannot exercise Switch interactions: ${switchCount} button[role=switch] controls (assertion failures above)`)
+        }
+        // Full-row tap: the label row is associated with its native switch button, so clicking
+        // the far-left text area of the row toggles only that category.
+        await rows.nth(2).click({ position: { x: 6, y: 10 } })
         await page.waitForFunction(() => window.__pushSettingsEvents.length >= 1, undefined, { timeout: 5_000 })
-        // Direct input click toggles exactly one more category.
-        await page.locator('.dsh-mobile-push-categories label input').nth(3).click()
+        // Direct switch click toggles exactly one more category.
+        await switches.nth(3).click()
         await page.waitForFunction(() => window.__pushSettingsEvents.length >= 2, undefined, { timeout: 5_000 })
         // Keyboard: tap neutral page space first (a real user gesture that resets the
         // sequential focus starting point), then Tab deterministically reaches the
-        // first switch and Space toggles it.
+        // first switch button and Space activates it (native button semantics).
         await page.mouse.click(4, 4)
         await page.keyboard.press('Tab')
         const focusEvidence = await page.evaluate(() => {
-          const input = document.activeElement
-          if (input?.tagName !== 'INPUT') return { focused: false }
-          const cs = getComputedStyle(input)
-          return { focused: true, first: input === document.querySelector('.dsh-mobile-push-categories label input'),
-            outlineStyle: cs.outlineStyle, outlineWidth: cs.outlineWidth, outlineColor: cs.outlineColor }
+          const control = document.activeElement
+          if (control?.tagName !== 'BUTTON' || control.getAttribute('role') !== 'switch') return { focused: false }
+          return { focused: true, first: control === document.querySelector('.dsh-mobile-push-categories button[role="switch"]'),
+            label: control.getAttribute('aria-label'), type: control.getAttribute('type') }
         })
         check(caseName, 'keyboard focus reaches the first category switch', focusEvidence.focused === true && focusEvidence.first === true, JSON.stringify(focusEvidence))
-        check(caseName, 'visible focus ring on switch', focusEvidence.outlineStyle === 'solid' && parseFloat(focusEvidence.outlineWidth) >= 1.5,
-          `${focusEvidence.outlineStyle} ${focusEvidence.outlineWidth}`)
+        check(caseName, 'focused switch keeps native button semantics', focusEvidence.type === 'button', JSON.stringify(focusEvidence))
         await page.keyboard.press('Space')
         await page.waitForFunction(() => window.__pushSettingsEvents.length >= 3, undefined, { timeout: 5_000 })
-        // The switch paint transitions over 160ms; the observable end state is the
-        // on/off background difference itself, so wait for that (bounded), not a sleep.
         await page.waitForFunction(() => {
-          const inputs = [...document.querySelectorAll('.dsh-mobile-push-categories label input')]
-          const on = inputs.find(input => input.checked), off = inputs.find(input => !input.checked)
-          return on !== undefined && off !== undefined && getComputedStyle(on).backgroundColor !== getComputedStyle(off).backgroundColor
+          const controls = [...document.querySelectorAll('.dsh-mobile-push-categories button[role="switch"]')]
+          const on = controls.find(control => control.getAttribute('aria-checked') === 'true')
+          const off = controls.find(control => control.getAttribute('aria-checked') === 'false')
+          return on !== undefined && off !== undefined
         }, undefined, { timeout: 3_000 })
 
         const behavior = await page.evaluate(() => {
           const events = window.__pushSettingsEvents
-          const inputs = [...document.querySelectorAll('.dsh-mobile-push-categories label input')]
-          const probe = inputs[0]
-          const enabledOpacity = getComputedStyle(probe).opacity
-          probe.disabled = true
-          const disabledOpacity = getComputedStyle(probe).opacity
-          probe.disabled = false
-          const checked = inputs.find(input => input.checked)
-          const unchecked = inputs.find(input => !input.checked)
-          const checkedStyle = checked ? getComputedStyle(checked) : null
-          const uncheckedStyle = unchecked ? getComputedStyle(unchecked) : null
-          return { events: events.slice(), checkedStates: inputs.map(input => input.checked), disabledOpacity, enabledOpacity,
-            onBackground: checkedStyle ? `${checkedStyle.backgroundColor}|${checkedStyle.backgroundImage}` : null,
-            offBackground: uncheckedStyle ? `${uncheckedStyle.backgroundColor}|${uncheckedStyle.backgroundImage}` : null,
+          const controls = [...document.querySelectorAll('.dsh-mobile-push-categories button[role="switch"]')]
+          return { events: events.slice(), checkedStates: controls.map(control => control.getAttribute('aria-checked')),
+            labels: controls.map(control => control.getAttribute('aria-label')),
             env: window.__pushSettingsEnvCounts() }
         })
         // Each update carries the full preferences object with exactly one key flipped
@@ -340,14 +360,12 @@ try {
         const afterQuestion = { ...afterResponse, question: false }
         check(caseName, 'exactly three preference updates', behavior.events.length === 3, `events=${behavior.events.length}`)
         check(caseName, 'approval toggled alone by full-row tap', JSON.stringify(behavior.events[0]?.value) === JSON.stringify(afterApproval), JSON.stringify(behavior.events[0]?.value))
-        check(caseName, 'response toggled alone by input click', JSON.stringify(behavior.events[1]?.value) === JSON.stringify(afterResponse), JSON.stringify(behavior.events[1]?.value))
+        check(caseName, 'response toggled alone by switch click', JSON.stringify(behavior.events[1]?.value) === JSON.stringify(afterResponse), JSON.stringify(behavior.events[1]?.value))
         check(caseName, 'question toggled alone by Space', JSON.stringify(behavior.events[2]?.value) === JSON.stringify(afterQuestion), JSON.stringify(behavior.events[2]?.value))
-        check(caseName, 'final checked values match updates', JSON.stringify(behavior.checkedStates) === JSON.stringify(categoryKeys.map(key => afterQuestion[key])), JSON.stringify(behavior.checkedStates))
+        check(caseName, 'final aria-checked states match updates', JSON.stringify(behavior.checkedStates) === JSON.stringify(categoryKeys.map(key => String(afterQuestion[key]))), JSON.stringify(behavior.checkedStates))
+        check(caseName, 'switch accessible names stay localized', JSON.stringify(behavior.labels.slice(0, 1)) === JSON.stringify([localizedFirstLabels[testCase.locale]]), JSON.stringify(behavior.labels))
         check(caseName, 'no controller action beyond the three updates', behavior.events.every(event => event.kind === 'updatePreferences'), JSON.stringify(behavior.events.map(event => event.kind)))
         check(caseName, 'no permission request or subscription', behavior.env.notificationRequestPermission === 0 && behavior.env.serviceWorkerRegister === 0 && behavior.env.spyErrors.length === 0, JSON.stringify(behavior.env))
-        check(caseName, 'on/off switch states visibly differ', behavior.onBackground !== null && behavior.onBackground !== behavior.offBackground, `${behavior.onBackground} vs ${behavior.offBackground}`)
-        check(caseName, 'switch knob visible', (behavior.onBackground ?? '').includes('gradient') || (behavior.offBackground ?? '').includes('gradient'), String(behavior.offBackground))
-        check(caseName, 'disabled switch state styled', parseFloat(behavior.disabledOpacity) < 1 && parseFloat(behavior.enabledOpacity) === 1, `${behavior.enabledOpacity} -> ${behavior.disabledOpacity}`)
       }
 
       if (testCase.screenshot && evidenceDir) {
