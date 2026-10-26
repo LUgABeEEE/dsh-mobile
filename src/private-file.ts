@@ -1,5 +1,5 @@
-import { chmod } from 'node:fs/promises'
-import { win32 } from 'node:path'
+import { chmod, lstat, readdir } from 'node:fs/promises'
+import { join, win32 } from 'node:path'
 import { performance } from 'node:perf_hooks'
 import { execFileText as execFile } from './exec-file.js'
 
@@ -105,4 +105,42 @@ export async function restrictPrivateFile(file: string, mode = 0o600): Promise<v
     '*S-1-5-11',
     '*S-1-5-32-545',
   ], { encoding: 'utf8', windowsHide: true, timeout: 10_000 }))
+}
+
+/**
+ * Restrict a plugin-owned private directory (and what already sits inside it)
+ * so a strict native consumer can verify every ancestor and the leaf itself.
+ * Inheritance is disabled and re-granted to the current user, SYSTEM and
+ * administrators only; future children inherit the same compliant entries.
+ * Reparse points are never followed: a linked child is left alone and fails
+ * closed downstream instead of being repaired here.
+ */
+export async function restrictPrivateDirectory(directory: string): Promise<void> {
+  await chmod(directory, 0o700)
+  const entry = await lstat(directory)
+  if (!entry.isDirectory() || entry.isSymbolicLink()) {
+    throw Object.assign(new Error('private directory is not a real directory'), { code: 'PRIVATE_DIRECTORY_INVALID' })
+  }
+  if (process.platform !== 'win32') return
+  const userSid = await currentWindowsUserSid()
+  const apply = (target: string): Promise<unknown> => permissionOperation('acl-apply', () => execFile(windowsSystemTool('icacls.exe'), [
+    target,
+    '/inheritance:r',
+    '/grant:r',
+    `*${userSid}:(OI)(CI)(F)`,
+    '*S-1-5-18:(OI)(CI)(F)',
+    '*S-1-5-32-544:(OI)(CI)(F)',
+    '/remove:g',
+    '*S-1-1-0',
+    '*S-1-5-11',
+    '*S-1-5-32-545',
+  ], { encoding: 'utf8', windowsHide: true, timeout: 10_000 }))
+  await apply(directory)
+  for (const name of await readdir(directory)) {
+    const child = join(directory, name)
+    const info = await lstat(child)
+    if (info.isSymbolicLink()) continue
+    if (info.isDirectory()) await restrictPrivateDirectory(child)
+    else if (info.isFile()) await restrictPrivateFile(child)
+  }
 }

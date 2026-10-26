@@ -85,8 +85,7 @@ describe('connection diagnostics', () => {
     expect(result.report).not.toContain('private-name')
   })
 
-  it('reports only origin backend readiness and never probes user-managed public ingress', async () => {
-    const remote = vi.fn(async () => ({ state: 'ready' as const, latencyMs: 1 }))
+  it('reports only origin backend readiness and never probes user-managed public ingress', async () => {    const remote = vi.fn(async () => ({ state: 'ready' as const, latencyMs: 1 }))
     const result = await collectConnectionDiagnostics({
       ...healthy,
       remote: { provider: 'origin', running: true, state: 'ready', origin: 'https://phone.example.com:8815' },
@@ -98,6 +97,22 @@ describe('connection diagnostics', () => {
     const check = result.checks.find(entry => entry.id === 'remote')!
     expect(check.detail + check.action).toContain('HTTPS')
     expect(check.detail + check.action).toContain('WebSocket')
+    expect(result.checks.some(entry => entry.reason === 'remote-ready')).toBe(false)
+  })
+
+  it('reports iroh readiness without probing its loopback identity origin', async () => {
+    const endpoint = '0'.repeat(64)
+    const origin = `https://${endpoint.slice(0, 32)}.${endpoint.slice(32)}.iroh.localhost:25443`
+    const remote = vi.fn(async () => ({ state: 'ready' as const, latencyMs: 1 }))
+    const result = await collectConnectionDiagnostics({
+      ...healthy,
+      remote: { provider: 'iroh', running: true, state: 'ready', origin },
+    }, { firewall: async () => ({ state: 'ready' }), remote })
+    expect(remote).not.toHaveBeenCalled()
+    expect(result.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'remote', status: 'info', reason: 'remote-iroh-ready', facts: { provider: 'iroh' } }),
+    ]))
+    expect(result.report).not.toContain(endpoint)
     expect(result.checks.some(entry => entry.reason === 'remote-ready')).toBe(false)
   })
 

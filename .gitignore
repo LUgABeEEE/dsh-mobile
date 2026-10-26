@@ -27,3 +27,6 @@ apps/mobile/store/ios/
 tmp-dsh-web.log
 tmp-dsh-web.err.log
 /Temp/
+# Shared Rust workspace output (native/*/target is per-invocation state).
+/target/
+native/target/

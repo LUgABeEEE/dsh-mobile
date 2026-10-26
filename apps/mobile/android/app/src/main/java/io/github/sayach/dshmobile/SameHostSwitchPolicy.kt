@@ -11,7 +11,9 @@ internal enum class SameHostSwitchMode {
 
 /** Grouping never changes an endpoint's own token, Origin, instance pin or CA. */
 internal object SameHostSwitchPolicy {
-    fun eligible(row: PairedDeviceRecord, now: Long): Boolean = row.expiresAt > now &&
+    // iroh rows stay out: their carrier lifecycle is owned by the iroh transport,
+    // and independently paired endpoints must not auto-migrate between transports.
+    fun eligible(row: PairedDeviceRecord, now: Long): Boolean = row.iroh == null && row.expiresAt > now &&
         row.status !in setOf(PairedDeviceStatus.REVOKED, PairedDeviceStatus.EXPIRED, PairedDeviceStatus.ADDRESS_CHANGED)
 
     fun candidate(current: PairedDeviceRecord, rows: List<PairedDeviceRecord>, mode: AccessMode, now: Long): PairedDeviceRecord? {

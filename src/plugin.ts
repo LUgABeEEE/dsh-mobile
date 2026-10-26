@@ -1,4 +1,5 @@
 import type { Context } from '@deepseek-ai/cordis'
+import * as QRCode from 'qrcode'
 import { assertManagedParents } from './managed-files.js'
 import { boundContextSummary, createUserMessage } from '@deepseek-ai/dsh-llm/message'
 declare module '@deepseek-ai/dsh-llm' {
@@ -19,6 +20,7 @@ import { createRequire } from 'node:module'
 import { X509Certificate } from 'node:crypto'
 import { copyFile, lstat, readFile, rm } from 'node:fs/promises'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { parseControlFile, parseGatewayConfig, type PluginConfig, type ResolvedGatewayConfig } from './config.js'
 import { collectConnectionDiagnostics, hasCompetingRemoteChannelBoot } from './diagnostics.js'
 import { buildMobileGuide, type MobileGuideState } from './mobile-guide.js'
@@ -46,6 +48,9 @@ import {
 import { JsonDeviceStore } from './storage.js'
 import { BlockedUpgradePathLog, WebSocketPathStore } from './websocket-paths.js'
 import { FunnelController, funnelExecutable } from './funnel.js'
+import { IrohComponentManager, type IrohComponentStatus } from './iroh-component.js'
+import { IrohController } from './iroh.js'
+import { ensureIrohTls, irohGatewayConfig, irohTlsPaths } from './iroh-tls.js'
 import { CpolarController } from './cpolar.js'
 import { CpolarComponentManager, type CpolarComponentStatus } from './cpolar-component.js'
 import { CloudflaredComponentManager, type CloudflaredComponentStatus } from './cloudflared-component.js'
@@ -199,6 +204,11 @@ function mapAdminError(error: unknown): HttpError {
   // all map to 409 here, while a reachable plaintext vhost keeps the upstream
   // `frp_vhost_publicly_reachable` / `frp_vhost_probe_failed` codes.
   if (error instanceof Error && error.message.startsWith('frp_')) {
+    return new HttpError(409, error.message)
+  }
+  // Component download and hash failures carry their own stable code, so the
+  // panel can show why an install failed instead of a generic server error.
+  if (error instanceof Error && error.message.startsWith('iroh_')) {
     return new HttpError(409, error.message)
   }
   if (error instanceof Error && [
@@ -440,6 +450,7 @@ function remoteControlPayload(
   frpConfiguration: FrpConfigurationStatus,
   originConfiguration: OriginConfigurationStatus,
   caddyComponentStatus: CaddyComponentStatus,
+  irohComponent: IrohComponentStatus,
 ): Record<string, unknown> {
   return {
     provider,
@@ -480,8 +491,33 @@ function remoteControlPayload(
         configuration: originConfiguration,
         component: caddyComponentStatus,
       },
+      iroh: {
+        bundled: false,
+        running: providerStatuses.iroh.enabled,
+        state: providerStatuses.iroh.state,
+        component: irohComponent,
+      },
     },
   }
+}
+
+/**
+ * Candidate directories for an installed `dsh-mobile-iroh` companion package.
+ *
+ * A verified companion copy is reused without downloading during the
+ * transition away from the experimental companion repository. An explicit
+ * absolute override wins for tests and unusual layouts, otherwise the
+ * sibling of this package covers the hoisted npm layout while realpath
+ * (applied at verification) follows pnpm links.
+ */
+export function locateIrohCompanionRoots(importMetaUrl: string, environment: NodeJS.ProcessEnv = process.env): readonly string[] {
+  const override = environment.DSH_MOBILE_IROH_COMPANION?.trim()
+  if (override !== undefined && override !== '') {
+    if (!isAbsolute(override)) throw new Error('DSH_MOBILE_IROH_COMPANION must be an absolute path')
+    return Object.freeze([resolve(override)])
+  }
+  const ownPackageRoot = dirname(dirname(fileURLToPath(importMetaUrl)))
+  return Object.freeze([join(dirname(ownPackageRoot), 'dsh-mobile-iroh')])
 }
 
 /** Mount the resident control route and its optional authenticated LAN gateway. */
@@ -522,6 +558,14 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
   await cloudflaredComponent.initialize()
   const frpComponent = new FrpComponentManager({ stateDirectory })
   await frpComponent.initialize()
+  // The iroh sidecar is distributed by this plugin from a pinned release; a
+  // verified companion copy is still reused without downloading while the
+  // experimental companion repository exists.
+  const irohComponent = new IrohComponentManager({
+    stateDirectory,
+    locateCompanionRoots: () => locateIrohCompanionRoots(import.meta.url),
+  })
+  await irohComponent.initialize()
   // FRP registration and unpinned public pairing share the persisted installation
   // identity; CA-backed entries keep their certificate fingerprint.
   const frpIdentity = await loadOrCreateInstallationId(join(stateDirectory, 'installation-id'))
@@ -682,6 +726,38 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
       return candidate
   }
   /**
+   * Gateway factory for the experimental iroh provider.
+   *
+   * The endpoint identity resolves inside the controller start, so TLS is
+   * ensured here per endpoint: a stable CA with a leaf for the exact
+   * identity-derived DNS name. The gateway terminates TLS itself (provided
+   * mode) and retains the pairing CA for the app to pin, exactly like the
+   * self-signed FRP ingress. Device pairings share the remote device file
+   * with the other remote providers.
+   */
+  const createIrohGateway = async (endpointId: string): Promise<MobileAccessGateway> => {
+    const tls = await ensureIrohTls(endpointId, remoteDeviceFile, stateDirectory)
+    const resolved = irohGatewayConfig(template, endpointId, remoteDeviceFile, tls)
+    const candidate = new MobileAccessGateway(
+      resolved,
+      new JsonDeviceStore(resolved.stateFile, resolved.maxDevices),
+      mobileAccess,
+      upstreamLoginUrl,
+      webSocketPaths,
+      blockedUpgradePaths,
+      undefined,
+      clientModulePreferences,
+      entry => { logger.warn('auth failure %s', JSON.stringify(entry)) },
+      entry => { logger.warn('http failure %s', JSON.stringify(entry)) },
+      entry => { logger.info('upstream auth %s', JSON.stringify(entry)) },
+    )
+    try { await candidate.start() } catch (error) {
+      await candidate.close()
+      throw error
+    }
+    return candidate
+  }
+  /**
    * Gateway factory for the FRP provider.
    *
    * The public-CA entry keeps the ordinary Caddy-fronted remote gateway. The
@@ -732,6 +808,7 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
   const cloudflaredStore = new JsonMobileAccessControlStore(join(remoteDirectory, 'cloudflared', 'control.json'), false)
   const frpStore = new JsonMobileAccessControlStore(join(remoteDirectory, 'frp', 'control.json'), false)
   const originStore = new JsonMobileAccessControlStore(join(remoteDirectory, 'origin', 'control.json'), false)
+  const irohStore = new JsonMobileAccessControlStore(join(remoteDirectory, 'iroh', 'control.json'), false)
   const caddyController = new CaddyController({
     store: createVolatileRemoteControlStore(),
     component: caddyComponent,
@@ -744,6 +821,30 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
     modeStore: new JsonOriginModeStore(join(remoteDirectory, 'origin', 'upstream.json')),
     external: new OriginController({ store: createVolatileRemoteControlStore(), config: originConfig, createGateway: createOriginGateway }),
     managed: caddyController,
+  })
+  const irohController = new IrohController({
+    store: irohStore,
+    component: irohComponent,
+    dataDirectory: join(remoteDirectory, 'iroh', 'sidecar'),
+    createGateway: endpointId => createIrohGateway(endpointId),
+    /**
+     * Read the pairing CA the live gateway advertises. The fingerprint must
+     * match the gateway instance id, otherwise a rotated CA would mint QR
+     * codes no phone can pin.
+     */
+    resolvePairingCa: async () => {
+      const gateway = irohController.gateway()
+      if (gateway === undefined) throw new Error('iroh_not_ready')
+      const paths = irohTlsPaths(remoteDeviceFile, stateDirectory)
+      let pem: string
+      try { pem = await readFile(paths.caCertFile, 'utf8') } catch (error) {
+        throw new Error('iroh_pairing_failed', { cause: error })
+      }
+      const ca = new X509Certificate(pem)
+      const fingerprint = ca.fingerprint256.replaceAll(':', '').toLowerCase()
+      if (!ca.ca || fingerprint !== gateway.config.instanceId) throw new Error('iroh_pairing_failed')
+      return { der: ca.raw, fingerprint }
+    },
   })
   const remoteControllers: Record<RemoteProvider, RemoteProviderController> = {
     tailscale: new FunnelController({
@@ -790,6 +891,7 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
       },
     }),
     origin: originController,
+    iroh: irohController,
   }
   const remoteProviders = new RemoteProviderCoordinator(initialRemoteProvider, remoteControllers, remoteProviderStore)
   const remoteController = () => remoteProviders.controller()
@@ -809,6 +911,7 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
       cloudflared: remoteControllers.cloudflared.status(),
       frp: remoteControllers.frp.status(),
       origin: remoteControllers.origin.status(),
+      iroh: remoteControllers.iroh.status(),
     },
     cpolarComponent.status(),
     cloudflaredComponent.status(),
@@ -817,6 +920,7 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
     frpConfig.status(),
     originConfig.status(),
     caddyComponent.status(),
+    irohComponent.status(),
   ), originMode: originController.mode(), caddyConfiguration: caddyConfig.status(), caddyState: caddyController.status() })
   const lanPayload = (): Record<string, unknown> => ({
     ...(loaded.kind === 'unconfigured' ? {
@@ -1049,7 +1153,7 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
         if (request.method === 'POST' && target.decodedPathname === `${LOCAL_ADMIN_PREFIX}/remote/provider`) {
           const body = await readJsonObject(request, 4096)
           if (body.provider !== 'tailscale' && body.provider !== 'cpolar' && body.provider !== 'cloudflared'
-            && body.provider !== 'frp' && body.provider !== 'origin') {
+            && body.provider !== 'frp' && body.provider !== 'origin' && body.provider !== 'iroh') {
             throw new HttpError(400, 'bad_request')
           }
           await remoteProviders.select(body.provider)
@@ -1228,6 +1332,42 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
             if (remoteControllers.frp.status().enabled) await remoteControllers.frp.reconnect()
           })
           sendJson(response, 200, remotePayload(), false)
+          return
+        }
+        if (request.method === 'POST' && target.decodedPathname === `${LOCAL_ADMIN_PREFIX}/remote/iroh/component/install`) {
+          const body = await readJsonObject(request, 4096)
+          if (body.confirm !== true) throw new HttpError(400, 'bad_request')
+          logger.info('iroh component install started')
+          try {
+            await remoteProviders.mutate(async () => irohComponent.install())
+            logger.info('iroh component install completed')
+          } catch (error) {
+            logger.error('iroh component install failed: %s', error instanceof Error ? error.stack ?? error.message : String(error))
+            throw error
+          }
+          sendJson(response, 200, remotePayload(), false)
+          return
+        }
+        if (request.method === 'POST' && target.decodedPathname === `${LOCAL_ADMIN_PREFIX}/remote/iroh/pairing/begin`) {
+          await readJsonObject(request, 4096)
+          logger.info('iroh pairing window requested')
+          // The descriptor carries one-time secrets: log only the outcome,
+          // never the code, token, or encoded payload.
+          const pairing = await remoteProviders.mutateSelected('iroh', async () => irohController.beginPairing())
+            .catch((error: unknown) => {
+              const code = error instanceof Error ? error.message : String(error)
+              logger.error('iroh pairing failed: %s', code)
+              if (error instanceof HttpError) throw error
+              throw new HttpError(409, code === 'iroh_not_ready' ? 'iroh_not_ready' : 'iroh_pairing_failed')
+            })
+          let qrSvg = ''
+          try {
+            qrSvg = await QRCode.toString(pairing.encoded, { type: 'svg', margin: 1 })
+          } catch {
+            // keep qrSvg empty
+          }
+          logger.info('iroh pairing window opened')
+          sendJson(response, 201, { ...pairing.descriptor, qrSvg }, false)
           return
         }
         if (request.method === 'POST' && target.decodedPathname === `${LOCAL_ADMIN_PREFIX}/remote/frp/attach-plan`) {
@@ -1481,6 +1621,7 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
         cloudflared: cloudflaredStore,
         frp: frpStore,
         origin: originStore,
+        iroh: irohStore,
       }
       const prepared = await prepareDisabledRemoteProviders(remoteProviders.selected, stores)
       for (const provider of REMOTE_PROVIDERS) {

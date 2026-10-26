@@ -21,6 +21,16 @@ class SameHostSwitchPolicyTest {
         }
     }
 
+    @Test fun irohRowsNeverJoinSameHostSwitching() {
+        val endpoint = "0".repeat(64)
+        val binding = IrohDeviceBinding(endpoint, 25443)
+        val iroh = remote.copy(origin = binding.origin, caCertificate = byteArrayOf(1), iroh = binding)
+        assertFalse(SameHostSwitchPolicy.eligible(iroh, 1))
+        assertNull(SameHostSwitchPolicy.candidate(lan, listOf(iroh), AccessMode.REMOTE, 1))
+        assertNull(SameHostSwitchPolicy.candidate(iroh, listOf(remote), AccessMode.REMOTE, 1))
+        assertTrue(SameHostSwitchPolicy.eligible(remote, 1))
+    }
+
     @Test fun aLiveOrUncertainPageNeverSilentlyLosesDraftsAcrossOrigins() {
         SameHostSwitchMode.entries.forEach { mode ->
             assertTrue(SameHostSwitchPolicy.requiresConfirmation(mode, true))

@@ -2,6 +2,14 @@
 
 Notable changes are recorded here. GitHub Releases provide the downloadable packages and generated commit notes.
 
+## Unreleased
+
+- Distribute the iroh sidecar from this plugin: the **Install official component** button downloads the pinned `dsh-mobile-iroh 0.1.0-alpha.1` release per platform and verifies size plus SHA-256 into the plugin private directory, reusing a verified companion copy without downloading during the transition; switching the channel on alone never downloads. The install panel now shows the download size, reports verification progress with live status, and names the exact companion/hash failure instead of a generic not-ready message.
+- Add the experimental iroh remote provider. The sidecar ships inside the independent `dsh-mobile-iroh` companion and is checksum-verified on use; this plugin never bundles or downloads it, and the channel stays off by default. The phone side lives in the main App behind an explicit native build flag; default builds remain the plain HTTPS shell.
+- Give the iroh channel its own endpoint-pinned TLS identity (stable CA, 90-day DNS leaf with 30-day renewal headroom, no silent regeneration) and a short-lived QR pairing flow that binds the sidecar code to a one-time gateway token, redeemable through the ordinary pair endpoint over the iroh transport.
+- Vendor the iroh transport host Rust source (`native/iroh-host`, shared core `native/iroh-core`, MIT with preserved dsh-tether attribution) with a per-platform CI build lane. Runtime sidecar resolution is unchanged until a pinned component distribution is published.
+- Merge the iroh Android transport into the main App behind an explicit native build flag: six transport modules, versioned optional pairing records, QR pairing screen, carrier-aware restore, revocation-aware status monitoring, and JNI symbols bound to the established package and signer. Default builds omit the native library; the Rust Android build, NDK wiring, and device acceptance run in the dedicated CI lane.
+
 ## 0.6.16 - 2026-10-22
 
 - Support App 0.6.7's optional same-computer LAN/remote switching with authenticated installation grouping and limited same-Session plain-text draft transfer through public DSH APIs. Independently paired endpoints keep separate credentials and CA pins; conflicts and unsupported editor state are not silently migrated. Stop disposed draft observers from subscribing again. Thanks @abworks-dev for [#252](https://github.com/saya-ch/dsh-mobile/pull/252).

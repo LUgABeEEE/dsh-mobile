@@ -21,6 +21,11 @@ class SecureWebViewClientTest {
     }
 
     @Test
+    fun irohPagesReceiveTheRemoteBudgetWithoutBecomingRemoteCandidates() {
+        assertEquals(30_000L, webViewLoadTimeoutMs("0123456789abcdef0123456789abcdef.0123456789abcdef0123456789abcdef.iroh.localhost"))
+    }
+
+    @Test
     fun subframesCannotNavigateAcrossOrigins() {
         val origin = GatewayOrigin.parse("https://trusted.example:3443")!!
         assertFalse(shouldBlockSubframeNavigation(origin, "https://trusted.example:3443/embed"))

@@ -209,4 +209,16 @@
     <string name="same_host_detect">Rileva e chiedi</string>
     <string name="same_host_switched">Cambio automatico della connessione in corso…</string>
     <string name="same_host_migration_retained">Migrazione non completata. La pagina originale è stata mantenuta.</string>
+    <string name="iroh_access_title">Accesso iroh (sperimentale)</string>
+    <string name="iroh_access_description">Connessione nativa cifrata diretta o tramite relay, senza configurare un tunnel HTTPS.</string>
+    <string name="iroh_pairing_help">Genera le informazioni di abbinamento sul tuo computer fidato, poi scansionale o incollale qui. L’app verifica identità e certificato del computer prima dell’abbinamento.</string>
+    <string name="iroh_pairing_label">Informazioni di abbinamento</string>
+    <string name="iroh_pairing_hint">Incolla le informazioni generate dal computer</string>
+    <string name="iroh_pairing_private">Queste informazioni contengono credenziali monouso e non vengono salvate nell’elenco dei dispositivi.</string>
+    <string name="iroh_pairing_invalid">Informazioni di abbinamento non valide o scadute. Generale di nuovo sul computer.</string>
+    <string name="iroh_pairing_retry_new">Connessione o abbinamento non completato. Genera nuove informazioni sul computer e riprova.</string>
+    <string name="connection_mode_iroh">iroh</string>
+    <string name="iroh_connect_action">Abbina e connetti</string>
+    <string name="iroh_status_connect_to_check">Connetti per verificare</string>
+    <string name="session_storage_failed">Impossibile aggiornare la sessione web sul dispositivo. Riapri il computer dall\'elenco dei dispositivi senza eliminare l\'associazione.</string>
 </resources>
