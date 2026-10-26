@@ -29,7 +29,7 @@ DSH Mobile 的默认 Windows HTTPS / Discovery 入站规则只允许 `LocalSubne
 
 管理网页的 `/api/mobile-access` 与手机连接的 Gateway 是两个入口。上面的额外可信网段设置不会开放管理 API。默认情况下，管理 API 仍只允许直连来源为回环地址。
 
-待发布候选增加了 `adminAllowedCidrs`，供已经通过受控局域网访问 DSH 的 NAS 部署使用。在现有 `mobile-access` 条目的完整 `config` 中追加以下字段，并将示例改成管理电脑的实际地址：
+插件 0.6.18 起提供 `adminAllowedCidrs`，供已经通过受控局域网访问 DSH 的 NAS 部署使用。在现有 `mobile-access` 条目的完整 `config` 中追加以下字段，并将示例改成管理电脑的实际地址：
 
 ```yaml
 adminAllowedCidrs:

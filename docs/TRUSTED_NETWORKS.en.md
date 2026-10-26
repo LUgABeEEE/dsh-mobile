@@ -29,7 +29,7 @@ This setting controls source access to the LAN Gateway, not source CIDRs for an 
 
 The administration page's `/api/mobile-access` and the phone Gateway are separate entries. The additional trusted networks above do not open the management API. By default, the management API still accepts only direct loopback peers.
 
-The unreleased candidate adds `adminAllowedCidrs` for NAS deployments already accessed through a controlled LAN. Add this field to the existing `mobile-access` entry's complete `config`, replacing the example with the administration computer's actual address:
+Plugin 0.6.18 adds `adminAllowedCidrs` for NAS deployments already accessed through a controlled LAN. Add this field to the existing `mobile-access` entry's complete `config`, replacing the example with the administration computer's actual address:
 
 ```yaml
 adminAllowedCidrs:

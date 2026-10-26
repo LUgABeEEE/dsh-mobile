@@ -26,13 +26,13 @@
   <a href="#compatibility">Compatibility</a> ·
   <a href="docs/README.md">Documentation</a> ·
   <a href="#contributors">Contributors</a> ·
-  <a href="https://github.com/saya-ch/dsh-mobile/releases/tag/v0.6.17">Release notes</a> ·
+  <a href="https://github.com/saya-ch/dsh-mobile/releases/tag/v0.6.18">Release notes</a> ·
   <a href="README.md">简体中文</a>
 </p>
 
 > DSH Mobile is a DeepSeek Harness community plugin; the native app supports Android only.
 >
-> **Current stable release: 0.6.17**. Fix directory-picker ownership: official Desktop keeps its native chooser, **Add workspace** action and `Ctrl+O`, while the Mobile page uses its own in-page browser. On slow links, compress HTML and API responses, bound boot batches and reuse downloaded resources; module settings gain transfer sizes and a minimal preset. Android App **0.6.7** still applies; this release contains no new APK. [Plugin release notes and downloads](https://github.com/saya-ch/dsh-mobile/releases/tag/v0.6.17) · [Full changelog](CHANGELOG.md).
+> **Current stable release: 0.6.18**. Create folders from the remote directory picker, with compact navigation and controls that leave more room for folders. Recover from stale module choices that prevented the page from opening, and optionally administer a NAS from an authenticated, controlled network. The Android App is released independently; App **0.6.7** supports these plugin features. [Plugin release notes and downloads](https://github.com/saya-ch/dsh-mobile/releases/tag/v0.6.18) · [Full changelog](CHANGELOG.md).
 >
 > **Version policy**: since plugin **0.6.2**, the Android app and plugin use independent version numbers and releases. Their numbers do not need to match, and a plugin update does not imply an app update. [Compatibility notes](#compatibility).
 
@@ -421,6 +421,7 @@ On macOS, local network, cloudflared, self-hosted FRP and the own reverse proxy 
 | `0.6.14` | Release CI packed-browser jobs green on all eight DSH versions from `0.1.7-alpha.2` to `0.2.1-rc.2`; no additional per-version manual acceptance was recorded for this release |
 | `0.6.15` | `0.2.1-rc.2`: real admin-panel pairing in Firefox 158 privacy mode, the HTTPS mobile page and Workspace-read baseline, and silent Blob playback; release CI green on all eight versions |
 | `0.6.16` | `0.2.1-rc.2`: Gallery selection, plain-text draft transfer through public DSH input APIs, real mux recovery and cross-client pending questions; CI additionally covered `0.1.7-alpha.2`, `0.1.7-rc.1`, `0.1.7-rc.2`, `0.2.0-rc.1`, `0.2.0-rc.2`, `0.2.1-alpha.2` and `0.2.1-alpha.3` |
+| `0.6.18` | `0.2.1-rc.2`: 18 real packed Chromium directory-picker checks, including compact layout, folder creation and cancellation; the candidate was installed in local official Desktop `0.2.1-rc.3` with LAN and Cloudflare gateways running |
 | `0.6.17` | `0.2.0-rc.2` and `0.2.1-rc.2`: 15 real packed Chromium directory-picker checks, the old-WebView missing-API simulation and Workspace mux reads; the published package was then installed into official Desktop `0.2.1-rc.2` and its files matched byte for byte |
 
 <details>
