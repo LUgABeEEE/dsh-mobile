@@ -3,11 +3,40 @@ import { basename, dirname, join, resolve } from 'node:path'
 
 const PACKAGE_NAME = 'dsh-mobile-push-integration-fixture'
 
+/**
+ * Canonical atomic JSON publisher for the fixture's polled documents. It is the one
+ * algorithm shared by tests and the generated Host: the function body references only
+ * its injected bindings, so its exact source can be embedded into the generated Host
+ * and exercised against the real filesystem. Publication writes the complete payload
+ * to a unique same-directory private candidate (mode 0600) and renames it over the
+ * target, so a strict poller only ever observes the previous complete document or the
+ * new complete document, never a truncated write. `hold` is a controlled barrier hook
+ * for focused publication tests; the Host never passes it. Failed writes/renames
+ * preserve the previously published document, remove only the exact owned candidate
+ * and propagate the original error.
+ */
+export function atomicJsonPublisher({ mkdir, writeFile, rename, rm, dirname, randomUUID }) {
+  return async function publishJsonFile(target, value, hold) {
+    const payload = JSON.stringify(value) + '\n'
+    const directory = dirname(target)
+    await mkdir(directory, { recursive: true })
+    const candidate = target + '.' + randomUUID() + '.candidate'
+    try {
+      await writeFile(candidate, payload, { mode: 0o600 })
+      if (hold !== undefined) await hold(candidate)
+      await rename(candidate, target)
+    } catch (error) {
+      await rm(candidate, { force: true }).catch(() => {})
+      throw error
+    }
+  }
+}
+
 function hostSource() {
   return `import { randomUUID } from 'node:crypto'
 import { watch } from 'node:fs'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
-import { basename, join } from 'node:path'
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { basename, dirname, join } from 'node:path'
 
 export const name = ${JSON.stringify(PACKAGE_NAME)}
 export const inject = ['agents', 'sessions', 'userQuestions', 'sessionQuery']
@@ -19,15 +48,14 @@ const SETTLEMENT = HOME === undefined ? undefined : join(HOME, 'push-integration
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms))
 const safeErrorEvidence = error => ({ errorName: typeof error?.name === 'string' && /^[A-Za-z0-9_.-]{1,64}$/.test(error.name) ? error.name : 'Error',
   errorCode: typeof error?.code === 'string' && /^[A-Za-z0-9_.-]{1,64}$/.test(error.code) ? error.code : null })
-const writeResult = async value => {
+const publishDocument = (${atomicJsonPublisher.toString()})({ mkdir, writeFile, rename, rm, dirname, randomUUID })
+export const writeResult = async value => {
   if (RESULT === undefined) throw new Error('fixture_home_missing')
-  await mkdir(HOME, { recursive: true })
-  await writeFile(RESULT, JSON.stringify(value) + '\\n', { mode: 0o600 })
+  await publishDocument(RESULT, value)
 }
-const writeSettlement = async value => {
+export const writeSettlement = async value => {
   if (SETTLEMENT === undefined) throw new Error('fixture_home_missing')
-  await mkdir(HOME, { recursive: true })
-  await writeFile(SETTLEMENT, JSON.stringify(value) + '\\n', { mode: 0o600 })
+  await publishDocument(SETTLEMENT, value)
 }
 const publicMissingSessionObservation = async ctx => {
   const sessionId = 'task8-never-created-' + randomUUID()
