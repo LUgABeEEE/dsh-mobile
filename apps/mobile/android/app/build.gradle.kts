@@ -2,7 +2,6 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
     id("com.android.application")
-    id("org.jetbrains.kotlin.android")
 }
 
 val releaseStoreFile = providers.environmentVariable("DSH_ANDROID_KEYSTORE_FILE")
