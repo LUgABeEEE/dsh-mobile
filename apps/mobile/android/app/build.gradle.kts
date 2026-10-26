@@ -14,6 +14,39 @@ val releaseSigningConfigured = listOf(
     releaseKeyPassword,
 ).all { it.isPresent && it.get().isNotBlank() }
 
+// The single-App vision: the iroh transport ships in every build unless a
+// caller explicitly opts out for a fast toolchain-free lane.
+val irohNativeEnabled = providers.gradleProperty("irohNative").orElse("true").get() == "true"
+val irohAbis = providers.gradleProperty("irohAbis").orElse("arm64-v8a,x86_64")
+val irohJniOutput = layout.buildDirectory.dir("generated/iroh/jniLibs")
+val irohRoot = rootProject.projectDir.resolve("../../..").canonicalFile
+val irohNdk = providers.gradleProperty("irohNdk").orElse(providers.environmentVariable("ANDROID_NDK_HOME"))
+val buildIrohTransport = tasks.register<Exec>("buildIrohTransport") {
+    group = "build"
+    description = "Build and verify selected Rust Android ABIs with an explicitly selected NDK"
+    onlyIf { irohNativeEnabled }
+    inputs.dir(irohRoot.resolve("native/iroh-android-transport/src"))
+    inputs.file(irohRoot.resolve("native/iroh-android-transport/Cargo.toml"))
+    inputs.dir(irohRoot.resolve("native/iroh-core/src"))
+    inputs.file(irohRoot.resolve("native/iroh-core/Cargo.toml"))
+    inputs.file(irohRoot.resolve("native/Cargo.lock"))
+    inputs.file(irohRoot.resolve("scripts/build-android-transport.mjs"))
+    inputs.property("abis", irohAbis)
+    inputs.property("ndk", irohNdk.orElse("not-configured"))
+    if (irohNativeEnabled && irohNdk.isPresent) inputs.file(file(irohNdk.get()).resolve("source.properties"))
+    outputs.dir(irohJniOutput)
+    doFirst {
+        val selectedNdk = irohNdk.orNull
+            ?: error("Native builds require -PirohNdk=<NDK directory> or ANDROID_NDK_HOME")
+        commandLine(
+            "node", irohRoot.resolve("scripts/build-android-transport.mjs").absolutePath,
+            "--ndk", selectedNdk,
+            "--abis", irohAbis.get(),
+            "--output", irohJniOutput.get().asFile.absolutePath,
+        )
+    }
+}
+
 android {
     namespace = "io.github.sayach.dshmobile"
     compileSdk = 36
@@ -24,6 +57,7 @@ android {
         targetSdk = 36
         versionCode = 84
         versionName = "0.6.8"
+        buildConfigField("boolean", "IROH_NATIVE_ENABLED", irohNativeEnabled.toString())
     }
 
     signingConfigs {
@@ -72,6 +106,16 @@ android {
     }
 
     sourceSets.getByName("test").resources.srcDir("../../contract")
+    if (irohNativeEnabled) {
+        sourceSets.getByName("main").jniLibs.srcDir(irohJniOutput)
+    }
+    packaging.jniLibs.useLegacyPackaging = false
+    // The selected NDK strips and verifies these libraries before Gradle packages them.
+    packaging.jniLibs.keepDebugSymbols.add("**/libdsh_mobile_iroh_android_transport.so")
+}
+
+if (irohNativeEnabled) {
+    tasks.named("preBuild").configure { dependsOn(buildIrohTransport) }
 }
 
 dependencies {

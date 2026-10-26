@@ -45,6 +45,7 @@ internal fun isCpolarAddressFailure(
 internal fun webViewLoadTimeoutMs(host: String): Long = when {
     RemoteHostPolicy.isCpolarHost(host) -> 120_000L
     RemoteHostPolicy.isRemoteCandidate(host) -> 30_000L
+    IrohDeviceBinding.isIrohHost(host) -> 30_000L
     else -> 15_000L
 }
 

@@ -7,7 +7,7 @@ import type { MobileAccessControlState } from './control.js'
 import { restrictPrivateFile } from './private-file.js'
 
 /** Remote transports supported by the desktop plugin and Android client. */
-export type RemoteProvider = 'tailscale' | 'cpolar' | 'cloudflared' | 'frp' | 'origin'
+export type RemoteProvider = 'tailscale' | 'cpolar' | 'cloudflared' | 'frp' | 'origin' | 'iroh'
 
 /** Common safe status returned by every remote provider controller. */
 export interface RemoteProviderStatus {
@@ -42,7 +42,7 @@ export interface RemoteProviderState {
   readonly provider: RemoteProvider
 }
 
-export const REMOTE_PROVIDERS: readonly RemoteProvider[] = Object.freeze(['tailscale', 'cpolar', 'cloudflared', 'frp', 'origin'])
+export const REMOTE_PROVIDERS: readonly RemoteProvider[] = Object.freeze(['tailscale', 'cpolar', 'cloudflared', 'frp', 'origin', 'iroh'])
 
 /** Persist only the selected remote provider. */
 export interface RemoteProviderStore {
@@ -243,7 +243,7 @@ export function parseRemoteProviderState(value: unknown): RemoteProviderState {
   const record = value as Record<string, unknown>
   if (record.version !== 1
     || (record.provider !== 'tailscale' && record.provider !== 'cpolar' && record.provider !== 'cloudflared'
-      && record.provider !== 'frp' && record.provider !== 'origin')
+      && record.provider !== 'frp' && record.provider !== 'origin' && record.provider !== 'iroh')
     || Reflect.ownKeys(record).some(key => key !== 'version' && key !== 'provider')) {
     throw new Error('remote provider state has an unsupported format')
   }
@@ -302,8 +302,8 @@ export class JsonRemoteProviderStore {
 /** Resolve the first-run provider without letting environment values bypass validation. */
 export function configuredRemoteProvider(environment: NodeJS.ProcessEnv): RemoteProvider {
   const value = environment.DSH_MOBILE_REMOTE_PROVIDER ?? 'tailscale'
-  if (value !== 'tailscale' && value !== 'cpolar' && value !== 'cloudflared' && value !== 'frp' && value !== 'origin') {
-    throw new Error('DSH_MOBILE_REMOTE_PROVIDER must be tailscale, cpolar, cloudflared, frp, or origin')
+  if (value !== 'tailscale' && value !== 'cpolar' && value !== 'cloudflared' && value !== 'frp' && value !== 'origin' && value !== 'iroh') {
+    throw new Error('DSH_MOBILE_REMOTE_PROVIDER must be tailscale, cpolar, cloudflared, frp, origin, or iroh')
   }
   return value
 }

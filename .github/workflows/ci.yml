@@ -296,6 +296,47 @@ jobs:
             dsh-mobile-funnel-build-metadata.txt
           if-no-files-found: error
 
+  iroh-host:
+    name: iroh host (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: linux-x64
+          - os: windows-latest
+            target: win32-x64
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.99.1
+        with:
+          components: rustfmt, clippy
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.x
+      - run: cargo fmt --all -- --check
+        working-directory: native/iroh-host
+      - run: cargo test --locked -p dsh-mobile-iroh-host -p dsh-mobile-iroh-core
+        working-directory: native/iroh-host
+      - run: cargo clippy --all-targets --locked -p dsh-mobile-iroh-host -p dsh-mobile-iroh-core -- -D warnings
+        working-directory: native/iroh-host
+      - run: npm run build:iroh-host
+      - name: Record iroh host build metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          staged="bin/dsh-mobile-iroh-host-${{ matrix.target }}${{ matrix.target == 'win32-x64' && '.exe' || '' }}"
+          test -f "$staged"
+          sha256sum "$staged" | tee dsh-mobile-iroh-host-build-metadata.txt
+      - uses: actions/upload-artifact@v7
+        with:
+          name: iroh-host-${{ matrix.target }}
+          path: |
+            bin/dsh-mobile-iroh-host-${{ matrix.target }}*
+            dsh-mobile-iroh-host-build-metadata.txt
+          if-no-files-found: error
+
   cloudflared-macos:
     name: macOS cloudflared component
     runs-on: macos-14
@@ -327,10 +368,40 @@ jobs:
         run: sdkmanager "platforms;android-36"
       - uses: gradle/actions/setup-gradle@v6
       - name: Test and assemble
-        run: bash ./gradlew --no-daemon lintDebug testDebugUnitTest assembleDebug -x lintAnalyzeDebugUnitTest -x lintAnalyzeDebugAndroidTest
+        # The toolchain-free lane explicitly opts out of the default native
+        # transport; the android-iroh-native lane below owns the Rust build.
+        run: bash ./gradlew --no-daemon lintDebug testDebugUnitTest assembleDebug -PirohNative=false -x lintAnalyzeDebugUnitTest -x lintAnalyzeDebugAndroidTest
         working-directory: apps/mobile/android
       - uses: actions/upload-artifact@v7
         with:
           name: dsh-mobile-android-debug
           path: apps/mobile/android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+
+  android-iroh-native:
+    name: Android iroh native lane
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: dtolnay/rust-toolchain@1.99.1
+        with:
+          targets: aarch64-linux-android, x86_64-linux-android
+      - uses: android-actions/setup-android@v4
+        with:
+          packages: platform-tools
+      - name: Install Android API 36 and NDK
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;25.2.9519653"
+      - uses: gradle/actions/setup-gradle@v6
+      - name: Verify the vendored Rust transport builds for both ABIs
+        run: bash ./gradlew --no-daemon :app:buildIrohTransport -PirohNative=true -PirohNdk="$ANDROID_HOME/ndk/25.2.9519653"
+        working-directory: apps/mobile/android
+      - name: Assemble the native-enabled debug package
+        run: bash ./gradlew --no-daemon assembleDebug -PirohNative=true -PirohNdk="$ANDROID_HOME/ndk/25.2.9519653" -x lintAnalyzeDebugUnitTest -x lintAnalyzeDebugAndroidTest
+        working-directory: apps/mobile/android
+      - name: Verify the packaged transport libraries
+        run: node ../../../scripts/build-android-transport.mjs --verify-apk app/build/outputs/apk/debug/app-debug.apk --build-tools "$ANDROID_HOME/build-tools/36.0.0"
+        working-directory: apps/mobile/android

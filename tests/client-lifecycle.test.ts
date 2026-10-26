@@ -870,7 +870,7 @@ describe('mobile-control localization', () => {
 
   it('wires private-origin controls and protects edited forms from stale poll snapshots', () => {
     const source = readFileSync(new URL('../src/client.ts', import.meta.url), 'utf8')
-    expect(source).toContain('selfHostedBody.append(frpChoice, originChoice)')
+    expect(source).toContain('selfHostedBody.append(frpChoice, originChoice, irohChoice)')
     expect(source).toContain('/api/mobile-access/remote/origin/configure')
     expect(source).toContain('/api/mobile-access/remote/origin/purge')
     expect(source).toContain('if (!originFormDirty && !originFormBusy)')
@@ -882,6 +882,53 @@ describe('mobile-control localization', () => {
     expect(source).toContain("window.confirm(t('originPurgeConfirm'))")
     expect(CONTROL_STYLES).toContain('.dsh-mobile-control__origin-fields')
     expect(CONTROL_STYLES).toContain('.dsh-mobile-control__origin-fields input[aria-invalid=true]')
+  })
+
+  it('keeps every iroh setup and runtime message translated in all locales', () => {
+    for (const messages of Object.values(MOBILE_CONTROL_MESSAGES)) {
+      const copy = messages as Record<string, string>
+      for (const key of ['irohName', 'irohExperimental', 'irohDescription', 'prepareIroh', 'irohInstallNote',
+        'irohComponentNote', 'irohPhaseNote', 'irohUnavailable', 'irohStarting', 'irohConnecting',
+        'irohCompanionMissing', 'irohDataDirectoryInvalid', 'irohSidecarInvalid', 'irohDownloadFailed', 'irohPlatformUnsupported', 'irohIdentityFailed',
+        'irohLaunchFailed', 'irohTimeout', 'irohInstallConfirm', 'installingIroh', 'switchingIroh',
+        'reconnectingIroh', 'resetIrohConfirm', 'irohNotReady', 'irohPairingFailed', 'irohExited',
+        'irohPairingTitle', 'generateIrohQr', 'enlargeQr', 'closeEnlargedQr', 'irohPairingReady']) {
+        expect(copy[key]?.length).toBeGreaterThan(0)
+      }
+    }
+  })
+
+  it('shows iroh verification progress and names the exact companion failure', () => {
+    const source = readFileSync(new URL('../src/client.ts', import.meta.url), 'utf8')
+    // Indeterminate progress next to the install button; the checksum check is
+    // one quick round trip, so a determinate percentage would be invented.
+    expect(source).toContain("element('progress', 'dsh-mobile-control__progress')")
+    expect(source).toContain('irohInstallProgress.hidden = false')
+    expect(source).toContain("irohInstall.setAttribute('aria-busy', 'true')")
+    // A poll landing mid-verification must not wipe the in-flight progress.
+    expect(source).toContain('let irohVerifying = false')
+    expect(source).toContain("irohComponentStatus.setAttribute('role', 'status')")
+    // A sidecar that exists but failed verification must not be reported as
+    // merely absent: that sends the user to install over something broken
+    // without naming it.
+    expect(source).toContain("irohComponentError === 'irohSidecarInvalid' ? t('irohSidecarInvalid')")
+    // The install button names the pinned download size, like the other
+    // on-demand components.
+    expect(source).toContain("t('installWithSize', { size: formatMegabytes(irohDownloadBytes) })")
+    expect(CONTROL_STYLES).toContain('.dsh-mobile-control__progress')
+    expect(source).toContain('irohQrZoomImage.src = `data:image/svg+xml;base64,${btoa(activeIrohQrSvg)}`')
+    expect(source).toContain("element('div', 'dsh-mobile-control__qr is-expandable')")
+    expect(CONTROL_STYLES).toContain('.dsh-mobile-control__qr-zoom')
+    expect(CONTROL_STYLES).toContain('.dsh-mobile-control__qr-zoom-close')
+  })
+
+  it('hides the generic pair actions while iroh owns the remote slot', () => {
+    const source = readFileSync(new URL('../src/client.ts', import.meta.url), 'utf8')
+    // The generic pair link points at the provider origin, which under iroh
+    // only resolves inside the iroh transport; the app pairs from the iroh
+    // descriptor instead.
+    expect(source).toContain('remotePair.hidden = iroh')
+    expect(source).toContain('remoteCopyLink.hidden = iroh')
   })
 
   it('creates the restricted FRP VPS template entirely in the loopback client', () => {

@@ -51,9 +51,10 @@ describe('remote provider selection', () => {
       cloudflared: { disableIfPresent: vi.fn(async () => disabled) },
       frp: { disableIfPresent: vi.fn(async () => disabled) },
       origin: { disableIfPresent: vi.fn(async () => disabled) },
+      iroh: { disableIfPresent: vi.fn(async () => disabled) },
     }
     const prepared = await prepareDisabledRemoteProviders(selected, stores)
-    expect(prepared.size).toBe(4)
+    expect(prepared.size).toBe(5)
     expect(prepared.has(selected)).toBe(false)
     for (const provider of REMOTE_PROVIDERS) {
       if (provider === selected) expect(stores[provider].disableIfPresent).not.toHaveBeenCalled()
@@ -75,6 +76,7 @@ describe('remote provider selection', () => {
       cloudflared: { disableIfPresent: vi.fn(async () => disabled) },
       frp: { disableIfPresent: vi.fn(() => delayed) },
       origin: { disableIfPresent: vi.fn(async () => disabled) },
+      iroh: { disableIfPresent: vi.fn(async () => disabled) },
     }
     let completed = false
     const preparation = prepareDisabledRemoteProviders('tailscale', stores).catch((error: unknown) => {
@@ -97,6 +99,7 @@ describe('remote provider selection', () => {
     expect(parseRemoteProviderState({ version: 1, provider: 'frp' })).toEqual({ version: 1, provider: 'frp' })
     expect(parseRemoteProviderState({ version: 1, provider: 'cloudflared' })).toEqual({ version: 1, provider: 'cloudflared' })
     expect(parseRemoteProviderState({ version: 1, provider: 'origin' })).toEqual({ version: 1, provider: 'origin' })
+    expect(parseRemoteProviderState({ version: 1, provider: 'iroh' })).toEqual({ version: 1, provider: 'iroh' })
     expect(() => parseRemoteProviderState({ version: 1, provider: 'other' })).toThrow('unsupported format')
     expect(() => parseRemoteProviderState({ version: 1, provider: 'cpolar', token: 'secret' })).toThrow('unsupported format')
   })
@@ -107,8 +110,9 @@ describe('remote provider selection', () => {
     expect(configuredRemoteProvider({ DSH_MOBILE_REMOTE_PROVIDER: 'frp' })).toBe('frp')
     expect(configuredRemoteProvider({ DSH_MOBILE_REMOTE_PROVIDER: 'cloudflared' })).toBe('cloudflared')
     expect(configuredRemoteProvider({ DSH_MOBILE_REMOTE_PROVIDER: 'origin' })).toBe('origin')
+    expect(configuredRemoteProvider({ DSH_MOBILE_REMOTE_PROVIDER: 'iroh' })).toBe('iroh')
     expect(() => configuredRemoteProvider({ DSH_MOBILE_REMOTE_PROVIDER: 'invalid' }))
-      .toThrow('must be tailscale, cpolar, cloudflared, frp, or origin')
+      .toThrow('must be tailscale, cpolar, cloudflared, frp, origin, or iroh')
 
     const directory = await mkdtemp(join(tmpdir(), 'dsh-mobile-remote-provider-'))
     temporaryDirectories.push(directory)
@@ -126,6 +130,7 @@ describe('remote provider selection', () => {
       cloudflared: new FakeRemoteController(),
       frp: new FakeRemoteController(),
       origin: new FakeRemoteController(),
+      iroh: new FakeRemoteController(),
     }
     const saved: string[] = []
     const coordinator = new RemoteProviderCoordinator('tailscale', controllers, {
@@ -160,6 +165,7 @@ describe('remote provider selection', () => {
       cloudflared: new FakeRemoteController(),
       frp: new FakeRemoteController(),
       origin: new FakeRemoteController(),
+      iroh: new FakeRemoteController(),
     }
     controllers.cpolar.enabled = true
     controllers.origin.enabled = true
@@ -171,7 +177,7 @@ describe('remote provider selection', () => {
   })
 
   it('rejects configuration for a provider that another selection already replaced', async () => {
-    const controllers = { tailscale: new FakeRemoteController(), cpolar: new FakeRemoteController(), cloudflared: new FakeRemoteController(), frp: new FakeRemoteController(), origin: new FakeRemoteController() }
+    const controllers = { tailscale: new FakeRemoteController(), cpolar: new FakeRemoteController(), cloudflared: new FakeRemoteController(), frp: new FakeRemoteController(), origin: new FakeRemoteController(), iroh: new FakeRemoteController() }
     const coordinator = new RemoteProviderCoordinator('origin', controllers, { save: async () => {} })
     const configure = vi.fn(async controller => controller.setEnabled(true))
     const selected = coordinator.select('cpolar')
@@ -185,7 +191,7 @@ describe('remote provider selection', () => {
   })
 
   it('keeps configuration and activation in one queue item before a later provider selection', async () => {
-    const controllers = { tailscale: new FakeRemoteController(), cpolar: new FakeRemoteController(), cloudflared: new FakeRemoteController(), frp: new FakeRemoteController(), origin: new FakeRemoteController() }
+    const controllers = { tailscale: new FakeRemoteController(), cpolar: new FakeRemoteController(), cloudflared: new FakeRemoteController(), frp: new FakeRemoteController(), origin: new FakeRemoteController(), iroh: new FakeRemoteController() }
     const coordinator = new RemoteProviderCoordinator('origin', controllers, { save: async () => {} })
     let release: (() => void) | undefined
     let enter: (() => void) | undefined
@@ -229,7 +235,7 @@ describe('remote provider selection', () => {
   })
 
   it('drains the accepted mutation while rejecting queued and new work before provider cleanup', async () => {
-    const controllers = { tailscale: new FakeRemoteController(), cpolar: new FakeRemoteController(), cloudflared: new FakeRemoteController(), frp: new FakeRemoteController(), origin: new FakeRemoteController() }
+    const controllers = { tailscale: new FakeRemoteController(), cpolar: new FakeRemoteController(), cloudflared: new FakeRemoteController(), frp: new FakeRemoteController(), origin: new FakeRemoteController(), iroh: new FakeRemoteController() }
     const save = vi.fn(async () => {})
     const coordinator = new RemoteProviderCoordinator('origin', controllers, { save })
     let enter!: () => void

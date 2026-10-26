@@ -21,11 +21,14 @@ jobs:
         with:
           distribution: temurin
           java-version: 17
+      - uses: dtolnay/rust-toolchain@1.99.1
+        with:
+          targets: aarch64-linux-android, x86_64-linux-android
       - uses: android-actions/setup-android@v4
         with:
           packages: platform-tools
-      - name: Install Android API 36
-        run: sdkmanager "platforms;android-36"
+      - name: Install Android API 36 and NDK
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;25.2.9519653"
       - uses: gradle/actions/setup-gradle@v6
       - name: Configure release signing
         env:
@@ -48,7 +51,10 @@ jobs:
           DSH_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           DSH_ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           DSH_ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-        run: bash ./gradlew --no-daemon lintDebug testDebugUnitTest assembleRelease -x lintAnalyzeDebugUnitTest -x lintAnalyzeDebugAndroidTest
+        run: bash ./gradlew --no-daemon lintDebug testDebugUnitTest assembleRelease -PirohNative=true -PirohNdk="$ANDROID_HOME/ndk/25.2.9519653" -x lintAnalyzeDebugUnitTest -x lintAnalyzeDebugAndroidTest
+        working-directory: apps/mobile/android
+      - name: Verify the packaged transport libraries
+        run: node ../../../scripts/build-android-transport.mjs --verify-apk app/build/outputs/apk/release/app-release.apk --build-tools "$ANDROID_HOME/build-tools/36.0.0"
         working-directory: apps/mobile/android
       - name: Remove signing keystore
         if: always()

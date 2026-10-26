@@ -202,6 +202,43 @@ Object.assign(MOBILE_CONTROL_MESSAGES.zh, {
 })
 
 Object.assign(MOBILE_CONTROL_MESSAGES.en, {
+  irohName: 'iroh (Experimental)', irohExperimental: 'Experimental',
+  irohNotReady: 'iroh is not running. Start the channel first, then generate a pairing code.',
+  irohPairingFailed: 'Could not open an iroh pairing window. Reconnect the channel and retry.',
+  irohPairingTitle: 'Phone pairing (experimental)',
+  generateIrohQr: 'Generate iroh pairing QR code',
+  enlargeQr: 'Enlarge the QR code',
+  closeEnlargedQr: 'Close the enlarged QR code',
+  irohPairingReady: 'iroh pairing code {code} is live for five minutes. Scan it from the iroh pairing screen; opening another code replaces this one.',
+  irohDescription: 'Direct encrypted connection with relay fallback. No public domain or tunnel account needed.', prepareIroh: 'Prepare iroh', irohInstallNote: 'The Install button downloads the pinned sidecar release (dsh-mobile-iroh 0.1.0-alpha.1, about 15 MB on Windows x64, 24 MB on Linux x64) into the plugin private directory and verifies its SHA-256. An installed companion with a verified copy is reused instead, with no download.', irohComponentNote: 'An installed sidecar is re-verified by SHA-256 on every use. It is not bundled with the plugin package; a companion-provided copy can only be removed by removing the companion.',   irohPhaseNote: 'Experimental host-side integration: the computer channel can start for testing. Phone connections need a native-enabled app build with the iroh transport.', irohUnavailable: 'iroh is not ready: no sidecar is installed yet. Install the official component below to download and verify it.', irohStarting: 'Resolving the iroh endpoint identity…', irohConnecting: 'Sidecar connected; starting the DSH authentication gateway…', irohCompanionMissing: 'The dsh-mobile-iroh companion is not installed. Install and enable it first, then verify again.', irohDataDirectoryInvalid: 'Could not prepare the private sidecar directory. Check that DSH can manage its own profile directory, then retry.', irohSidecarInvalid: 'The installed sidecar failed checksum verification. Reinstall the component.', irohDownloadFailed: 'The sidecar download failed before verification. Check the network and retry.', irohPlatformUnsupported: 'iroh sidecars are published for Windows x64 and Linux x64 only.', irohIdentityFailed: 'Could not read the iroh endpoint identity from the sidecar.', irohLaunchFailed: 'The iroh sidecar failed to start.',
+  irohExited: 'The iroh sidecar exited unexpectedly. Reconnect.', irohTimeout: 'Timed out waiting for the iroh sidecar. Reconnect.', irohInstallConfirm: 'Download and verify the pinned iroh sidecar now (about 15 MB on Windows x64, 24 MB on Linux x64)? Nothing else is installed.', installingIroh: 'Downloading and verifying the iroh sidecar…', switchingIroh: 'Switching to iroh…', reconnectingIroh: 'Reconnecting the iroh transport…', resetIrohConfirm: 'Disable the iroh channel? The companion and its pairings stay installed.',
+})
+Object.assign(MOBILE_CONTROL_MESSAGES.it, {
+  irohName: 'iroh (Sperimentale)', irohExperimental: 'Sperimentale',
+  irohNotReady: 'iroh non è attivo. Avvia il canale e genera di nuovo il codice.',
+  irohPairingFailed: 'Impossibile aprire una finestra di abbinamento iroh. Riconnetti il canale e riprova.',
+  irohPairingTitle: 'Abbinamento telefono (sperimentale)',
+  generateIrohQr: 'Genera QR di abbinamento iroh',
+  enlargeQr: 'Ingrandisci il codice QR',
+  closeEnlargedQr: 'Chiudi il codice QR ingrandito',
+  irohPairingReady: 'Il codice iroh {code} è attivo per cinque minuti. Scansionalo dalla schermata di abbinamento iroh; aprirne un altro sostituisce questo.',
+  irohDescription: 'Connessione cifrata diretta con ripiego su relay. Nessun dominio pubblico o account tunnel richiesto.', prepareIroh: 'Prepara iroh', irohInstallNote: 'Il pulsante Installa scarica la release pinnata del sidecar (dsh-mobile-iroh 0.1.0-alpha.1, circa 15 MB su Windows x64, 24 MB su Linux x64) nella directory privata del plugin e ne verifica lo SHA-256. Un complemento installato con una copia verificata viene invece riutilizzato senza scaricare nulla.', irohComponentNote: 'Un sidecar installato viene riverificato tramite SHA-256 a ogni uso. Non è incluso nel pacchetto del plugin; una copia fornita dal complemento può essere rimossa solo rimuovendo il complemento.',   irohPhaseNote: 'Integrazione sperimentale lato computer: il canale può avviarsi per i test. Le connessioni dal telefono richiedono una build nativa con il trasporto iroh.', irohUnavailable: 'iroh non è pronto: nessun sidecar è ancora installato. Installa il componente ufficiale qui sotto per scaricarlo e verificarlo.', irohStarting: 'Risoluzione dell’identità endpoint iroh…', irohConnecting: 'Sidecar connesso; avvio del gateway di autenticazione DSH…', irohCompanionMissing: 'Il complemento dsh-mobile-iroh non è installato. Installalo e abilitalo, poi riverifica.', irohDataDirectoryInvalid: 'Impossibile preparare la directory privata del sidecar. Verifica che DSH possa gestire la propria directory del profilo, poi riprova.', irohSidecarInvalid: 'Il sidecar installato non ha superato la verifica del checksum. Reinstalla il componente.', irohDownloadFailed: 'Download del sidecar non riuscito prima della verifica. Controlla la rete e riprova.', irohPlatformUnsupported: 'I sidecar iroh sono pubblicati solo per Windows x64 e Linux x64.', irohIdentityFailed: 'Impossibile leggere l’identità endpoint iroh dal sidecar.', irohLaunchFailed: 'Avvio del sidecar iroh non riuscito.',
+  irohExited: 'Il sidecar iroh è terminato inaspettatamente. Riconnettiti.', irohTimeout: 'Attesa del sidecar iroh scaduta. Riconnettiti.', irohInstallConfirm: 'Scaricare e verificare ora il sidecar iroh pinnato (circa 15 MB su Windows x64, 24 MB su Linux x64)? Non viene installato altro.', installingIroh: 'Download e verifica del sidecar iroh…', switchingIroh: 'Passaggio a iroh…', reconnectingIroh: 'Riconnessione del trasporto iroh…', resetIrohConfirm: 'Disattivare il canale iroh? Complemento e abbinamenti restano installati.',
+})
+Object.assign(MOBILE_CONTROL_MESSAGES.zh, {
+  irohName: 'iroh（实验性）', irohExperimental: '实验性',
+  irohNotReady: 'iroh 通道未运行，请先启动通道再生成配对码。',
+  irohPairingFailed: '无法打开 iroh 配对窗口，请重连通道后重试。',
+  irohPairingTitle: '手机配对（实验性）',
+  generateIrohQr: '生成 iroh 配对二维码',
+  enlargeQr: '放大二维码',
+  closeEnlargedQr: '关闭放大的二维码',
+  irohPairingReady: 'iroh 配对码 {code} 已生效，有效期 5 分钟。请在 App 的 iroh 配对页扫码；再生成一个会替换当前这个。',
+  irohDescription: '加密直连，失败时走中继。不需要公网域名或隧道账号。', prepareIroh: '准备 iroh', irohInstallNote: '点击安装会下载固定的 sidecar 发行版（dsh-mobile-iroh 0.1.0-alpha.1，Windows x64 约 15 MB，Linux x64 约 24 MB）到插件私有目录并校验 SHA-256；已安装的配套插件如有校验通过的副本会直接复用，不再下载。', irohComponentNote: '已安装的 sidecar 每次使用都会重新校验 SHA-256。它不随插件包发布；配套提供的副本只能通过移除配套插件来删除。',   irohPhaseNote: '实验性电脑端集成：通道可以启动测试；手机连接需要带 iroh 传输的原生构建。', irohUnavailable: 'iroh 未就绪：尚未安装 sidecar，点击下方「安装官方组件」下载并校验。', irohStarting: '正在解析 iroh 端点身份…', irohConnecting: 'Sidecar 已连接，正在启动 DSH 认证网关…', irohCompanionMissing: '尚未安装 dsh-mobile-iroh 配套插件。请先安装并启用，再重新校验。', irohDataDirectoryInvalid: '无法准备 sidecar 私有目录。请确认 DSH 能管理自己的配置目录后重试。', irohSidecarInvalid: '已安装的 sidecar 哈希校验失败，请重装组件。', irohDownloadFailed: '下载 sidecar 失败，还没开始校验。请检查网络后重试。', irohPlatformUnsupported: 'iroh sidecar 仅发布 Windows x64 与 Linux x64 版本。', irohIdentityFailed: '无法从 sidecar 读取 iroh 端点身份。', irohLaunchFailed: 'iroh sidecar 启动失败。',
+  irohExited: 'iroh sidecar 意外退出，请重新连接。', irohTimeout: '等待 iroh sidecar 超时，请重新连接。', irohInstallConfirm: '现在下载并校验固定的 iroh sidecar 吗（Windows x64 约 15 MB，Linux x64 约 24 MB）？不会安装其他任何内容。', installingIroh: '正在下载并校验 iroh sidecar…', switchingIroh: '正在切换到 iroh…', reconnectingIroh: '正在重连 iroh 传输…', resetIrohConfirm: '要停用 iroh 通道吗？配套插件与配对不受影响。',
+})
+
+Object.assign(MOBILE_CONTROL_MESSAGES.en, {
   requestTimeout: 'The operation timed out. Confirm that DSH is still running, then try again.',
   diagnostics: 'Diagnostics', openDiagnostics: 'Open connection diagnostics', back: 'Back', backToMobile: 'Back to Mobile access', connectionDiagnostics: 'Connection diagnostics',
   diagnosticsIntro: 'Check versions, gateway, network adapter, firewall, and remote channel. The report is automatically redacted and never reads conversations or credentials.',

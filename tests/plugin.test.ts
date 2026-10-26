@@ -612,7 +612,7 @@ describe('stock DSH lifecycle', () => {
     const load = vi.spyOn(JsonMobileAccessControlStore.prototype, 'load')
     const disable = vi.spyOn(JsonMobileAccessControlStore.prototype, 'disableIfPresent')
     await mount(false)
-    expect(disable).toHaveBeenCalledTimes(4)
+    expect(disable).toHaveBeenCalledTimes(5)
     expect(load).toHaveBeenCalledTimes(2)
   })
 
@@ -1090,9 +1090,49 @@ describe('stock DSH lifecycle', () => {
 
   it('does not create control files for remote providers that were never enabled', async () => {
     const mounted = await mount()
-    for (const provider of ['cpolar', 'cloudflared', 'frp', 'origin']) {
+    for (const provider of ['cpolar', 'cloudflared', 'frp', 'origin', 'iroh']) {
       await expect(lstat(join(mounted.directory, 'remote', provider, 'control.json')))
         .rejects.toMatchObject({ code: 'ENOENT' })
+    }
+  })
+
+  it('selects experimental iroh and fails closed without a sidecar', async () => {
+    // Pin the companion lookup away from the checkout siblings so the
+    // absence below holds on machines with a neighbouring companion clone.
+    // The download is stubbed at the network edge so the install failure is
+    // hermetic: no test may fetch the real pinned release.
+    const previousCompanion = process.env.DSH_MOBILE_IROH_COMPANION
+    process.env.DSH_MOBILE_IROH_COMPANION = join(tmpdir(), 'dsh-mobile-no-companion-fixture')
+    const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('too short', { status: 200 }))
+    let mounted: Awaited<ReturnType<typeof mount>>
+    try {
+      mounted = await mount()
+    const selected = await invoke(mounted.route, 'POST', '/api/mobile-access/remote/provider', JSON.stringify({ provider: 'iroh' }))
+    expect(selected.status).toBe(200)
+    expect(JSON.parse(selected.body)).toMatchObject({ provider: 'iroh', running: false, state: 'off' })
+    const control = await invoke(mounted.route, 'GET', '/api/mobile-access/remote/control')
+    expect(JSON.parse(control.body)).toMatchObject({
+      providers: { iroh: { bundled: false, running: false, state: 'off', component: { supported: expect.any(Boolean), installed: false } } },
+    })
+    const refused = await invoke(mounted.route, 'POST', '/api/mobile-access/remote/iroh/component/install', '{}')
+    expect(refused.status).toBe(400)
+    const confirmed = await invoke(mounted.route, 'POST', '/api/mobile-access/remote/iroh/component/install', JSON.stringify({ confirm: true }))
+    expect(confirmed.status).toBe(409)
+    expect(JSON.parse(confirmed.body)).toEqual({ error: 'iroh_download_size_mismatch' })
+    expect(fetch).toHaveBeenCalled()
+    fetch.mockRejectedValue(new TypeError('fetch failed'))
+    const offline = await invoke(mounted.route, 'POST', '/api/mobile-access/remote/iroh/component/install', JSON.stringify({ confirm: true }))
+    expect(offline.status).toBe(409)
+    expect(JSON.parse(offline.body)).toEqual({ error: 'iroh_download_failed' })
+    const started = await invoke(mounted.route, 'POST', '/api/mobile-access/remote/control', JSON.stringify({ running: true }))
+    expect(started.status).toBe(200)
+    expect(JSON.parse(started.body)).toMatchObject({ provider: 'iroh', running: true, state: 'unavailable', errorCode: 'iroh_companion_missing' })
+    const pairing = await invoke(mounted.route, 'POST', '/api/mobile-access/remote/iroh/pairing/begin', '{}')
+    expect(pairing.status).toBe(409)
+    expect(JSON.parse(pairing.body)).toEqual({ error: 'iroh_not_ready' })
+    } finally {
+      if (previousCompanion === undefined) delete process.env.DSH_MOBILE_IROH_COMPANION
+      else process.env.DSH_MOBILE_IROH_COMPANION = previousCompanion
     }
   })
 

@@ -60,6 +60,8 @@
     "docs/SELF_HOSTED_ORIGIN.en.md",
     "docs/CADDY_MANAGED.md",
     "docs/CADDY_MANAGED.en.md",
+    "docs/IROH.md",
+    "docs/IROH.en.md",
     "docs/CLIENT_MODULES.md",
     "docs/CLIENT_MODULES.en.md",
     "docs/TRUSTED_NETWORKS.md",
@@ -96,6 +98,7 @@
   "scripts": {
     "build": "tsdown && node ./scripts/check-client-bundle.mjs",
     "build:funnel-host": "node ./scripts/build-funnel-host.mjs",
+    "build:iroh-host": "node ./scripts/build-iroh-host.mjs",
     "check:funnel-licenses": "node ./scripts/funnel-third-party-licenses.mjs",
     "check:funnel-licenses:full": "node ./scripts/funnel-third-party-licenses.mjs --full-check",
     "check:mobile-release": "node ./scripts/check-mobile-release.mjs",
