@@ -8,6 +8,8 @@ Choose which client components the dedicated mobile page loads. This does not un
 
 Selection applies to whole module IDs, not individual buttons, cards or sidebars inside a module. A plugin may register several modules or share/depend on a module with other features. A feature not delivered as an optional client module may not be independently removable here.
 
+The selection covers client modules only. A plugin may also inject page-level styles from the host into every page — wallpapers and whole-page palettes are the usual case. That content is not a client module, so deselecting one does not remove it: disable the whole plugin, or let the plugin adapt itself to the mobile layout. See [skins and mobile layout](SKIN_COMPATIBILITY.en.md) for skin diagnosis.
+
 ## Computer defaults and this device
 
 - On the **computer: Settings → General → Mobile page modules → Manage**, set defaults for this computer's mobile access. Enable a LAN or remote access entry first so the current DSH module catalog can be read.
