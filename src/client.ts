@@ -10,6 +10,7 @@ import { createFrpAttachFrpcToml, createFrpAttachTemplate } from './frp-attach.j
 import { parseFrpSettings, type FrpSettings } from './frp-config.js'
 import { FRP_FORM_ERRORS, validateFrpForm, type FrpFormIssue, type FrpFormValues } from './frp-form-validation.js'
 import { installNativeMobileSurface, NATIVE_MOBILE_STYLES, resolveNativeMobileLanguage } from './native-mobile.js'
+import { layerCustomProperties } from './mobile-layers.js'
 import { installVoiceSession } from './voice-session.js'
 import { installDraftTransfer } from './draft-transfer.js'
 import { installMobileFontPreference, MobileFontSizeRow } from './mobile-font.js'
@@ -4516,6 +4517,9 @@ export function apply(ctx: ClientContext): void {
     const style = element('style'); style.dataset.plugin = 'dsh-mobile'; style.textContent = desktopAdmin
       ? CONTROL_STYLES
       : NATIVE_MOBILE_STYLES
+    // The mobile shell band table travels as custom properties so the two
+    // stylesheets that paint the same page cannot disagree about stacking.
+    if (!desktopAdmin) style.textContent += `:root{${layerCustomProperties()}}`
     style.textContent += CLIENT_MODULE_STYLES
     document.head.append(style)
     const removeCustom = !desktopAdmin || gatewayCustomization ? installCustomAssets() : () => undefined

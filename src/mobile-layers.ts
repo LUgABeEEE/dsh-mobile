@@ -107,3 +107,18 @@ if (!(MOBILE_SHELL_LAYERS.details < MOBILE_SHELL_LAYERS.overlay)) {
 if (!(MOBILE_PLUGIN_OVERLAY_BAND.max < DSH_SETTINGS_LAYER_FLOOR)) {
   throw new Error('The plugin overlay band must stay below DSH settings')
 }
+
+/**
+ * Emit the band table as CSS custom properties.
+ *
+ * Both stylesheets are single literals and the bundler keeps a `${...}` inside
+ * them verbatim, so the numbers travel as variables instead. One owner means
+ * the CSS and the ordering assertions above cannot disagree.
+ * @returns a declaration list for a `:root` rule.
+ */
+export function layerCustomProperties(): string {
+  const name = (key: string): string => key.replace(/[A-Z]/gu, letter => `-${letter.toLowerCase()}`)
+  return Object.entries(MOBILE_SHELL_LAYERS)
+    .map(([key, value]) => `--dshm-layer-${name(key)}:${value}`)
+    .join(';')
+}

@@ -75,6 +75,8 @@ jobs:
       - run: npm run smoke:native-layout
       - name: Verify mobile root geometry against broad skin overrides
         run: npm run smoke:layout-ownership
+      - name: Verify a body-portal plugin menu stays clickable under the drawer
+        run: npm run smoke:plugin-portal-layers
       - name: Detect a populated trace collapsed by a foreign root-layout rule
         if: matrix.dsh == '0.2.1-alpha.2' || matrix.dsh == '0.2.1-alpha.3' || matrix.dsh == '0.2.1-rc.2'
         shell: bash
