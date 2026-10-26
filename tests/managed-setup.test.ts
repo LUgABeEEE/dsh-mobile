@@ -9,6 +9,7 @@ import {
   materializeManagedSetup,
   parseManagedSetup,
   parseAdditionalTrustedNetworks,
+  refreshManagedUpstreamOrigin,
   saveManagedTrustedNetworks,
   preferredLanInterfaceNames,
   selectLanNetwork,
@@ -225,5 +226,23 @@ describe('managed DHCP setup', () => {
       },
       unexpected: true,
     })).toThrow('unsupported format')
+  })
+})
+
+describe('managed setup upstream snapshot', () => {
+  it('refreshes only the legacy upstreamOrigin and keeps every other field', async () => {
+    const setup = { ...await fixture(), extraAllowedCidrs: ['11.24.0.0/24'] }
+    const setupFile = join(dirname(setup.tls.caCertFile), 'setup.json')
+    await writeFile(setupFile, `${JSON.stringify(setup, null, 2)}\n`)
+
+    expect(await refreshManagedUpstreamOrigin(setupFile, setup, 57_725)).toBe(true)
+    const rewritten = parseManagedSetup(JSON.parse(await readFile(setupFile, 'utf8')))
+    expect(rewritten).toEqual({ ...setup, upstreamOrigin: 'http://127.0.0.1:57725' })
+
+    // Already current: no rewrite, and an unusable port is not written at all.
+    const current = { ...setup, upstreamOrigin: 'http://127.0.0.1:57725' }
+    expect(await refreshManagedUpstreamOrigin(setupFile, current, 57_725)).toBe(false)
+    expect(await refreshManagedUpstreamOrigin(setupFile, current, 0)).toBe(false)
+    expect(parseManagedSetup(JSON.parse(await readFile(setupFile, 'utf8')))).toEqual(current)
   })
 })

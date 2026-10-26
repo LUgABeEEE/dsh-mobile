@@ -32,13 +32,21 @@ Follow the current procedure in `CONTRIBUTING.md` and the actual workflows rathe
 
 Choose checks based on the outgoing diff: source/type/behavior, real packed installation and upgrades, mounted browser consumers, relevant ADB paths and platform-specific component tests. Validate the final candidate in CI before publication; a contributor's green PR is not evidence for the maintainer's later corrections. Do not describe local Windows evidence as Linux/macOS CI.
 
+Record the tested head and verify the merged tree before tagging. An identical tree links source evidence, but does not guarantee that a later independent CI run will pass. Read actual workflow dependencies; do not assume a concurrent CI run gates publication. If a new check fails while publication is running, stop dependent publication where still possible and reconcile its actual state. A cancellation request is not confirmed cancellation: inspect the response, terminal workflow state and public artifacts before reporting whether anything published. Keep the earlier passing candidate, later failure and publication outcomes separate.
+
 Before a real release, verify cleanly scoped changes, original contributor ancestry, metadata, package contents, changelog/date, signer continuity, applicable checks and exact tested commit. Never publish from a tree containing unrelated work or bump the App download pointer before its release exists.
 
 After authorized publication, independently check npm metadata and dist-tag, downloaded npm artifact/integrity, GitHub non-draft release/tag/commit/assets, package byte equality/checksum and any new APK's manifest/signer. A successful workflow dispatch, green job or skipped upload is not proof that users can download/install the intended artifact. An existing version may not be overwritten; reconcile what actually published before any retry.
 
+Registry metadata can briefly lag a successful upload. Use bounded read-only propagation checks against the official version URL and retain initial failures; a temporary404 or ETARGET is not permission to republish. Accept only complete downloaded files whose size, integrity and checksum match. EOF, TLS errors and partial files are failed observations, not usable artifacts. If an authorized existing proxy is needed, keep it command-local rather than changing global settings or disabling TLS verification.
+
+Check the previous plugin release explicitly when preparing release notes: an independently published Android or component tag can make automatically generated notes choose the wrong comparison base. Keep plugin and App notes separate, credit the actual contributions, and link the complete plugin-to-plugin changes.
+
 Before continuing a partially published plugin release, compare the occupied npm version's integrity with the exact candidate tarball using [the reconciliation helper](../../../../scripts/check-npm-release-integrity.mjs). Only a matching artifact permits completion; network/metadata errors are not absence. Optional component publication follows the maintainer-authorized manual workflow. Do not invent a second-person approval requirement for this single-maintainer project. Retain exact tag/source, native test, size/hash, occupied-release and post-publication checks. Contributor real-world evidence can be accepted within its stated scope; do not relabel it as independent testing of another candidate or deployment.
 
 Public npm/plugin releases, signed APKs, optional component binaries and source promotion can complete independently. Report partial success accurately and stop where new authority or a real unresolved failure is required; do not delete a release, unpublish, force-push or activate a component catalog merely to make the process appear complete.
+
+For a post-publication test repair, inspect the real package contents before deciding whether another version is needed. An unpackaged fixture-only change does not require a new npm/APK release. Integrate it separately with its applicable checks, preserve the failed run, and do not claim the whole CI passed merely because the repaired cases passed. A separate unresolved failure still blocks that follow-up's integration. Keep that gate separate from public-artifact acceptance; call the public payload verified only after its own checks pass.
 
 ## Maintain the guidance
 

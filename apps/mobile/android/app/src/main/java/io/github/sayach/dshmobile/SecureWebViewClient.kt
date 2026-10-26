@@ -29,6 +29,10 @@ internal fun loadFailureForHttpStatus(status: Int): LoadFailure = when (status) 
     else -> LoadFailure.NETWORK
 }
 
+/** First-boot failures require explicit retry rather than repeatedly replacing an unfinished page. */
+internal fun shouldAutomaticallyRecoverPage(failure: LoadFailure, initialLoadPending: Boolean): Boolean =
+    !initialLoadPending && failure in setOf(LoadFailure.NETWORK, LoadFailure.AUTH_EXPIRED, LoadFailure.SERVICE_UNAVAILABLE)
+
 /** Whether a remote load failure should direct the user to refresh a temporary cpolar address. */
 internal fun isCpolarAddressFailure(
     failure: LoadFailure,
@@ -61,6 +65,7 @@ internal class SecureWebViewClient(
     private val onLoaded: () -> Unit,
     private val onBeforeTopLevelNavigation: () -> Unit,
     private val onContentVisible: (documentGeneration: Int) -> Unit = {},
+    private val connectionDeadlineActive: () -> Boolean = { false },
 ) : WebViewClient() {
     private val handler = Handler(Looper.getMainLooper())
     private val document = WebViewDocumentState(origin)
@@ -185,7 +190,7 @@ internal class SecureWebViewClient(
         loadingUrl = url
         val expectedGeneration = document.generation
         val task = Runnable {
-            if (loadingUrl != url || !document.shouldTimeout(expectedGeneration)) return@Runnable
+            if (loadingUrl != url || !document.shouldTimeout(expectedGeneration, connectionDeadlineActive())) return@Runnable
             loadingUrl = null
             timeout = null
             document.failed()

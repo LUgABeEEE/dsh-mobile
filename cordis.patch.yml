@@ -1,22 +1,12 @@
 # Community bundle for the stock DSH Web profile. Installation contributes a
 # Host gateway and a browser Client face; it does not patch DSH source files.
-- id: directory-picker
-  name: '@deepseek-ai/dsh-host-directory-picker-auto'
-  disabled: true
-
+#
+# Leave DSH's adaptive Host/Client directory-picker pair intact. A second Host
+# provider conflicts with its single service; disabling the default can leave
+# workspace actions without a picker. The dedicated Mobile page reuses an
+# upstream browse surface when present and otherwise registers its own web flow
+# through public workspace slots, without replacing the Desktop's system chooser.
 - insert:
-    - id: directory-picker-mobile-host
-      name: '@deepseek-ai/dsh-host-directory-picker-browse'
-      # Windows DSH Desktop supplies its own browse pair after user patches.
-      # Its `desktopProfiles` service can appear before `desktopRuntime`; keep
-      # the platform guard so a Desktop profile on macOS/Linux retains the
-      # portable in-page picker.
-      disabled: !!js process.platform === 'win32' && (ctx.get('desktopRuntime')?.platform === 'win32' || ctx.get('desktopProfiles') !== undefined)
-
-    - id: directory-picker-mobile-surface
-      name: '@deepseek-ai/dsh-client-ui-directory-picker-browse'
-      disabled: !!js process.platform === 'win32' && (ctx.get('desktopRuntime')?.platform === 'win32' || ctx.get('desktopProfiles') !== undefined)
-
     - id: mobile-access
       name: dsh-mobile
       inject: [webServer, connection]
@@ -38,4 +28,3 @@
     # DSH anchors this file entry beside the bundle patch, independent of pnpm's linker.
     - id: dsh-ui-fixes
       name: ./packages/question-fixes/lib/index.mjs
-

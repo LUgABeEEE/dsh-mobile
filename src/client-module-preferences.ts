@@ -8,6 +8,12 @@ export interface ClientModuleEntry {
   readonly id: string
   readonly required: boolean
   readonly dependencies: readonly string[]
+  /** Source bytes of the upstream bundle, when the Gateway could measure them. */
+  readonly bytes?: number
+  /** Gzipped bytes the phone would receive, when the Gateway could measure them. */
+  readonly gzipBytes?: number
+  /** The plugin package's own one-line description, when it could be read. */
+  readonly description?: string
 }
 
 /** Selection returned to the computer administrator or the authenticated device. */

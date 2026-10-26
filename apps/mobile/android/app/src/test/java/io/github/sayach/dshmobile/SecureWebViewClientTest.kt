@@ -46,7 +46,9 @@ class SecureWebViewClientTest {
         assertTrue(confirm.indexOf("document.confirmContentReady(expectedGeneration)") < confirm.indexOf("clearTimeout()"))
         val timeout = source.substringAfter("private fun armTimeout(").substringBefore("\n    private fun ")
         assertTrue(timeout.contains("val expectedGeneration = document.generation"))
-        assertTrue(timeout.contains("!document.shouldTimeout(expectedGeneration)"))
+        assertTrue(timeout.contains("!document.shouldTimeout(expectedGeneration, connectionDeadlineActive())"))
+        assertTrue(timeout.indexOf("document.shouldTimeout(") < timeout.indexOf("document.failed()"))
+        assertTrue(timeout.indexOf("document.shouldTimeout(") < timeout.indexOf("view.stopLoading()"))
     }
 
     // `onReceivedSslError` proceeds only when a CA is pinned, the error is SSL_UNTRUSTED, the

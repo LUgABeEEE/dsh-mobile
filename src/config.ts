@@ -57,6 +57,8 @@ export interface PluginConfig {
   upstreamOrigin?: string
   publicAuthorities?: string[]
   allowedCidrs?: string[]
+  /** Extra direct management peers; every non-loopback request still requires DSH authentication. */
+  adminAllowedCidrs?: string[]
   stateFile: string
   /** Internal persisted on/off preference managed by the DSH plugin card. */
   controlFile: string
@@ -119,6 +121,7 @@ export interface ResolvedGatewayConfig {
   readonly upstreamOrigin: URL
   readonly authorities: readonly AuthoritySpec[]
   readonly allowedCidrs: readonly ParsedCidr[]
+  readonly adminAllowedCidrs: readonly ParsedCidr[]
   readonly stateFile: string
   /** Local extension root adjacent to the mobile-access state file. */
   readonly extensionsDir: string
@@ -173,6 +176,7 @@ export const Config: z<PluginConfig> = z.object({
   upstreamOrigin: z.string(),
   publicAuthorities: z.array(String).default(undefined as unknown as string[]),
   allowedCidrs: z.array(String).default(undefined as unknown as string[]),
+  adminAllowedCidrs: z.array(String).default([]),
   stateFile: String,
   controlFile: z.string().hidden().required(),
   customCssFile: z.string().hidden(),
@@ -377,6 +381,15 @@ export function parseGatewayConfig(raw: unknown): ResolvedGatewayConfig {
   if (new Set(allowedCidrs.map(entry => `${String(entry.bits)}:${entry.network.toString(16)}:${String(entry.prefix)}`)).size !== allowedCidrs.length) {
     throw new Error('allowedCidrs must not contain duplicates')
   }
+  const adminSources = value.adminAllowedCidrs === undefined ? [] : value.adminAllowedCidrs
+  if (!Array.isArray(adminSources) || adminSources.length > 32 || adminSources.some(source => typeof source !== 'string')) {
+    throw new Error('adminAllowedCidrs must contain at most 32 CIDR strings')
+  }
+  const adminAllowedCidrs = adminSources.map(parseCidr)
+  if (adminAllowedCidrs.some(entry => entry.prefix === 0)) throw new Error('adminAllowedCidrs must not allow every address')
+  if (new Set(adminAllowedCidrs.map(entry => `${String(entry.bits)}:${entry.network.toString(16)}:${String(entry.prefix)}`)).size !== adminAllowedCidrs.length) {
+    throw new Error('adminAllowedCidrs must not contain duplicates')
+  }
   const deviceTtlMs = integer(value.deviceTtlMs, 'deviceTtlMs', 90 * 24 * 60 * 60_000, 60_000, 366 * 24 * 60 * 60_000)
   const sessionTtlMs = integer(value.sessionTtlMs, 'sessionTtlMs', 8 * 60 * 60_000, 30_000, 24 * 60 * 60_000)
   if (sessionTtlMs > deviceTtlMs) throw new Error('sessionTtlMs must not exceed deviceTtlMs')
@@ -388,6 +401,7 @@ export function parseGatewayConfig(raw: unknown): ResolvedGatewayConfig {
     upstreamOrigin,
     authorities: Object.freeze(authorities),
     allowedCidrs: Object.freeze(allowedCidrs),
+    adminAllowedCidrs: Object.freeze(adminAllowedCidrs),
     stateFile: absoluteFile(value.stateFile, 'stateFile'),
     extensionsDir: join(dirname(absoluteFile(value.stateFile, 'stateFile')), 'extensions'),
     customCssFile: value.customCssFile === undefined

@@ -115,6 +115,33 @@ export function parseAdditionalTrustedNetworks(value: unknown): readonly string[
   return Object.freeze(entries)
 }
 
+/**
+ * Refresh the legacy `upstreamOrigin` snapshot to the DSH port actually in use.
+ *
+ * The runtime deliberately follows the WebServer port instead of this field (a Desktop
+ * profile can start with `--port 0`), but a stale snapshot is indistinguishable from a
+ * stale gateway to whoever reads the file while diagnosing a restart — #273 became a
+ * manual edit because of it. Rewriting it keeps the file honest without changing which
+ * upstream the gateway uses.
+ *
+ * @param setupFile - Existing managed setup file.
+ * @param setup - The setup as it was read.
+ * @param webServerPort - The port the active DSH WebServer bound.
+ * @returns Whether the file needed rewriting.
+ */
+export async function refreshManagedUpstreamOrigin(
+  setupFile: string,
+  setup: ManagedSetup,
+  webServerPort: number,
+): Promise<boolean> {
+  if (!Number.isInteger(webServerPort) || webServerPort <= 0) return false
+  const upstreamOrigin = `http://127.0.0.1:${String(webServerPort)}`
+  if (setup.upstreamOrigin === upstreamOrigin) return false
+  const next = Object.freeze({ ...setup, upstreamOrigin })
+  await atomicWrite(setupFile, `${JSON.stringify(next, null, 2)}\n`)
+  return true
+}
+
 /** Save extra trusted networks without replacing the interface or pairing identity.
  * @param setupFile - Existing managed setup file.
  * @param values - Explicitly selected additional networks.
