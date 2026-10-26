@@ -116,6 +116,22 @@ Constrain overlays to their actual container and visible area, rather than using
 
 Add `env(safe-area-inset-*)` only where content really reaches a screen edge and the host has not already handled it, avoiding duplicate space. Save, Cancel and errors must remain visible or reachable by scrolling with the keyboard open. An independent scroll area should not move the page underneath.
 
+### Overlay stacking and portals
+
+The narrow-screen drawer is a `position:fixed` overlay. The mobile layout confines it to the shell's own stacking context (`.dshm-shell{isolation:isolate}`), so whether an overlay is visible depends on **where it renders** — inside the shell or under `document.body` — not on which z-index number is larger:
+
+- A menu or dialog rendered to `document.body` (a React portal, `createPortal`, or a direct body `append`) paints above the mobile shell and is not covered by the narrow drawer; an ordinary positive value such as 60 is enough. See [#288](https://github.com/saya-ch/dsh-mobile/issues/288).
+- A `position:fixed` element left inside `.dshm-shell` competes only with the shell's internal layers. Current values are listed below; treat the shell/body rule as the contract and the numbers as implementation detail, not a stable API:
+
+| Shell-internal layer | Current value | Purpose |
+| --- | --- | --- |
+| `.dshm-scrim` | 65 | Drawer and right-panel scrim |
+| `.dshm-drawer` | 70 | Narrow drawer / wide persistent sidebar |
+| `.dshm-details` | 80 | Right panel |
+| `.dshm-overlay` | 90 | Host-provided plugin overlay slot |
+
+- An overlay that must follow a panel should live in that panel's own root, close with it, and be measured with `elementFromPoint()`. `z-index: 99999` is not an adaptation strategy: it only reorders shell-internal layers and never lifts an in-shell element above a body portal.
+
 ## Verification: what code checks, browsers and devices establish
 
 ### Structural checks

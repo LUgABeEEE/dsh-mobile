@@ -116,6 +116,22 @@ h('button', { className: 'icon-button', 'aria-label': label }, h(Icon, { 'aria-h
 
 只有确实延伸到屏幕边缘且未被宿主处理的区域才追加 `env(safe-area-inset-*)`，避免重复留白。键盘打开后，保存、取消和错误提示仍应可见或可滚动到达；独立滚动区域不应拖动背后的页面。
 
+### 浮层层级与 portal
+
+小屏抽屉是 `position:fixed` 的覆盖层。移动布局把这一层限制在 `.dshm-shell` 自己的层叠上下文里（`isolation:isolate`），因此判断浮层能否看见，先看它渲染在**壳内还是 body 下**，而不是比谁的数字大：
+
+- 渲染到 `document.body`（React portal、`createPortal`、`append` 到 body）的菜单/对话框天然绘制在移动外壳之上，不会被小屏抽屉压住；普通正值（例如 60）就够用。参见 [#288](https://github.com/saya-ch/dsh-mobile/issues/288)。
+- 留在 `.dshm-shell` 内部的 `position:fixed` 元素只与外壳内部层级比较。当前实现值如下，判断以「壳内 / body 下」这条规则为准，不要把数字当稳定 API：
+
+| 外壳内部层 | 当前值 | 用途 |
+| --- | --- | --- |
+| `.dshm-scrim` | 65 | 抽屉与右侧面板的遮罩 |
+| `.dshm-drawer` | 70 | 小屏抽屉 / 宽屏常驻侧栏 |
+| `.dshm-details` | 80 | 右侧面板 |
+| `.dshm-overlay` | 90 | 宿主提供的插件浮层槽 |
+
+- 需要跟随某个面板定位的浮层，请挂在该面板自己的根节点里，随面板一起关闭，并用 `elementFromPoint()` 实测边缘命中；`z-index: 99999` 不是适配手段，它只会改变壳内顺序，不会把壳内元素抬到 body 浮层之上。
+
 ## 验证：代码检查、浏览器与真机分别证明什么
 
 ### 结构检查

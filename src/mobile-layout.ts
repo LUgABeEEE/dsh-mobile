@@ -517,8 +517,12 @@ class ThemePresenter {
 
 export const MOBILE_LAYOUT_STYLES = `
 html,body,#root{width:100%;height:100%;overflow:hidden}
-/* The definite root height bounds the transcript on engines without dvh. */
-.dshm-shell{position:relative;display:grid;grid-template-rows:minmax(0,1fr);width:100%;height:100%;height:100dvh;min-width:0;overflow:hidden;background:var(--dsw-alias-bg-base,#fff)}
+/* The definite root height bounds the transcript on engines without dvh.
+   Isolation confines the shell-owned layers (scrim 65 / drawer 70 / details 80 /
+   overlay 90) to this stacking context so a menu a third-party plugin portals to
+   document.body paints above the open drawer; without it the drawer's z-index
+   covers such menus and the tap appears to do nothing (issue #288). */
+.dshm-shell{position:relative;isolation:isolate;display:grid;grid-template-rows:minmax(0,1fr);width:100%;height:100%;height:100dvh;min-width:0;overflow:hidden;background:var(--dsw-alias-bg-base,#fff)}
 /* The mobile root owns its Grid geometry. Layered important rules keep broad
    unlayered skin rules from collapsing virtualized views to the header height. */
 @layer dsh-mobile-layout{
