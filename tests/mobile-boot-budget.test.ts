@@ -46,7 +46,7 @@ describe('mobile boot graph budget', () => {
       }],
       batches: [{ phase: 'application', url: '/plugins/application.js', rev: 'current', entries: [...ids, LAYOUT] }],
     }
-    const index = `<!doctype html><link rel="preload" as="script" href="/plugins/application.js"><script>window.__DSH_BOOT__=${JSON.stringify(graph)};</script>`
+    const index = `<!doctype html><html><head><link rel="preload" as="script" href="/plugins/application.js"><script>window.__DSH_BOOT__=${JSON.stringify(graph)};</script></head><body></body></html>`
     const source = Buffer.from(`/*${'x'.repeat(2 * MIB - 4)}*/`)
     const upstream = createServer((request, response) => {
       const body = request.url === '/' ? Buffer.from(index) : source
@@ -94,7 +94,7 @@ describe('mobile boot graph budget', () => {
       outgoing.end()
     })
     const document = await get('/')
-    expect(document.status).toBe(200)
+    expect(document.status, `dedicated boot document response: ${document.status} ${document.body.toString('utf8').slice(0, 160)}`).toBe(200)
     const html = document.body.toString('utf8')
     const assignment = /window\.__DSH_BOOT__=(\{[\s\S]*?\});/u.exec(html)
     expect(assignment).not.toBeNull()
