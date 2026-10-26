@@ -1,8 +1,14 @@
 # 贡献者 / Contributors
 
-GitHub 的 [Contributors 图表](https://github.com/saya-ch/dsh-mobile/graphs/contributors) 按进入默认分支的提交自动统计，无法手动加入仅提交 issue 或 PR 提案的成员。本页按截至 2026-10-25 的实际参与方式感谢社区成员；仓库维护者与自动依赖更新仍可在 GitHub 历史记录中查看。
+GitHub 的 [Contributors 图表](https://github.com/saya-ch/dsh-mobile/graphs/contributors) 按进入默认分支的提交自动统计，无法手动加入仅提交 issue 或 PR 提案的成员。本页按截至 2026-10-26 的实际参与方式感谢社区成员；仓库维护者与自动依赖更新仍可在 GitHub 历史记录中查看。
 
-GitHub's Contributors graph counts commits on the default branch; issue reports and PR proposals cannot be manually added to it. This page credits community members by how they contributed, through 2026-10-25. The repository maintainer and automated dependency updates remain visible in GitHub's history.
+GitHub's Contributors graph counts commits on the default branch; issue reports and PR proposals cannot be manually added to it. This page credits community members by how they contributed, through 2026-10-26. The repository maintainer and automated dependency updates remain visible in GitHub's history.
+
+## 待发布候选 / Unreleased candidate
+
+感谢 [@OranImp](https://github.com/OranImp) 在 [#271](https://github.com/saya-ch/dsh-mobile/issues/271) 反馈目录选择流程缺少新建文件夹，[@LzBsA](https://github.com/LzBsA) 在 [#272](https://github.com/saya-ch/dsh-mobile/issues/272) 提出受控 NAS 管理入口需求，以及 [@LUgABeEEE](https://github.com/LUgABeEEE) 在 [#275](https://github.com/saya-ch/dsh-mobile/issues/275)、[#276](https://github.com/saya-ch/dsh-mobile/issues/276) 提供慢链路启动与模块恢复的详细报告。[@LUgABeEEE](https://github.com/LUgABeEEE) 的 [#274](https://github.com/saya-ch/dsh-mobile/pull/274) 配置快照修正和 [#280](https://github.com/saya-ch/dsh-mobile/pull/280) 插件适配指南已保留原作者提交，候选另附维护者修正。候选尚未发布，不代表正式版已包含这些改动。
+
+Thanks [@OranImp](https://github.com/OranImp) for reporting missing folder creation in [#271](https://github.com/saya-ch/dsh-mobile/issues/271), [@LzBsA](https://github.com/LzBsA) for the controlled NAS administration request in [#272](https://github.com/saya-ch/dsh-mobile/issues/272), and [@LUgABeEEE](https://github.com/LUgABeEEE) for the detailed slow-link boot and module-recovery reports in [#275](https://github.com/saya-ch/dsh-mobile/issues/275) and [#276](https://github.com/saya-ch/dsh-mobile/issues/276). Original commits for [@LUgABeEEE](https://github.com/LUgABeEEE)'s setup snapshot correction in [#274](https://github.com/saya-ch/dsh-mobile/pull/274) and adaptation guide in [#280](https://github.com/saya-ch/dsh-mobile/pull/280) are retained alongside maintainer corrections. This candidate is not yet a published release.
 
 ## 0.6.17 代码贡献与反馈 / Code contributions and reports for 0.6.17
 
