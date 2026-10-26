@@ -47,8 +47,13 @@ async function invoke(
   body = '',
   hostHostname = '127.0.0.1',
   requestHeaders?: Record<string, string>,
+  directPeer?: string,
 ): Promise<{ status: number; body: string }> {
-  const server = createServer((request, response) => { void route.handler(request, response) })
+  const server = createServer((request, response) => {
+    // Controlled admission fixture; the transport itself remains on loopback.
+    if (directPeer !== undefined) Object.defineProperty(request.socket, 'remoteAddress', { value: directPeer })
+    void route.handler(request, response)
+  })
   await new Promise<void>(resolve => { server.listen(0, '127.0.0.1', resolve) })
   const port = (server.address() as AddressInfo).port
   const authority = `${hostHostname}:${String(port)}`
@@ -103,6 +108,7 @@ async function mount(
   config: Partial<PluginConfig> = {},
   requestRejection: (request: IncomingMessage) => 401 | 403 | undefined = () => 401,
   indexInjections: readonly { kind: string; text?: string }[] = [],
+  authenticationUrl?: (base: string) => string,
 ): Promise<{ context: Context; route: WebRoute; command: CommandDefinition; upstreamBase: string | undefined; directory: string }> {
   const directory = await mkdtemp(join(tmpdir(), 'dsh-mobile-plugin-'))
   temporaryDirectories.push(directory)
@@ -128,7 +134,7 @@ async function mount(
   context.provide('connection', {
     authenticatedUrl(baseUrl: string) {
       upstreamBase = baseUrl
-      return `${baseUrl}/?token=test-launch-token`
+      return authenticationUrl === undefined ? `${baseUrl}/?token=test-launch-token` : authenticationUrl(baseUrl)
     },
     requestRejection,
   } as never)
@@ -757,6 +763,28 @@ describe('stock DSH lifecycle', () => {
     const allowed = await invoke(mounted.route, 'GET', '/api/mobile-access/lan/control', '', '192.168.50.23')
     expect(allowed.status).toBe(200)
     expect(JSON.parse(allowed.body)).toMatchObject({ running: false })
+  })
+
+  it('wires explicit management networks to authenticated DSH requests without changing defaults', async () => {
+    const authenticate = vi.fn((request: IncomingMessage) => request.headers.cookie === 'dsh-session=valid' ? undefined : 401)
+    const mounted = await mount(false, 3080, { adminAllowedCidrs: ['192.168.50.23/32'] }, authenticate)
+    const path = '/api/mobile-access/lan/control'
+    expect((await invoke(mounted.route, 'GET', path, '', '192.168.50.8', {}, '192.168.50.23')).status).toBe(401)
+    expect((await invoke(mounted.route, 'GET', path, '', '192.168.50.8', { cookie: 'dsh-session=valid' }, '192.168.50.23')).status).toBe(200)
+    expect((await invoke(mounted.route, 'GET', path, '', '192.168.50.8', { cookie: 'dsh-session=valid', 'x-forwarded-for': '192.168.50.23' }, '192.168.50.24')).status).toBe(403)
+    const defaultMount = await mount(false, 3080, {}, authenticate)
+    expect((await invoke(defaultMount.route, 'GET', path, '', '192.168.50.8', { cookie: 'dsh-session=valid' }, '192.168.50.23')).status).toBe(403)
+  })
+
+  it.each([
+    (base: string) => base,
+    (_base: string) => 'https://foreign.example/?token=not-ours',
+    (base: string) => `${base}/?other=not-a-token`,
+  ])('does not open network management when upstream authentication is disabled or unsupported', async authenticationUrl => {
+    const mounted = await mount(false, 3080, { adminAllowedCidrs: ['192.168.50.23/32'] }, () => undefined, [], authenticationUrl)
+    const path = '/api/mobile-access/lan/control'
+    expect((await invoke(mounted.route, 'GET', path, '', '192.168.50.8', {}, '192.168.50.23')).status).toBe(401)
+    expect((await invoke(mounted.route, 'GET', path)).status).toBe(200)
   })
 
   it('requires an authenticated Host session for official Desktop Origin-less writes', async () => {

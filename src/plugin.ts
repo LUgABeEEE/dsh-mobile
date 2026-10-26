@@ -92,7 +92,7 @@ import {
   type RemoteProviderController,
   type RemoteProviderStatus,
 } from './remote.js'
-import { parseAuthority, parseCidr, probeTcpReachable } from './network.js'
+import { isLoopbackAddress, parseAuthority, parseCidr, probeTcpReachable } from './network.js'
 import {
   availableLanNetworks,
   isNetworkSelectionError,
@@ -492,6 +492,11 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
   const mobileAccess: MobileAccessService = createMobileAccessService(ctx)
   const baseTemplate = loopbackTemplate(loaded, ctx.webServer.port)
   const upstreamLoginUrl = upstreamAuthenticatedUrl(ctx, baseTemplate.upstreamOrigin)
+  const adminLogin = upstreamLoginUrl === undefined ? undefined : new URL(upstreamLoginUrl)
+  const supportsRemoteAdminAuthentication = adminLogin !== undefined
+    && adminLogin.origin === baseTemplate.upstreamOrigin.origin && adminLogin.pathname === '/'
+    && adminLogin.username === '' && adminLogin.password === '' && adminLogin.hash === ''
+    && (adminLogin.searchParams.get('token')?.length ?? 0) > 0
   const instanceId = await stableInstanceId(loaded, baseTemplate)
   const stateDirectory = dirname(baseTemplate.stateFile)
   const logFile = await installMobileFileLogger(ctx, stateDirectory)
@@ -937,7 +942,10 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
     handler: async (request, response) => {
       try {
         const target = parseRequestTarget(request.url)
-        assertLocalAdminTrust(request, request.method === 'POST', () => authenticateDesktopAdmin(request))
+        assertLocalAdminTrust(request, request.method === 'POST', () => (
+          (isLoopbackAddress(request.socket.remoteAddress ?? '') || supportsRemoteAdminAuthentication)
+          && authenticateDesktopAdmin(request)
+        ), baseTemplate.adminAllowedCidrs)
         if (adminClosing) throw new HttpError(503, 'unavailable')
         if (target.search !== '') throw new HttpError(400, 'bad_request')
         const lanControl = target.decodedPathname === `${LOCAL_ADMIN_PREFIX}/control`
