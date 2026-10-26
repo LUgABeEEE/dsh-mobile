@@ -51,8 +51,13 @@ async function invoke(
   body = '',
   hostHostname = '127.0.0.1',
   requestHeaders?: Record<string, string>,
+  directPeer?: string,
 ): Promise<{ status: number; body: string }> {
-  const server = createServer((request, response) => { void route.handler(request, response) })
+  const server = createServer((request, response) => {
+    // Controlled admission fixture; the transport itself remains on loopback.
+    if (directPeer !== undefined) Object.defineProperty(request.socket, 'remoteAddress', { value: directPeer })
+    void route.handler(request, response)
+  })
   await new Promise<void>(resolve => { server.listen(0, '127.0.0.1', resolve) })
   const port = (server.address() as AddressInfo).port
   const authority = `${hostHostname}:${String(port)}`
@@ -112,6 +117,7 @@ async function mount(
   scopedPushHostServices = false,
   loaderMobileInjection = false,
   waitForPushRuntime = true,
+  authenticationUrl?: (base: string) => string,
 ): Promise<{
   context: Context; route: WebRoute; command: CommandDefinition; upstreamBase: string | undefined; directory: string;
   pushProjectionDisposer: (() => void) | undefined; pushProjectionRegistered: Promise<void>;
@@ -143,7 +149,7 @@ async function mount(
   context.provide('connection', {
     authenticatedUrl(baseUrl: string) {
       upstreamBase = baseUrl
-      return `${baseUrl}/?token=test-launch-token`
+      return authenticationUrl === undefined ? `${baseUrl}/?token=test-launch-token` : authenticationUrl(baseUrl)
     },
     requestRejection,
   } as never)
@@ -1125,6 +1131,47 @@ describe('stock DSH lifecycle', () => {
     expect(requestRejection).toHaveBeenCalled()
   })
 
+  it('wires explicit management networks to authenticated DSH requests without changing defaults', async () => {
+    const authenticate = vi.fn((request: IncomingMessage) => request.headers.cookie === 'dsh-session=valid' ? undefined : 401)
+    const mounted = await mount(false, 3080, { adminAllowedCidrs: ['192.168.50.23/32'] }, authenticate)
+    const path = '/api/mobile-access/lan/control'
+    expect((await invoke(mounted.route, 'GET', path, '', '192.168.50.8', {}, '192.168.50.23')).status).toBe(401)
+    expect((await invoke(mounted.route, 'GET', path, '', '192.168.50.8', { cookie: 'dsh-session=valid' }, '192.168.50.23')).status).toBe(200)
+    expect((await invoke(mounted.route, 'GET', path, '', '192.168.50.8', { cookie: 'dsh-session=valid', 'x-forwarded-for': '192.168.50.23' }, '192.168.50.24')).status).toBe(403)
+    const defaultMount = await mount(false, 3080, {}, authenticate)
+    expect((await invoke(defaultMount.route, 'GET', path, '', '192.168.50.8', { cookie: 'dsh-session=valid' }, '192.168.50.23')).status).toBe(403)
+  })
+
+  it.each([
+    (base: string) => base,
+    (_base: string) => 'https://foreign.example/?token=not-ours',
+    (base: string) => `${base}/?other=not-a-token`,
+  ])('does not open network management when upstream authentication is disabled or unsupported', async authenticationUrl => {
+    const mounted = await mount(false, 3080, { adminAllowedCidrs: ['192.168.50.23/32'] }, () => undefined, [], false, false, false, false, true, authenticationUrl)
+    const path = '/api/mobile-access/lan/control'
+    expect((await invoke(mounted.route, 'GET', path, '', '192.168.50.8', {}, '192.168.50.23')).status).toBe(401)
+    expect((await invoke(mounted.route, 'GET', path)).status).toBe(200)
+  })
+
+  it('keeps the destructive push key reset loopback-only while admitted NAS management stays available', async () => {
+    const authenticate = vi.fn((request: IncomingMessage) => request.headers.cookie === 'dsh-session=valid' ? undefined : 401)
+    const mounted = await mount(false, 3080, { adminAllowedCidrs: ['192.168.50.23/32'] }, authenticate, [], false, false, false, false, true,
+      base => `${base}/?token=test-launch-token`)
+    // The same explicitly admitted, Core-authenticated NAS peer keeps ordinary management…
+    expect((await invoke(mounted.route, 'GET', '/api/mobile-access/lan/control', '', '192.168.50.8', { cookie: 'dsh-session=valid' }, '192.168.50.23')).status).toBe(200)
+    // …but must not reach the state-destroying notification-key reset.
+    const reset = await invoke(mounted.route, 'POST', '/api/mobile-access/push/reset', JSON.stringify({ confirm: 'reset-web-push' }), '192.168.50.8', {
+      cookie: 'dsh-session=valid', 'content-type': 'application/json', [DESKTOP_ADMIN_HEADER]: DESKTOP_ADMIN_MARKER,
+    }, '192.168.50.23')
+    expect(reset.status).toBe(403)
+    // Loopback admission is unchanged; the unavailable-service response proves the guard admitted this caller.
+    const loopback = await invoke(mounted.route, 'POST', '/api/mobile-access/push/reset', JSON.stringify({ confirm: 'reset-web-push' }), '127.0.0.1', {
+      cookie: 'dsh-session=valid', 'content-type': 'application/json', [DESKTOP_ADMIN_HEADER]: DESKTOP_ADMIN_MARKER,
+    })
+    expect(loopback.status).toBe(503)
+    expect(JSON.parse(loopback.body)).toEqual({ error: 'push_unavailable' })
+  })
+
   it('requires an authenticated Host session for official Desktop Origin-less writes', async () => {
     const requestRejection = vi.fn((request: IncomingMessage) => request.headers.cookie === 'dsh-session=valid' ? undefined : 401)
     const mounted = await mount(false, 3080, {}, requestRejection)
@@ -1578,6 +1625,14 @@ describe('stock DSH lifecycle', () => {
     expect(purged.status).toBe(200)
     expect(await frpProxyNameFromRoute(first.route)).toBe(firstName)
     expect(await readFile(join(first.directory, 'installation-id'), 'utf8')).toMatch(/^[a-f0-9]{64}\n$/u)
+  })
+
+  it('rewrites a stale managed upstream snapshot to the active DSH port', async () => {
+    const setupFile = await managedSetupFile('http://127.0.0.1:11111')
+    await mount(false, 57_725, { setupFile })
+    const rewritten = JSON.parse(await readFile(setupFile, 'utf8')) as { upstreamOrigin: string; listenPort: number }
+    expect(rewritten.upstreamOrigin).toBe('http://127.0.0.1:57725')
+    expect(rewritten.listenPort).toBe(3443)
   })
 
   it('keeps the FRP proxy name when an unconfigured setup becomes managed after restart', async () => {

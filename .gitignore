@@ -27,3 +27,6 @@ apps/mobile/store/ios/
 tmp-dsh-web.log
 tmp-dsh-web.err.log
 /Temp/
+
+# Local agent workspace (research notes, memory); not part of the package or docs
+.workbuddy/

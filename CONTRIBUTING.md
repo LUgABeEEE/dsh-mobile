@@ -19,6 +19,8 @@ npm run verify
 
 `verify` checks version alignment, documentation links/structure, bundled licenses, mobile assets, TypeScript, tests and build/package output. `npm run check:docs` is the quick documentation-only check; it does not judge prose accuracy, external services or rendered appearance.
 
+`npm run check:attribution` is a separate, network-dependent check that compares every credited contributor handle with the actual author of the issue or pull request it cites, in the tracked Markdown. It caches the issue index under `local/`, needs the `gh` CLI or a `GITHUB_TOKEN`, and is a pre-release step rather than part of `verify`. `npm run check:attribution -- --self-test` proves the check still detects a wrong author, an unknown reference and a clause boundary without using the network. Run it after editing contributor credits in the changelog, the contributor table or a release note.
+
 ## Select behavior checks
 
 Browser checks consume built client files. Run `npm run build` and `npx playwright install chromium --only-shell`, then choose the affected checks:
@@ -49,6 +51,8 @@ Browser checks consume built client files. Run `npm run build` and `npx playwrig
 | Local extension Worker execution and explicit recovery | `npm run smoke:extension-workers` |
 | Real sidebar rows, short drawers and additive panel/footer/overlay slots | `npm run smoke:mobile-sidebar` |
 | Paired customization, stock ownership and retained-page failure recovery | `npm run smoke:custom-assets` |
+| Upstream picker composition and dedicated Mobile folder selection | `npm run smoke:directory-picker` |
+| Browse-capable host keeps DSH's own picker and its folder creation | `npm run smoke:directory-picker-browse` |
 | Same-origin/Blob media and external-source CSP rejection | `npm run smoke:blob-media` |
 
 These fixtures do not submit a model request or read the normal DSH home. Browser evidence does not establish physical Android keyboard, camera or device-lifecycle behavior.
@@ -96,6 +100,10 @@ For installation changes, run `npm run smoke:plugin-installation` against the sa
 
 `smoke:mobile-sidebar` and `smoke:custom-assets` require explicit `DSH_BOOT_SMOKE_BIN` and `DSH_BOOT_SMOKE_MOBILE_TARBALL` paths. The sidebar fixture uses the real Workspace consumer and additive slots, tests stock/dedicated touch geometry, and verifies a clipped-list negative control with `--negative-control-drawer`. The customization fixture observes executed scripts, computed styles, retained document/editor/draft and event-stream recovery after an injected manifest 401. It distinguishes a paired stock page from an ordinary DSH preview. These are isolated Chromium checks, not arbitrary community-plugin, public reverse-proxy or physical Android acceptance.
 
+`npm run smoke:directory-picker` uses the isolated runtime above through `DSH_BOOT_SMOKE_BIN`; set `DSH_BOOT_SMOKE_MOBILE_TARBALL` to select an exact packed candidate. The stock DSH browser must keep one upstream picker without a competing Mobile picker. On the paired dedicated page, the real Hero and Sidebar actions exercise folder navigation, editable absolute paths, relative-path rejection, cancel/Escape/mask dismissal, routed native-Back events, full-viewport hit testing and real Workspace/Session creation without a model request. Narrow and landscape viewports check localized controls; `DSH_DIRECTORY_PICKER_EVIDENCE_DIRECTORY` optionally saves screenshots of the owned fixture. Held responses check cancellation and stale-result isolation; an injected listing failure checks cancellation and reopening. Folder reads stay inside owned temporary directories. This is packed Chromium evidence, not a native Desktop OS-dialog or physical Android test, a real cross-drive/UNC deployment, or arbitrary third-party skin compatibility.
+
+`npm run smoke:directory-picker-browse` uses the same isolated runtime and tarball, and launches DSH with a non-loopback `--trusted-host` so the host resolves its browse directory-picker on a local machine. The stock and dedicated pages must then report exactly `@deepseek-ai/dsh-client-ui-directory-picker-browse`, the plugin's own picker and its styles must be absent, and the upstream "New folder" flow must create a real folder on the host from the paired phone. The launched process reads an owned temporary home, so no folder is created in the real user profile. This is packed Chromium evidence of the composition, not a physical Android test.
+
 `npm run smoke:mobile-sidebar -- --footer-only` checks the mounted desktop footer with a controlled neighboring public-slot entry: lone/shared/lone label restoration, adjacent amount containment, both action hit targets and the collapsed rail. It does not run a third-party balance plugin's account or Host code.
 
 Compatibility changes also run `npm run smoke:dsh-boot -- --legacy-webview`. The `--negative-control-compat` variation must fail with its expected missing-API marker after the compatibility script is blocked; an installation or fixture failure is not a successful negative control.
@@ -139,7 +147,7 @@ The Caddy publisher shell test needs Bash on POSIX and Git for Windows on Window
 Release preparation is not publication. Keep the candidate marked unreleased and retain working stable APK links until publication is authorized.
 
 1. Align the npm package and lockfile versions; use `npm run check:version`. Keep Android `versionName` and `versionCode` unchanged for plugin-only changes. The checker validates Android separately against the published App descriptor in [apps/mobile/release.json](apps/mobile/release.json).
-2. Review release notes, app manuals, compatibility statements, contributors, third-party notices and package contents. Preserve original author commits when incorporating community PRs.
+2. Review release notes, app manuals, compatibility statements, contributors, third-party notices and package contents. Preserve original author commits when incorporating community PRs. Run `npm run check:attribution` before finalizing contributor credits.
 3. After publication is authorized, finalize the CHANGELOG date and plugin stable version in both root READMEs before the final validation. Keep APK links and App manuals on the published App version. `check:release-tag` validates these independently and refuses unfinished plugin release documentation.
 4. Pass relevant local checks and every applicable CI job for that final candidate, including its release-documentation changes, not only checks required by branch protection. Later changes require the checks relevant to their diff; do not use an earlier commit's green checks as the final candidate's evidence. Record device/network coverage without treating local probes as public-route evidence.
 5. Merge the tested candidate, tag that commit with `v<plugin-version>` and let [.github/workflows/release.yml](.github/workflows/release.yml) build and publish the plugin. Verify npm/GitHub package equality and checksums afterward. Link the current App download in the plugin release notes; an unchanged App does not get a new APK.

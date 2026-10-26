@@ -2,6 +2,29 @@
 
 Notable changes are recorded here. GitHub Releases provide the downloadable packages and generated commit notes.
 
+## 0.6.18 (unreleased)
+
+- Preserve DSH's adaptive directory-picker composition. The dedicated Mobile page reuses an available upstream browse picker, including its **New folder** action; a host using the system chooser keeps that chooser on Desktop and gets a separate web directory flow on the remote page. Thanks @OranImp for [#271](https://github.com/saya-ch/dsh-mobile/issues/271).
+- Add **New folder** to the Mobile-owned directory flow. Create one child under a confirmed existing directory, report duplicate names and permission errors, and enter the new directory on success. Reject drive-relative and invalid names, fence cancelled results, prevent duplicate submissions and retain cancellation while admitted work settles. Escape and Back first close the creation step; writes are never automatically replayed.
+- Offer the device-scoped module recovery page for stale profile defaults as well as saved computer/device selections. Recovery changes only the current device's selection, not computer defaults, other devices or installed plugins. Thanks @LUgABeEEE for [#276](https://github.com/saya-ch/dsh-mobile/issues/276).
+- Add optional `adminAllowedCidrs` for controlled NAS administration. The default remains loopback-only; extra direct peers also require active DSH authentication, with existing Host/Origin and cross-site restrictions. Forwarded IP headers do not grant access. See [trusted networks](docs/TRUSTED_NETWORKS.en.md#accessing-the-nas-administration-page). Thanks @LzBsA for [#272](https://github.com/saya-ch/dsh-mobile/issues/272).
+- Refresh only the legacy `upstreamOrigin` snapshot in managed setup when DSH's active WebServer port changes. Runtime forwarding already follows that port; this prevents misleading stale configuration, rather than establishing the cause of every connection timeout. Thanks @LUgABeEEE for [#274](https://github.com/saya-ch/dsh-mobile/pull/274).
+- Add a bilingual [mobile adaptation guide for plugin authors](docs/MOBILE_PLUGIN_ADAPTATION.en.md), covering container layout, touch targets, keyboard/focus, safe areas and measured browser acceptance. Thanks @LUgABeEEE for [#280](https://github.com/saya-ch/dsh-mobile/pull/280).
+
+## Android 0.6.8 (unreleased)
+
+- Let the existing overall connection deadline govern the first page download, instead of interrupting it with the shorter page timer and automatically restarting the download after renewal. A real first-load failure retains explicit manual retry; already running pages retain their recovery behavior. Existing TLS verification, cancellation and renderer-crash handling remain. Thanks @LUgABeEEE for [#275](https://github.com/saya-ch/dsh-mobile/issues/275).
+- Prepare App 0.6.8/build 84 independently of plugin 0.6.18. The published App descriptor and download links remain on App 0.6.7 until a separately verified signed release exists.
+
+## 0.6.17 - 2026-10-25
+
+- Keep DSH's own directory-picker composition instead of registering a second Host service and Client surface. Official Desktop retains its native chooser, **Add workspace** action and `Ctrl+O` shortcut independently of Mobile's in-page picker. Thanks @ChaoPhone for [#257](https://github.com/saya-ch/dsh-mobile/issues/257) and @bvbhu for [#258](https://github.com/saya-ch/dsh-mobile/issues/258).
+- Keep a familiar in-page folder browser on the dedicated, paired Mobile page, with editable paths, parent navigation, retry and cancellation while browsing or loading. Late responses cannot replace a newer selection, and Back closes the picker before the page underneath. Once a directory is submitted, DSH owns workspace creation; it is not reported as cancelled. The mobile flow does not open an OS dialog on the remote computer or change the desktop's picker.
+- Add an authenticated, read-only workspace-directory listing route for the Mobile picker. It lists folders without creating them and rejects unauthorized requests; the existing photo picker and its routes are unchanged.
+- Improve slow-link loading with compression for complete text responses and the assembled start page, smaller merged script batches, and revalidation of owned static resources. Keep Session-bound HTML non-storable and preserve streaming and write behavior. Large valid module graphs fall back to individual resources rather than failing only because the optimization reached its batch count. Thanks @LUgABeEEE for [#259](https://github.com/saya-ch/dsh-mobile/pull/259), [#260](https://github.com/saya-ch/dsh-mobile/pull/260) and [#262](https://github.com/saya-ch/dsh-mobile/pull/262).
+- Add explicit module transfer-size measurement, partial-size feedback and a required-modules preset without applying choices until saved. Measurement must not delay ordinary catalog reads or saving. Thanks @LUgABeEEE for [#261](https://github.com/saya-ch/dsh-mobile/pull/261).
+- Keep fresh API reads and the existing backpressured proxy. The generic short API-cache proposal in [#263](https://github.com/saya-ch/dsh-mobile/pull/263) is not enabled in this release; the author's original contribution remains in the integration history. Thanks @LUgABeEEE for [#263](https://github.com/saya-ch/dsh-mobile/pull/263).
+
 ## 0.6.16 - 2026-10-22
 
 - Support App 0.6.7's optional same-computer LAN/remote switching with authenticated installation grouping and limited same-Session plain-text draft transfer through public DSH APIs. Independently paired endpoints keep separate credentials and CA pins; conflicts and unsupported editor state are not silently migrated. Stop disposed draft observers from subscribing again. Thanks @abworks-dev for [#252](https://github.com/saya-ch/dsh-mobile/pull/252).
@@ -102,6 +125,13 @@ Notable changes are recorded here. GitHub Releases provide the downloadable pack
 - Add bilingual remote-channel selection notes distinguishing the maintainer's long-term network experience from provider limits and conditional self-hosted deployment characteristics.
 - At this plugin release, Android App 0.6.3 was still the published native version; Android 0.6.4 was published independently later on the same day. Its file-picker changes are not part of this plugin fix. Thanks @Yurzi for reporting [#213](https://github.com/saya-ch/dsh-mobile/issues/213).
 
+## Android 0.6.4 - 2026-10-15
+
+- Prefer the system Photo Picker on Android 13+ for supported image requests, with document selection for other requests or an unavailable picker. Preserve multi-selection, MIME filtering and selected URI results without adding storage permission or forcing a vendor gallery.
+- Bind standard file callbacks to the active WebView, Origin and document. Cancel them on navigation or teardown and prevent old results from consuming a newer request. This native update is released independently from plugin 0.6.8 and preserves existing paired records.
+- On WebViews with navigation-listener support, settle file requests before replacing their document and pause new selection until all in-flight document navigations finish, including cancelled and non-committing navigations. This prevents a late cancellation from disabling the new page's file input. Older providers retain their available callbacks; update WebView or reopen the paired computer if selection still fails after changing pages.
+- Retain the package identity, established release signer, permission list and native pairing protocol. Thanks @Void-LifeStream for the attachment report in [#205](https://github.com/saya-ch/dsh-mobile/issues/205), and @xhwxt for the document-picker proposal in [#203](https://github.com/saya-ch/dsh-mobile/pull/203).
+
 ## 0.6.7 - 2026-10-14
 
 - Add optional `cpolarSubdomain` and `cpolarRegion` profile settings for a reserved cpolar address. Omitted or blank values keep provider defaults; only the validated HTTPS origin reported by cpolar is used. Existing pairing and authorization checks are unchanged. [Configuration guide](docs/CPOLAR_SUBDOMAIN.en.md).
@@ -111,13 +141,6 @@ Notable changes are recorded here. GitHub Releases provide the downloadable pack
 - Ignore a cancelled manifest request before it can clear newer extensions. Preserve the existing custom-file and extension size limits, and keep preview Back handling separate from Gateway API loading.
 - Clarify `/mobile` and both READMEs: detected files are not proof of page activation; ordinary DSH login or phone-sized preview does not establish mobile pairing. Thanks @Dantezcx for the detailed reports in [#209](https://github.com/saya-ch/dsh-mobile/issues/209) and [#210](https://github.com/saya-ch/dsh-mobile/issues/210).
 - Thanks @GavinQiEr for the request in [#207](https://github.com/saya-ch/dsh-mobile/issues/207) and implementation in [#208](https://github.com/saya-ch/dsh-mobile/pull/208); the original author commit is retained alongside maintainer corrections.
-
-## Android 0.6.4 - 2026-10-15
-
-- Prefer the system Photo Picker on Android 13+ for supported image requests, with document selection for other requests or an unavailable picker. Preserve multi-selection, MIME filtering and selected URI results without adding storage permission or forcing a vendor gallery.
-- Bind standard file callbacks to the active WebView, Origin and document. Cancel them on navigation or teardown and prevent old results from consuming a newer request. This native update is released independently from plugin 0.6.8 and preserves existing paired records.
-- On WebViews with navigation-listener support, settle file requests before replacing their document and pause new selection until all in-flight document navigations finish, including cancelled and non-committing navigations. This prevents a late cancellation from disabling the new page's file input. Older providers retain their available callbacks; update WebView or reopen the paired computer if selection still fails after changing pages.
-- Retain the package identity, established release signer, permission list and native pairing protocol. Thanks @Void-LifeStream for the attachment report in [#205](https://github.com/saya-ch/dsh-mobile/issues/205), and @xhwxt for the document-picker proposal in [#203](https://github.com/saya-ch/dsh-mobile/pull/203).
 
 ## 0.6.6 - 2026-10-14
 
@@ -170,7 +193,7 @@ Notable changes are recorded here. GitHub Releases provide the downloadable pack
 - Add Android App 0.6.2 (build 78), separately from plugin 0.6.3. Keep web content inside the native system-bar, cutout and keyboard area; add native-only page zoom in General settings, with 80–125% scaling and a 100% reset, without reloading the conversation. Older App versions and browsers do not show this control.
 - Add a nonblocking update reminder for WebViews reporting Chromium below 100. Users may continue; unknown engine versions are not treated as obsolete, and each detected build is warned about once. This does not promise full compatibility with unsupported old engines.
 - Improve bounded Windows retries and rollback for managed Caddy preparation while keeping official managed installation disabled. Thanks @abworks-dev for [PR #190](https://github.com/saya-ch/dsh-mobile/pull/190).
-- Hide the duplicate passive pin marker on narrow mobile session lists while retaining pin actions and desktop presentation. Thanks @chintoleung for [PR #191](https://github.com/saya-ch/dsh-mobile/pull/191).
+- Hide the duplicate passive pin marker on narrow mobile session lists while retaining pin actions and desktop presentation. Thanks @abworks-dev for [PR #191](https://github.com/saya-ch/dsh-mobile/pull/191).
 - Add a repository-local Agent maintenance skill and discovery entrypoint covering compatibility, packaging, runtime/ADB, collaboration and independent releases, with guidance for updating demonstrated reusable lessons.
 
 ## 0.6.2 - 2026-10-08
@@ -308,7 +331,7 @@ Add mobile page module management, Android launcher choices, fixed device orderi
 
 ## 0.4.5 - 2026-09-23
 
-- Support the document-relative plugin URLs introduced in DSH 0.1.7 without weakening the same-origin `/plugins/` check. This fixes mobile boot batches returning `502 upstream_unavailable`; local and remote gateways were verified against DSH 0.1.7-alpha.2 (thanks @azri57806-design for [#97](https://github.com/saya-ch/dsh-mobile/issues/97)).
+- Support the document-relative plugin URLs introduced in DSH 0.1.7 without weakening the same-origin `/plugins/` check. This fixes mobile boot batches returning `502 upstream_unavailable`; local and remote gateways were verified against DSH 0.1.7-alpha.2 (thanks @miqian-nomad for [#97](https://github.com/saya-ch/dsh-mobile/issues/97)).
 - Keep failed revisioned plugin scripts and hashed assets on `no-store` instead of caching their 404 responses as immutable for a year (thanks @abworks-dev for [PR #98](https://github.com/saya-ch/dsh-mobile/pull/98)).
 - Guard WebSocket upgrade sockets before asynchronous authentication so disconnects during reconnect cannot emit an unhandled socket error (follow-up to [#95](https://github.com/saya-ch/dsh-mobile/issues/95)).
 - Give Android connection restoration an exit after a short wait: direct-start Retry stays bound to that paired computer, while manual and legacy flows offer the Device list without retrying a different computer. Existing credentials remain intact (thanks @sznyhgm for [#96](https://github.com/saya-ch/dsh-mobile/issues/96)).
@@ -375,7 +398,7 @@ Add mobile page module management, Android launcher choices, fixed device orderi
 - Let cpolar choose its default route instead of forcing `cn`: the plugin no longer passes `-region`, so cpolar selects its own tunnel server. No profile or environment setting exposes an explicit region.
 - Add Android task-completion and pending-input reminders through authenticated Host events and the exact-origin native bridge; notification permission is enabled explicitly from the foreground app menu, lock-screen text stays generic, and each completed turn keeps a separate reminder (thanks @qzyqmzn for PR #75).
 - Show and re-copy remote pairing links without invalidating the QR code's active one-time pairing window (thanks @qzyqmzn for PR #75).
-- Detect plugin-market installations that have not completed LAN setup, prevent the loopback-only `127.0.0.1` fallback from being presented as phone access, and provide a localized in-panel network picker that creates private TLS material and LAN-only Windows firewall rules after explicit confirmation. The configured gateway starts after one DSH restart (thanks @cangming99 for #72).
+- Detect plugin-market installations that have not completed LAN setup, prevent the loopback-only `127.0.0.1` fallback from being presented as phone access, and provide a localized in-panel network picker that creates private TLS material and LAN-only Windows firewall rules after explicit confirmation. The configured gateway starts after one DSH restart (thanks @cangming99 for the report).
 - Keep native DSH file selection in the composer Add group, add only camera capture there, and reuse the native menu-row styling for the mobile action.
 - Add a native-app-only Switch computer action to the WebView's DSH General settings page, keeping the Android device-list settings and DSH content toolbar focused on their own controls.
 - Hide the Android shell toolbar above the WebView so DSH occupies the full safe viewport; the system status-bar color continues to follow the page background.

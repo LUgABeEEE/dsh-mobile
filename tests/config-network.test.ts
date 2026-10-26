@@ -15,6 +15,20 @@ const stateFile = join(tmpdir(), 'dsh-mobile-access-config-test.json')
 const controlFile = join(tmpdir(), 'dsh-mobile-access-control-test.json')
 
 describe('gateway configuration', () => {
+  it('keeps additional management networks opt-in, validated and independent of gateway access', () => {
+    const base = { stateFile, controlFile, initiallyEnabled: false, tls: { mode: 'disabled' as const } }
+    expect(parseGatewayConfig(base).adminAllowedCidrs).toEqual([])
+    const parsed = parseGatewayConfig(Config({ ...base, allowedCidrs: ['127.0.0.0/8'], adminAllowedCidrs: ['192.168.50.23/32'] }))
+    expect(addressAllowed('192.168.50.23', parsed.adminAllowedCidrs)).toBe(true)
+    expect(addressAllowed('192.168.50.24', parsed.adminAllowedCidrs)).toBe(false)
+    expect(addressAllowed('192.168.50.23', parsed.allowedCidrs)).toBe(false)
+    expect(Object.isFrozen(parsed.adminAllowedCidrs)).toBe(true)
+    for (const adminAllowedCidrs of [null, '192.168.0.0/16', [false], ['broken'], ['0.0.0.0/0'], ['::/0'],
+      ['192.168.50.1/24', '192.168.50.2/24'], Array.from({ length: 33 }, (_, index) => `192.168.50.${index}/32`)]) {
+      expect(() => parseGatewayConfig({ ...base, adminAllowedCidrs })).toThrow()
+    }
+  })
+
   it.each(['typo', 'http', '', null, 0, 1, true, false, [], {}])('rejects unknown TLS mode %j instead of selecting a plaintext public listener', mode => {
     expect(() => parseGatewayConfig({
       stateFile, listenHost: '0.0.0.0', publicAuthorities: ['gateway.example.com'], allowedCidrs: ['127.0.0.0/8'],

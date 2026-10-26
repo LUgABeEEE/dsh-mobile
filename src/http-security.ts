@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { addressAllowed, isLoopbackAddress, RequestTrustPolicy } from './network.js'
+import { addressAllowed, isLoopbackAddress, RequestTrustPolicy, type ParsedCidr } from './network.js'
 import { DESKTOP_ADMIN_HEADER, DESKTOP_ADMIN_MARKER, WEB_ADMIN_HEADER, WEB_ADMIN_MARKER, isLocalAdminHostname } from './local-admin-host.js'
 
 export const DEVICE_COOKIE = 'dsh_ma_device'
@@ -231,13 +231,16 @@ function localAuthority(header: string | undefined): { hostname: string; authori
   }
 }
 
-/** Protect the inner management route from non-loopback and DNS-rebinding callers. */
+/** Protect management with direct-peer, Host, browser-source and optional authenticated-network admission. */
 export function assertLocalAdminTrust(
   request: IncomingMessage,
   requireBrowserOrigin: boolean,
   authenticateDesktop: () => boolean = () => false,
+  adminAllowedCidrs: readonly ParsedCidr[] = [],
 ): void {
-  if (request.socket.remoteAddress === undefined || !isLoopbackAddress(request.socket.remoteAddress)) {
+  const peer = request.socket.remoteAddress
+  const loopback = peer !== undefined && isLoopbackAddress(peer)
+  if (!loopback && !addressAllowed(peer, adminAllowedCidrs)) {
     throw new HttpError(403, 'forbidden')
   }
   const host = localAuthority(request.headers.host)
@@ -278,4 +281,7 @@ export function assertLocalAdminTrust(
   if (requireBrowserOrigin && site !== undefined && site !== 'same-origin') {
     throw new HttpError(403, 'forbidden')
   }
+  // An explicit network is an additional source restriction, not an identity.
+  // The caller must validate the current request through DSH's authentication.
+  if (!loopback && !authenticateDesktop()) throw new HttpError(401, 'admin_authentication_required')
 }

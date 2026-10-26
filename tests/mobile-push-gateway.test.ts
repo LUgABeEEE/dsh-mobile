@@ -113,7 +113,7 @@ async function fixture(
   const GatewayWithOptionalPush = MobileAccessGateway as unknown as GatewayWithPush
   const gateway = new GatewayWithOptionalPush(
     config, new MemoryDeviceStore(), undefined, undefined, undefined,
-    undefined, undefined, undefined, undefined, undefined, undefined, push,
+    undefined, undefined, undefined, undefined, undefined, undefined, undefined, push,
   )
   await gateway.start()
   cleanups.push(() => gateway.close())

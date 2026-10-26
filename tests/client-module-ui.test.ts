@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { CLIENT_MODULE_COPY, CLIENT_MODULE_REQUEST_TIMEOUT_MS, CLIENT_MODULE_STYLES, ClientModuleRequestTimeout, parseClientModuleView, requestClientModuleView } from '../src/client-module-ui.js'
+import { CLIENT_MODULE_COPY, CLIENT_MODULE_REQUEST_TIMEOUT_MS, CLIENT_MODULE_STYLES, ClientModuleRequestTimeout, clientModuleTotalLabel, parseClientModuleView, requestClientModuleView } from '../src/client-module-ui.js'
 import { ClientModuleDraft } from '../src/client-module-presentation.js'
 
 describe('client module settings response', () => {
@@ -9,6 +9,20 @@ describe('client module settings response', () => {
   ] }
   it('retains the required marker, exact module ids and dependencies', () => {
     expect(parseClientModuleView(catalog)).toEqual(catalog)
+  })
+  it('carries an optional plugin description and rejects unusable ones', () => {
+    const described = { ...catalog, entries: [{ id: 'core', required: true, dependencies: [], description: 'Manage DeepSeek login and open billing pages' }] }
+    expect(parseClientModuleView(described).entries[0]).toMatchObject({ description: 'Manage DeepSeek login and open billing pages' })
+    for (const bad of [{ description: '' }, { description: '   ' }, { description: 42 }, { description: 'x'.repeat(241) }]) {
+      expect(() => parseClientModuleView({ ...catalog, entries: [{ ...catalog.entries[0], ...bad }] })).toThrow('invalid_module_catalog')
+    }
+  })
+  it('carries optional measured sizes and rejects malformed ones', () => {
+    const sized = { ...catalog, entries: [{ id: 'core', required: true, dependencies: [], bytes: 2048, gzipBytes: 900 }] }
+    expect(parseClientModuleView(sized).entries[0]).toMatchObject({ bytes: 2048, gzipBytes: 900 })
+    for (const bad of [{ bytes: -1 }, { gzipBytes: 1.5 }, { bytes: '2' }]) {
+      expect(() => parseClientModuleView({ ...catalog, entries: [{ ...catalog.entries[0], ...bad }] })).toThrow('invalid_module_catalog')
+    }
   })
   it('rejects malformed wire values before making choices interactive', () => {
     for (const value of [null, {}, { ...catalog, source: 'admin' }, { ...catalog, entries: [null] }, { ...catalog, entries: [{ id: 'x', required: 'yes', dependencies: [] }] }, { ...catalog, excludedClientModules: [null] }, { ...catalog, entries: [{ id: 'x', required: false, dependencies: [{}] }] }, { ...catalog, entries: [{ id: '', required: false, dependencies: [] }] }, { ...catalog, entries: [catalog.entries[0], catalog.entries[0]] }]) {
@@ -21,6 +35,16 @@ describe('client module settings response', () => {
       expect(Object.keys(CLIENT_MODULE_COPY[locale]).sort()).toEqual(keys)
       expect(Object.values(CLIENT_MODULE_COPY[locale]).every(value => value.length > 0)).toBe(true)
     }
+  })
+  it('reports an incomplete total even when some selected bytes are known', () => {
+    const draft = new ClientModuleDraft([
+      { id: 'known', required: true, dependencies: [], gzipBytes: 1024 },
+      { id: 'unknown', required: false, dependencies: [] },
+    ], [])
+    expect(clientModuleTotalLabel(draft, 'zh')).toBe('已测合计约 1 KB；另有 1 项未知')
+    expect(clientModuleTotalLabel(draft, 'en')).toContain('1 sizes unknown')
+    draft.setLoaded('unknown', false)
+    expect(clientModuleTotalLabel(draft, 'zh')).toBe('勾选合计约 1 KB')
   })
   it('keeps long module names shrinkable and actions touch-sized', () => {
     expect(CLIENT_MODULE_STYLES).toContain('min-height:48px')
@@ -95,6 +119,19 @@ describe('module settings request lifetime', () => {
     await rejection
     expect(fetch.mock.calls[0]![1]?.signal?.aborted).toBe(true)
     complete(success()); await Promise.resolve()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('treats explicit measurement as cancellable read-only work despite its CSRF-protected POST', async () => {
+    vi.useFakeTimers()
+    const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(() => new Promise<never>(() => {}))
+    vi.stubGlobal('fetch', fetch); vi.stubGlobal('document', { cookie: 'dsh_ma_csrf=token' })
+    const pending = requestClientModuleView('device', new AbortController().signal, { measure: true })
+    const rejected = expect(pending).rejects.toMatchObject({ mutation: false })
+    await vi.advanceTimersByTimeAsync(CLIENT_MODULE_REQUEST_TIMEOUT_MS.read)
+    await rejected
+    expect(fetch.mock.calls[0]![1]?.body).toBe('{"measure":true}')
+    expect(new Headers(fetch.mock.calls[0]![1]?.headers).get('x-dsh-mobile-csrf')).toBe('token')
     expect(vi.getTimerCount()).toBe(0)
   })
 

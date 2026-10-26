@@ -99,11 +99,12 @@ import {
   type RemoteProviderController,
   type RemoteProviderStatus,
 } from './remote.js'
-import { parseAuthority, parseCidr, probeTcpReachable } from './network.js'
+import { isLoopbackAddress, parseAuthority, parseCidr, probeTcpReachable } from './network.js'
 import {
   availableLanNetworks,
   isNetworkSelectionError,
   materializeManagedSetup,
+  refreshManagedUpstreamOrigin,
   parseAdditionalTrustedNetworks,
   parseManagedSetup,
   saveManagedTrustedNetworks,
@@ -512,11 +513,27 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
   const mobileAccess: MobileAccessService = createMobileAccessService(ctx)
   const baseTemplate = loopbackTemplate(loaded, ctx.webServer.port)
   const upstreamLoginUrl = upstreamAuthenticatedUrl(ctx, baseTemplate.upstreamOrigin)
+  const adminLogin = upstreamLoginUrl === undefined ? undefined : new URL(upstreamLoginUrl)
+  const supportsRemoteAdminAuthentication = adminLogin !== undefined
+    && adminLogin.origin === baseTemplate.upstreamOrigin.origin && adminLogin.pathname === '/'
+    && adminLogin.username === '' && adminLogin.password === '' && adminLogin.hash === ''
+    && (adminLogin.searchParams.get('token')?.length ?? 0) > 0
   const instanceId = await stableInstanceId(loaded, baseTemplate)
   const stateDirectory = dirname(baseTemplate.stateFile)
   const logFile = await installMobileFileLogger(ctx, stateDirectory)
   const logger = ctx.logger('dsh-mobile')
   logger.info('logging initialized file=%s', logFile)
+  if (loaded.kind === 'managed' && typeof ctx.webServer.port === 'number') {
+    // Keep the compatibility snapshot in step with the port the gateway actually
+    // follows; the value itself never selects the upstream.
+    try {
+      if (await refreshManagedUpstreamOrigin(loaded.setupFile, loaded.setup, ctx.webServer.port)) {
+        logger.info('dsh-mobile: refreshed the managed setup upstream snapshot to the active DSH port')
+      }
+    } catch (error) {
+      logger.warn('dsh-mobile: could not refresh the managed setup upstream snapshot: %s', error instanceof Error ? error.message : String(error))
+    }
+  }
   // Completed root turns fan out to every live mobile gateway, whose phones
   // render the notification text locally. One subscription serves all paths.
   const taskEventHub = new TaskEventHub()
@@ -792,6 +809,7 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
       entry => { logger.warn('auth failure %s', JSON.stringify(entry)) },
       entry => { logger.warn('http failure %s', JSON.stringify(entry)) },
       entry => { logger.info('upstream auth %s', JSON.stringify(entry)) },
+      entry => { logger.warn('slow api %s', JSON.stringify(entry)) },
       pushGatewayFacade,
     )
     await candidate.start()
@@ -878,6 +896,7 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
         entry => { logger.warn('auth failure %s', JSON.stringify(entry)) },
         entry => { logger.warn('http failure %s', JSON.stringify(entry)) },
         entry => { logger.info('upstream auth %s', JSON.stringify(entry)) },
+        entry => { logger.warn('slow api %s', JSON.stringify(entry)) },
         pushGatewayFacade,
       )
       await candidate.start()
@@ -907,6 +926,7 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
       entry => { logger.warn('auth failure %s', JSON.stringify(entry)) },
       entry => { logger.warn('http failure %s', JSON.stringify(entry)) },
       entry => { logger.info('upstream auth %s', JSON.stringify(entry)) },
+      entry => { logger.warn('slow api %s', JSON.stringify(entry)) },
       pushGatewayFacade,
     )
     try { await candidate.start() } catch (error) {
@@ -923,6 +943,7 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
       entry => { logger.warn('auth failure %s', JSON.stringify(entry)) },
       entry => { logger.warn('http failure %s', JSON.stringify(entry)) },
       entry => { logger.info('upstream auth %s', JSON.stringify(entry)) },
+      entry => { logger.warn('slow api %s', JSON.stringify(entry)) },
       pushGatewayFacade,
     )
     try { await candidate.start() } catch (error) {
@@ -1125,10 +1146,17 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
     handler: async (request, response) => {
       try {
         const target = parseRequestTarget(request.url)
-        assertLocalAdminTrust(request, request.method === 'POST', () => authenticateDesktopAdmin(request))
+        // The destructive notification-key reset keeps its original loopback-only
+        // source boundary; explicitly admitted, Core-authenticated NAS
+        // administration continues to cover every other management route.
+        const pushReset = target.decodedPathname === `${LOCAL_ADMIN_PREFIX}/push/reset`
+        assertLocalAdminTrust(request, request.method === 'POST', () => (
+          (isLoopbackAddress(request.socket.remoteAddress ?? '') || supportsRemoteAdminAuthentication)
+          && authenticateDesktopAdmin(request)
+        ), pushReset ? [] : baseTemplate.adminAllowedCidrs)
         if (adminClosing) throw new HttpError(503, 'unavailable')
         if (target.search !== '') throw new HttpError(400, 'bad_request')
-        if (target.decodedPathname === `${LOCAL_ADMIN_PREFIX}/push/reset`) {
+        if (pushReset) {
           if (request.method !== 'POST') throw new HttpError(405, 'method_not_allowed')
           const body = await readJsonObject(request, 1024)
           if (Object.keys(body).length !== 1 || body.confirm !== 'reset-web-push') throw new HttpError(400, 'bad_request')
@@ -1160,8 +1188,11 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
             }
             if (request.method !== 'POST') throw new HttpError(405, 'method_not_allowed')
             const body = await readJsonObject(request, template.maxBodyBytes)
-            if (Object.keys(body).length !== 1 || Object.keys(body).some(key => key !== 'reset' && key !== 'excludedClientModules')) throw new HttpError(400, 'bad_request')
-            const view = body.reset === true
+            if (Object.keys(body).length !== 1 || Object.keys(body).some(key => key !== 'reset' && key !== 'excludedClientModules' && key !== 'measure')
+              || ('measure' in body && body.measure !== true)) throw new HttpError(400, 'bad_request')
+            const view = body.measure === true
+              ? await gateway.measureClientModules(undefined, operation.signal)
+              : body.reset === true
               ? await gateway.resetClientModules(undefined, operation.signal)
               : await gateway.configureClientModules(body.excludedClientModules, undefined, operation.signal)
             sendJson(response, 200, view, false)

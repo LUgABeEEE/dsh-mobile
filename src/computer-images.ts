@@ -1,6 +1,6 @@
-import { lstat, opendir, readFile } from 'node:fs/promises'
+import { lstat, mkdir, opendir, readFile, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { basename, dirname, extname, isAbsolute, resolve } from 'node:path'
+import { basename, dirname, extname, isAbsolute, posix, resolve, win32 } from 'node:path'
 import { HttpError } from './http-security.js'
 
 const MAX_ENTRIES = 500
@@ -71,6 +71,156 @@ export async function listComputerImages(path: string | null, signal?: AbortSign
     entries: Object.freeze(rows),
     truncated,
   })
+}
+
+/** One folder row rendered by the authenticated mobile directory picker. */
+export interface DirectoryPickerEntry {
+  readonly name: string
+  readonly path: string
+}
+
+/** A bounded folder-only listing for the mobile workspace directory picker. */
+export interface DirectoryPickerListing {
+  readonly path: string
+  readonly parent?: string
+  readonly entries: readonly DirectoryPickerEntry[]
+  readonly truncated: boolean
+}
+
+/**
+ * Resolve a workspace path without a relative or current-drive fallback.
+ *
+ * @param path - Fully qualified directory, or null/empty for the Host home.
+ * @param platform - Host path syntax; explicit for cross-platform parser tests.
+ * @returns The normalized fully qualified path in the selected syntax.
+ */
+export function resolveWorkspaceDirectoryPath(path: string | null, platform: NodeJS.Platform = process.platform): string {
+  if (path === null || path === '') return homedir()
+  const paths = platform === 'win32' ? win32 : posix
+  const qualified = platform !== 'win32' || (
+    /^(?:[A-Za-z]:[\\/]|[\\/]{2}[^\\/]+[\\/]+[^\\/]+(?:[\\/]|$))/u.test(path)
+    && !/^[\\/]{2}[?.][\\/]/u.test(path)
+  )
+  if (path.includes('\0') || !paths.isAbsolute(path) || !qualified) throw new HttpError(400, 'bad_path')
+  return paths.resolve(path)
+}
+
+/**
+ * List folders only for the dedicated mobile workspace picker.
+ *
+ * Returns at most 500 enterable folders, including directory links. A truncated
+ * level retains its first filesystem-enumerated rows; callers can enter an
+ * absolute path to reach an omitted row. Cancellation preserves its reason;
+ * pending filesystem operations and handle closure settle before this request
+ * releases its Gateway work slot.
+ */
+export async function listWorkspaceDirectories(path: string | null, signal?: AbortSignal): Promise<DirectoryPickerListing> {
+  signal?.throwIfAborted()
+  const target = resolveWorkspaceDirectoryPath(path)
+  const rows: DirectoryPickerEntry[] = []
+  let truncated = false
+  let directory
+  try {
+    directory = await opendir(target)
+    for (;;) {
+      signal?.throwIfAborted()
+      const entry = await directory.read()
+      signal?.throwIfAborted()
+      if (entry === null) break
+      const entryPath = resolve(target, entry.name)
+      let enterable = entry.isDirectory()
+      if (!enterable && entry.isSymbolicLink()) {
+        try {
+          enterable = (await stat(entryPath)).isDirectory()
+          signal?.throwIfAborted()
+        } catch {
+          signal?.throwIfAborted()
+          // Broken or unreadable links cannot be entered by this picker.
+          continue
+        }
+      }
+      if (!enterable) continue
+      if (rows.length === MAX_ENTRIES) {
+        truncated = true
+        break
+      }
+      rows.push({ name: entry.name, path: entryPath })
+    }
+  } catch (error) {
+    if (signal?.aborted) throw signal.reason
+    throw new HttpError(404, 'directory_unavailable')
+  } finally {
+    try {
+      await directory?.close()
+    } catch {
+      throw new HttpError(500, 'directory_cleanup_failed')
+    }
+  }
+  signal?.throwIfAborted()
+  rows.sort((left, right) => left.name.localeCompare(right.name))
+  const parent = dirname(target)
+  return Object.freeze({
+    path: target,
+    ...(parent === target ? {} : { parent }),
+    entries: Object.freeze(rows),
+    truncated,
+  })
+}
+
+/**
+ * Resolve exactly one child name without drive-relative or reserved Win32 spellings.
+ * @param path - Fully qualified parent without a home/current-drive fallback.
+ * @param name - Single non-blank path segment.
+ * @param platform - Host path rules, explicit for portable parser tests.
+ * @returns The child path whose immediate parent is the normalized requested directory.
+ */
+export function workspaceDirectoryChildPath(path: string, name: string, platform: NodeJS.Platform = process.platform): string {
+  if (typeof path !== 'string' || path.length === 0) throw new HttpError(400, 'directory_create_invalid')
+  if (typeof name !== 'string' || name.length === 0 || name.length > 255 || name.trim() === ''
+    || name === '.' || name === '..' || name.includes('/') || name.includes('\\') || name.includes('\0')
+    || isAbsolute(name) || (platform === 'win32' && (
+      /[<>:"|?*\u0000-\u001f]/u.test(name) || /[. ]$/u.test(name)
+      || /^(?:CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³])(?:\.|$)/iu.test(name)
+    ))) {
+    throw new HttpError(400, 'directory_create_invalid')
+  }
+  const paths = platform === 'win32' ? win32 : posix
+  const parent = resolveWorkspaceDirectoryPath(path, platform)
+  const child = paths.resolve(parent, name)
+  if (paths.dirname(child) !== parent) throw new HttpError(400, 'directory_create_invalid')
+  return child
+}
+
+/**
+ * Create one child directory under an explicitly confirmed existing parent.
+ * @param path - Fully qualified existing parent; no home/default fallback is used.
+ * @param name - One non-blank segment accepted by the Host filesystem rules.
+ * @param signal - Cancellation withdraws admission/results, never a completed mkdir.
+ * @returns The created directory's absolute path after filesystem work settles.
+ */
+export async function createWorkspaceDirectory(path: string, name: string, signal?: AbortSignal): Promise<{ path: string }> {
+  signal?.throwIfAborted()
+  const created = workspaceDirectoryChildPath(path, name)
+  const parent = resolveWorkspaceDirectoryPath(path)
+  let stats
+  try {
+    stats = await stat(parent)
+  } catch (error) {
+    if (signal?.aborted) throw signal.reason
+    throw new HttpError(404, 'directory_unavailable')
+  }
+  if (!stats.isDirectory()) throw new HttpError(400, 'directory_create_invalid')
+  signal?.throwIfAborted()
+  try {
+    await mkdir(created)
+  } catch (error) {
+    if (signal?.aborted) throw signal.reason
+    const code = (error as NodeJS.ErrnoException).code
+    if (code === 'EEXIST') throw new HttpError(409, 'directory_exists')
+    throw new HttpError(400, 'directory_create_failed')
+  }
+  signal?.throwIfAborted()
+  return Object.freeze({ path: created })
 }
 
 /** Read one bounded regular image file selected by an authenticated device. */

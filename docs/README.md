@@ -29,6 +29,14 @@
 | 为移动页面选择加载模块 | [模块设置](CLIENT_MODULES.md) | [Module settings](CLIENT_MODULES.en.md) | 电脑默认与设备覆盖分别保存，不自动刷新会话 |
 | 允许受控路由网络访问 LAN Gateway | [额外可信网段](TRUSTED_NETWORKS.md) | [Trusted networks](TRUSTED_NETWORKS.en.md) | 不建立 VPN，不自动扩大防火墙规则 |
 
+## 插件移动适配 / Plugin mobile adaptation
+
+给插件作者的响应式布局、触控与验收建议：优先复用现有组件，兼顾小屏与桌面，并区分结构检查、真实浏览器和真机证据。
+
+| 主题 | 中文 | English |
+| --- | --- | --- |
+| 让第三方插件面板在手机上可用 | [移动端插件适配指南](MOBILE_PLUGIN_ADAPTATION.md) | [Mobile plugin adaptation](MOBILE_PLUGIN_ADAPTATION.en.md) |
+
 ## 开发候选 / Development candidates
 
 | 功能 | 中文 | English | 验证边界 |

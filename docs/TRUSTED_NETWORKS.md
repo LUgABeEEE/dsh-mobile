@@ -24,3 +24,20 @@ DSH Mobile 的默认 Windows HTTPS / Discovery 入站规则只允许 `LocalSubne
 路由网络不一定支持局域网广播发现。发现列表没有电脑时，可使用电脑显示的配对链接或二维码，但路由、防火墙和 HTTPS 入口仍须可达。填写 IPv6 CIDR 也不会自动增加 IPv6 监听。
 
 此设置用于局域网 Gateway 的来源访问范围，不改变外部反向代理的来源 CIDR。自有代理请按[自有 HTTPS 反向代理指南](SELF_HOSTED_ORIGIN.md)配置；不要把局域网 Gateway 或私有 HTTP 后端映射到公网。
+
+## NAS 的管理网页访问
+
+管理网页的 `/api/mobile-access` 与手机连接的 Gateway 是两个入口。上面的额外可信网段设置不会开放管理 API。默认情况下，管理 API 仍只允许直连来源为回环地址。
+
+待发布候选增加了 `adminAllowedCidrs`，供已经通过受控局域网访问 DSH 的 NAS 部署使用。在现有 `mobile-access` 条目的完整 `config` 中追加以下字段，并将示例改成管理电脑的实际地址：
+
+```yaml
+adminAllowedCidrs:
+  - 192.168.50.23/32
+```
+
+这只是新增字段，**不是可直接替换的完整 `config`**。DSH 的条目覆盖会替换整个配置；请保留原有 `setupFile`、`stateFile`、`controlFile`、TLS 和其他自定义设置。修改后重启 DSH。
+
+此选项不改变 DSH 的监听地址、路由或防火墙，也不会打开公网管理入口。仅允许列出的直接 TCP 来源，不读取 `X-Forwarded-For`；同时要求当前请求通过 DSH 的会话认证。浏览器须先正常登录 DSH；没有可用认证能力的版本、关闭认证的部署或无凭据请求不能靠填写 CIDR获得管理权限。尽量使用单台管理电脑的 `/32`，最多 32 项，不接受全地址 `/0` 或重复网段。
+
+现有私有 IP/回环 Host 限制、精确 Origin、跨站检查和拒绝 CORS 预检的行为保持不变。管理 API 不接受任意域名或公网 Host。反向代理的直接地址可能代表多名访问者：代理必须限制访问、保留 DSH 认证、不能给此路径添加跨域许可。HTTP 局域网也不能防止链路窃听；不受控网络请使用 HTTPS 或 SSH 转发，不要公开 `/api/mobile-access`。恢复默认时移除该字段或设为空列表，不会删除配对数据。

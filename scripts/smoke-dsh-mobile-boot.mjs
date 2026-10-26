@@ -1,4 +1,4 @@
-import { mkdtemp, readFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -9,6 +9,7 @@ import {
   CLIENT_TIMEOUT_MS, createMobileProfile, dismissOnboarding, launchDsh, openMobileSettings,
   observeWorkspaceStream, openPairing, pairMobilePage, removeTemporaryRoot, sanitized, within,
 } from './mobile-boot-fixture.mjs'
+import { browsePickerOwnsFlow } from './directory-picker-composition.mjs'
 
 const repository = fileURLToPath(new URL('..', import.meta.url))
 const mobileRoot = process.env.DSH_BOOT_SMOKE_MOBILE_ROOT === undefined
@@ -26,6 +27,10 @@ const compatibilityPath = '/mobile-access/compat.js'
 const compatibilityError = /AbortSignal\.any|throwIfAborted|AbortSignal getters|Promise\.withResolvers|Iterator.*(?:not defined|not a constructor|not a function)|Object\.hasOwn|(?:findLastIndex|findLast|toSorted|toReversed|structuredClone|\.at).*?(?:not defined|not a function)/u
 const excludedClientModules = process.env.DSH_BOOT_SMOKE_EXCLUDED_MODULES?.split(',').map(id => id.trim()).filter(Boolean) ?? []
 const startedAt = Date.now()
+// A native machine resolves the native interaction, so a browse host cannot be
+// reproduced without one. This switch asks DSH for a non-loopback trusted authority,
+// which resolves the browse interaction on the same machine.
+const forceBrowse = process.env.DSH_BOOT_SMOKE_FORCE_BROWSE === '1'
 let compatibilityFailureObserved = false
 let companionFailureObserved = false
 const companionFailureMessage = 'Packed bundle is missing embedded component dsh-mobile-question-fixes'
@@ -61,7 +66,7 @@ async function observeWebSocketCompression(page) {
   }
 }
 
-async function inspectBrowser(baseUrl, logs) {
+async function inspectBrowser(baseUrl, logs, directoryRoot) {
   const browser = await chromium.launch({ headless: true })
   let compression
   const failures = []
@@ -84,6 +89,11 @@ async function inspectBrowser(baseUrl, logs) {
     // Back-layer assertions depend on open state, not on drawer animation timing.
     const phone = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, reducedMotion: 'reduce' })
     if (legacyWebView) {
+      await phone.route('**/mobile-access/workspace-directories*', route => {
+        const url = new URL(route.request().url())
+        if (!url.searchParams.has('path')) url.searchParams.set('path', directoryRoot)
+        return route.continue({ url: url.href })
+      })
       await phone.addInitScript(() => {
         delete Promise.withResolvers
         delete AbortSignal.any
@@ -267,32 +277,50 @@ async function inspectBrowser(baseUrl, logs) {
     if (legacyWebView) {
       await drawerToggle.click()
       await phone.waitForFunction(() => document.querySelector('.dshm-scrim')?.getAttribute('data-open') === 'true')
-      const [listingResponse] = await Promise.all([
-        phone.waitForResponse(response => new URL(response.url()).pathname === '/api/directoryPicker/list', { timeout: CLIENT_TIMEOUT_MS }),
-        drawer.getByRole('button', { name: /^(?:Add workspace|添加工作区)$/u }).click(),
-      ])
-      const listing = await listingResponse.json()
-      if (listingResponse.status() !== 200 || listing.result?.ok !== true
-        || typeof listing.result.value?.path !== 'string' || !Array.isArray(listing.result.value.entries)) {
-        throw new Error(`Legacy WebView Workspace directory listing failed: status=${String(listingResponse.status())} result=${String(listing.result?.ok)}`)
+      // DSH resolves the directory interaction at boot. A headless or remotely
+      // reachable host is a browse host: DSH's own web picker fills the same
+      // directory-flow slots, so the plugin stands aside and its listing route is
+      // never called. Only a native host keeps the plugin-owned flow that this
+      // legacy-WebView check was written for.
+      const browseHost = await browsePickerOwnsFlow(phone)
+      if (browseHost) {
+        await drawer.getByRole('button', { name: /^(?:Add workspace|添加工作区)$/u }).click()
+        const upstreamDialog = phone.locator('[role="dialog"], dialog').filter({ hasText: /workspace directory|工作区目录/i }).first()
+        await upstreamDialog.waitFor({ state: 'visible', timeout: CLIENT_TIMEOUT_MS })
+        if (await phone.locator('.dshm-picker').count() !== 0) {
+          throw new Error('Legacy WebView mounted the plugin picker on a browse host')
+        }
+        await phone.getByRole('button', { name: /new folder|新建文件夹/i }).first().waitFor({ state: 'visible', timeout: CLIENT_TIMEOUT_MS })
+        console.log('Legacy WebView on a browse host: DSH\'s own picker owns the flow and offers folder creation')
+        await phone.keyboard.press('Escape')
+        await upstreamDialog.waitFor({ state: 'hidden', timeout: CLIENT_TIMEOUT_MS })
+        if (!await back()) throw new Error('Mobile Back did not close the drawer after the upstream picker')
+        await phone.waitForFunction(() => document.querySelector('.dshm-scrim')?.getAttribute('data-open') === 'false')
+      } else {
+        const [listingResponse] = await Promise.all([
+          phone.waitForResponse(response => new URL(response.url()).pathname === '/mobile-access/workspace-directories', { timeout: CLIENT_TIMEOUT_MS }),
+          drawer.getByRole('button', { name: /^(?:Add workspace|添加工作区)$/u }).click(),
+        ])
+        const listing = await listingResponse.json()
+        if (listingResponse.status() !== 200 || listing.path !== directoryRoot || !Array.isArray(listing.entries)) {
+          throw new Error(`Legacy WebView Workspace directory listing failed: status=${String(listingResponse.status())}`)
+        }
+        const directoryDialog = phone.locator('.dshm-picker')
+        await directoryDialog.waitFor({ state: 'visible', timeout: CLIENT_TIMEOUT_MS })
+        const openDirectory = directoryDialog.locator('[data-dshm-picker-confirm]')
+        await phone.waitForFunction(() => {
+          const button = document.querySelector('.dshm-picker [data-dshm-picker-confirm]')
+          return button instanceof HTMLButtonElement && !button.disabled
+        }, undefined, { timeout: CLIENT_TIMEOUT_MS })
+        if (!await openDirectory.isEnabled() || await directoryDialog.getByRole('alert').count() !== 0) {
+          throw new Error('Legacy WebView Workspace directory picker did not expose a usable selection')
+        }
+        await directoryDialog.locator('[data-dshm-picker-cancel]').click()
+        await directoryDialog.waitFor({ state: 'detached', timeout: CLIENT_TIMEOUT_MS })
+        if (!await back()) throw new Error('Mobile Back did not close the drawer after the Workspace directory picker')
+        await phone.waitForFunction(() => document.querySelector('.dshm-scrim')?.getAttribute('data-open') === 'false')
+        console.log(`Legacy WebView Workspace picker read ${String(listing.entries.length)} owned directory rows and enabled Open`)
       }
-      const directoryDialog = phone.getByRole('dialog', { name: /^(?:Select Workspace Directory|选择工作区目录)$/u })
-      await directoryDialog.waitFor({ state: 'visible', timeout: CLIENT_TIMEOUT_MS })
-      const openDirectory = directoryDialog.getByRole('button', { name: /^(?:Open|打开)$/u })
-      await phone.waitForFunction(() => {
-        const dialog = Array.from(document.querySelectorAll('[role="dialog"]'))
-          .find(element => /^(?:Select Workspace Directory|选择工作区目录)$/u.test(element.getAttribute('aria-label') ?? ''))
-        return Array.from(dialog?.querySelectorAll('button') ?? [])
-          .some(button => /^(?:Open|打开)$/u.test(button.textContent?.trim() ?? '') && !button.disabled)
-      }, undefined, { timeout: CLIENT_TIMEOUT_MS })
-      if (!await openDirectory.isEnabled() || await directoryDialog.getByRole('alert').count() !== 0) {
-        throw new Error('Legacy WebView Workspace directory picker did not expose a usable selection')
-      }
-      await directoryDialog.getByRole('button', { name: /^(?:Cancel|取消)$/u }).click()
-      await directoryDialog.waitFor({ state: 'detached', timeout: CLIENT_TIMEOUT_MS })
-      if (!await back()) throw new Error('Mobile Back did not close the drawer after the Workspace directory picker')
-      await phone.waitForFunction(() => document.querySelector('.dshm-scrim')?.getAttribute('data-open') === 'false')
-      console.log(`Legacy WebView Workspace picker read ${String(listing.result.value.entries.length)} directory rows and enabled Open`)
     }
     await drawerToggle.click()
     await phone.waitForFunction(() => document.querySelector('.dshm-scrim')?.getAttribute('data-open') === 'true')
@@ -367,6 +395,8 @@ async function main() {
   let dsh
   const failures = []
   try {
+    const directoryRoot = join(root, 'workspace-directory')
+    await mkdir(directoryRoot)
     const tarball = process.env.DSH_BOOT_SMOKE_MOBILE_TARBALL === undefined
       ? await packBundle(mobileRoot, root) : resolve(process.env.DSH_BOOT_SMOKE_MOBILE_TARBALL)
     let home
@@ -379,8 +409,8 @@ async function main() {
       if (companionFailureObserved) throw new Error('Deliberately removed companion was rejected before launch')
       throw error
     }
-    dsh = launchDsh(root, home, dshBin)
-    await inspectBrowser(await dsh.ready(), dsh.logs)
+    dsh = launchDsh(root, home, dshBin, forceBrowse ? ['--trusted-host', '198.18.0.1'] : [])
+    await inspectBrowser(await dsh.ready(), dsh.logs, directoryRoot)
   } catch (error) {
     const collected = []
     recordSmokeFailure(collected, error)

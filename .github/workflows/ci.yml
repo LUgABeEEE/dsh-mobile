@@ -180,6 +180,9 @@ jobs:
         run: npm run smoke:upstream-auth
       - run: npm run smoke:question-fixes
       - run: npm run smoke:dsh-boot
+      - name: Verify separate desktop and mobile directory flows
+        if: matrix.dsh == '0.2.0-rc.2' || matrix.dsh == '0.2.1-rc.2'
+        run: npm run smoke:directory-picker
       - name: Verify old-WebView API fallback and directory browsing
         if: matrix.dsh == '0.2.0-rc.2' || matrix.dsh == '0.2.1-rc.2'
         run: npm run smoke:dsh-boot -- --legacy-webview

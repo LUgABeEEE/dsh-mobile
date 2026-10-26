@@ -7,169 +7,65 @@ import * as yaml from 'js-yaml'
 import { describe, expect, it, vi } from 'vitest'
 
 const auto = '@deepseek-ai/dsh-host-directory-picker-auto'
-const browseHost = '@deepseek-ai/dsh-host-directory-picker-browse'
-const browseSurface = '@deepseek-ai/dsh-client-ui-directory-picker-browse'
-const platforms = ['win32', 'darwin', 'linux'] as const
-type Platform = typeof platforms[number]
-
-const mobilePatches = yaml.load(
-  readFileSync(resolve(import.meta.dirname, '..', 'cordis.patch.yml'), 'utf8'),
-  { schema: entryListSchema },
-) as PatchOptions[]
-
-// dsh-desktop e71a9ef0, dsh-plugin-desktop/src/profile.ts:986-1008.
-// Desktop appends this Windows-only layer after user bundle patches.
-const desktopWindowsPatches: PatchOptions[] = [
-  { id: 'directory-picker', name: auto, disabled: true },
-  { insert: [
-    { id: 'desktop-directory-picker-browse-host', name: browseHost },
-    { id: 'desktop-directory-picker-browse-surface', name: browseSurface },
-  ] },
+const nativeHost = '@deepseek-ai/dsh-host-directory-picker-native'
+const nativeSurface = '@deepseek-ai/dsh-client-ui-directory-picker-native'
+const patches = yaml.load(readFileSync(resolve(import.meta.dirname, '..', 'cordis.patch.yml'), 'utf8'), { schema: entryListSchema }) as PatchOptions[]
+const legacyNative: PatchOptions[] = [
+  { id: 'directory-picker', disabled: true },
+  { insert: [{ id: 'user-native-host', name: nativeHost }, { id: 'user-native-surface', name: nativeSurface }] },
 ]
 
-function compose(desktop: boolean, platform: Platform, desktopFirst = false, legacy = false): EntryOptions[] {
-  const mobile = structuredClone(mobilePatches)
-  if (legacy) {
-    for (const patch of mobile) {
-      for (const entry of patch.insert ?? []) {
-        if (entry.id === 'directory-picker-mobile-host' || entry.id === 'directory-picker-mobile-surface') {
-          delete entry.disabled
-        }
-      }
-    }
-  }
-  const desktopLayer = desktop && platform === 'win32' ? desktopWindowsPatches : []
-  const patches = desktopFirst ? [...desktopLayer, ...mobile] : [...mobile, ...desktopLayer]
+/** Exercise real patch composition and Cordis ownership, not an OS dialog simulation. */
+async function inspectComposition(layers: PatchOptions[][]): Promise<void> {
   const warn = vi.fn()
-  const entries = applyEntryPatches([{ id: 'directory-picker', name: auto }], patches, warn)
+  const composed = applyEntryPatches([{ id: 'directory-picker', name: auto }], structuredClone(layers.flat()), warn)
   expect(warn).not.toHaveBeenCalled()
-  // The gateway is outside this directory-picker composition test.
-  return applyEntryPatches(entries, [{ id: 'mobile-access', disabled: true }], warn)
-}
-
-async function withPickerHost(
-  desktop: boolean,
-  platform: Platform,
-  run: (ctx: Context, loader: Loader, providers: Set<string>, surfaces: Set<string>) => Promise<void>,
-  profileMarker = false,
-): Promise<void> {
-  // Scope only the expression evaluator's process.platform, not Node's globals.
-  const ctx = new Context().extend({ process: { platform } })
-  if (desktop) {
-    if (profileMarker) ctx.provide('desktopProfiles', { current: { dir: '/owned/desktop-profile' } })
-    else ctx.provide('desktopRuntime', { platform })
-  }
+  const pickerRows = composed.filter(row => row.id !== 'mobile-access' && row.id !== 'dsh-ui-fixes')
+  const ctx = new Context()
   await ctx.plugin(Loader).await()
-  const loader = ctx.loader
-  const providers = new Set<string>()
-  const surfaces = new Set<string>()
-
-  class BrowseDirectoryPicker extends Service {
-    readonly owner: string
-
-    constructor(pickerContext: Context) {
-      // Real Cordis registration reproduces the fixed-name collision from #22.
-      super(pickerContext, 'directoryPicker')
-      this.owner = pickerContext.fiber.entry!.options.id
-      pickerContext.effect(() => {
-        providers.add(this.owner)
-        return () => { providers.delete(this.owner) }
+  const active = new Set<string>()
+  let instances = 0
+  class Picker extends Service {
+    readonly occurrence: number
+    constructor(owner: Context) {
+      super(owner, 'directoryPicker')
+      this.occurrence = ++instances
+      owner.effect(() => {
+        const id = owner.fiber.entry!.options.id
+        active.add(id)
+        return () => { active.delete(id) }
       })
     }
   }
-
-  const surface = {
-    apply(surfaceContext: Context) {
-      const owner = surfaceContext.fiber.entry!.options.id
-      surfaceContext.effect(() => {
-        surfaces.add(owner)
-        return () => { surfaces.delete(owner) }
-      })
-    },
-  }
-  const imports = vi.spyOn(loader, 'import').mockImplementation(async name => {
-    if (name === browseHost) return BrowseDirectoryPicker
-    if (name === browseSurface) return surface
-    throw new Error(`unexpected picker harness import: ${name}`)
+  const load = vi.spyOn(ctx.loader, 'import').mockImplementation(async name => {
+    if (name === auto || name === nativeHost) return Picker
+    if (name === nativeSurface) return { apply() {} }
+    throw new Error(`unexpected picker composition import: ${name}`)
   })
-
   try {
-    await run(ctx, loader, providers, surfaces)
+    await ctx.loader.root.update(pickerRows as EntryOptions[])
+    await ctx.loader.await()
+    expect(active.size).toBe(1)
+    expect(ctx.get('directoryPicker')).toBeDefined()
+    const selected = instances
+    // Enabling/disabling Mobile's unrelated components must not replace this provider.
+    await ctx.loader.root.update(pickerRows as EntryOptions[])
+    await ctx.loader.await()
+    expect(ctx.get('directoryPicker')).toMatchObject({ occurrence: selected })
+    await ctx.loader.root.stop()
+    expect(active.size).toBe(0)
+    expect(ctx.get('directoryPicker')).toBeUndefined()
   } finally {
-    await loader.root.stop()
     await ctx.fiber.dispose()
-    imports.mockRestore()
+    load.mockRestore()
   }
-  expect(providers.size).toBe(0)
-  expect(surfaces.size).toBe(0)
 }
 
-describe('directory picker host composition', () => {
-  it.each(platforms)('keeps the in-page picker for stock Web on %s', async platform => {
-    await withPickerHost(false, platform, async (ctx, loader, providers, surfaces) => {
-      await loader.root.update(compose(false, platform))
-      await loader.await()
-      expect(ctx.get('directoryPicker')).toMatchObject({ owner: 'directory-picker-mobile-host' })
-      expect([...providers]).toEqual(['directory-picker-mobile-host'])
-      expect([...surfaces]).toEqual(['directory-picker-mobile-surface'])
-      expect(loader.resolve('directory-picker').disabled).toBe(true)
-    })
+describe('directory picker composition without Desktop marker services', () => {
+  it('retains the upstream default picker with the Mobile bundle present', async () => {
+    await inspectComposition([patches])
   })
-
-  it.each([false, true])('reuses the Windows Desktop pair (Desktop layer first: %s)', async desktopFirst => {
-    await withPickerHost(true, 'win32', async (ctx, loader, providers, surfaces) => {
-      await loader.root.update(compose(true, 'win32', desktopFirst))
-      await loader.await()
-      expect(ctx.get('directoryPicker')).toMatchObject({ owner: 'desktop-directory-picker-browse-host' })
-      expect([...providers]).toEqual(['desktop-directory-picker-browse-host'])
-      expect([...surfaces]).toEqual(['desktop-directory-picker-browse-surface'])
-      expect(loader.resolve('directory-picker-mobile-host').disabled).toBe(true)
-      expect(loader.resolve('directory-picker-mobile-surface').disabled).toBe(true)
-      expect(loader.resolve('directory-picker').disabled).toBe(true)
-    })
-  })
-
-  it('disables the Mobile pair when Windows Desktop exposes only its profile service during early boot', async () => {
-    await withPickerHost(true, 'win32', async (ctx, loader, providers, surfaces) => {
-      await loader.root.update(compose(true, 'win32'))
-      await loader.await()
-      expect(ctx.get('directoryPicker')).toMatchObject({ owner: 'desktop-directory-picker-browse-host' })
-      expect(loader.resolve('directory-picker-mobile-host').disabled).toBe(true)
-      expect(loader.resolve('directory-picker-mobile-surface').disabled).toBe(true)
-      expect([...providers]).toEqual(['desktop-directory-picker-browse-host'])
-      expect([...surfaces]).toEqual(['desktop-directory-picker-browse-surface'])
-    }, true)
-  })
-
-  it.each(['darwin', 'linux'] as const)('retains the Mobile pair when non-Windows Desktop exposes only its profile service on %s', async platform => {
-    await withPickerHost(true, platform, async (ctx, loader, providers, surfaces) => {
-      await loader.root.update(compose(true, platform))
-      await loader.await()
-      expect(ctx.get('directoryPicker')).toMatchObject({ owner: 'directory-picker-mobile-host' })
-      expect(loader.resolve('directory-picker-mobile-host').disabled).toBe(false)
-      expect(loader.resolve('directory-picker-mobile-surface').disabled).toBe(false)
-      expect([...providers]).toEqual(['directory-picker-mobile-host'])
-      expect([...surfaces]).toEqual(['directory-picker-mobile-surface'])
-    }, true)
-  })
-
-  it.each(['darwin', 'linux'] as const)('retains the Mobile pair on Desktop %s', async platform => {
-    await withPickerHost(true, platform, async (ctx, loader, providers, surfaces) => {
-      await loader.root.update(compose(true, platform))
-      await loader.await()
-      expect(ctx.get('directoryPicker')).toMatchObject({ owner: 'directory-picker-mobile-host' })
-      expect([...providers]).toEqual(['directory-picker-mobile-host'])
-      expect([...surfaces]).toEqual(['directory-picker-mobile-surface'])
-      expect(loader.resolve('directory-picker').disabled).toBe(true)
-    })
-  })
-
-  it('selects the wrong picker on Windows Desktop without the two Mobile conditions', async () => {
-    await withPickerHost(true, 'win32', async (ctx, loader, providers) => {
-      await loader.root.update(compose(true, 'win32', false, true))
-      await loader.await()
-      expect(ctx.get('directoryPicker')).toMatchObject({ owner: 'directory-picker-mobile-host' })
-      expect([...providers]).toEqual(['directory-picker-mobile-host'])
-    })
+  it.each([false, true])('retains an existing user native override, user layer first: %s', async userFirst => {
+    await inspectComposition(userFirst ? [legacyNative, patches] : [patches, legacyNative])
   })
 })

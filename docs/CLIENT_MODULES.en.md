@@ -34,11 +34,19 @@ After a DSH or plugin update, an old exclusion may be missing from the catalog o
 
 Close, Escape and the App's Back action ask before discarding unsaved changes. A failed save keeps choices. A write timeout means the result is unconfirmed, not rolled back; reread to confirm. Writes are not retried automatically, and closing cannot undo a completed save. Long lists scroll independently while close and footer actions remain reachable.
 
-Computer pages and `?frontend=stock` pages are unaffected. DSH or community-plugin updates can change the catalog and dependencies. When a saved selection prevents the mobile page from starting, the page offers “Load all modules for this device and retry”; it changes this device’s selection only when you click, without changing computer defaults, other devices or pairing authorization. Settings APIs still reject invalid selections and enforce required-module and dependency checks. Module sizes depend on the installation, so no fixed traffic reduction is promised.
+Computer pages and `?frontend=stock` pages are unaffected. DSH or community-plugin updates can change the catalog and dependencies. When a saved selection prevents the mobile page from starting, the page offers “Load all modules for this device and retry”; it changes this device’s selection only when you click, without changing computer defaults, other devices or pairing authorization. Settings APIs still reject invalid selections and enforce required-module and dependency checks.
+
+## Measure sizes and minimize loading
+
+Only **Measure sizes** fetches module resources and calculates their individual gzip sizes. Ordinary reads, saves and resets do not wait for these probes. Measurement can be cancelled without replacing unsaved choices, saving or reloading the page. Each measurement has a five-second budget; completed results remain available and the rest stay unknown. Known results are cached for ten minutes and must be measured again after a DSH module-graph update.
+
+Each group lists measured modules largest first and unknown sizes last. Totals always identify any selected modules with unknown sizes rather than presenting a partial result as complete. The mobile layout is measured from the actual Gateway layout file. Batch merging, browser caches, encoding negotiation and plugin versions affect actual transfers, so the numbers compare current modules rather than promise exact next-open downloads or fixed savings.
+
+Modules whose package metadata is resolvable in the installation may also show the plugin's own `package.json` description: links removed, collapsed to one line, at most 200 characters. This is not an upstream endorsement. Unexported or unreadable metadata stays absent instead of guessing its purpose. **Required only (minimal load)** keeps required boot entries and their dependencies and marks other entries as not loaded. It edits the draft only; **Save selection** remains a separate action.
 
 ## Data and authorization
 
-Selections are atomically stored in the computer's private DSH Mobile data directory, without copying conversation drafts. The catalog returns only module IDs, required markers, dependencies, and selections—not upstream download URLs, host file paths, or pairing credentials. A phone reads its own selection through the authenticated Gateway; changes also require same-origin and CSRF checks.
+Selections are atomically stored in the computer's private DSH Mobile data directory, without copying conversation drafts. The catalog returns module IDs, required markers, dependencies, selections, and available sizes and package descriptions—not upstream download URLs, host file paths, or pairing credentials. A phone reads its own selection through the authenticated Gateway; changes and explicit measurements also require same-origin and CSRF checks.
 
 Revoking a pairing removes that identity's module override. To stop a phone from operating the computer, revoke the device on the computer rather than disabling one client component.
 

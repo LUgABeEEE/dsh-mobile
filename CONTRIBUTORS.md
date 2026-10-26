@@ -1,18 +1,34 @@
 # 贡献者 / Contributors
 
-GitHub 的 [Contributors 图表](https://github.com/saya-ch/dsh-mobile/graphs/contributors) 按进入默认分支的提交自动统计，无法手动加入仅提交 issue 或 PR 提案的成员。本页按截至 2026-10-22 的实际参与方式感谢社区成员；仓库维护者与自动依赖更新仍可在 GitHub 历史记录中查看。
+GitHub 的 [Contributors 图表](https://github.com/saya-ch/dsh-mobile/graphs/contributors) 按进入默认分支的提交自动统计，无法手动加入仅提交 issue 或 PR 提案的成员。本页按截至 2026-10-26 的实际参与方式感谢社区成员；仓库维护者与自动依赖更新仍可在 GitHub 历史记录中查看。
 
-GitHub's Contributors graph counts commits on the default branch; issue reports and PR proposals cannot be manually added to it. This page credits community members by how they contributed, through 2026-10-22. The repository maintainer and automated dependency updates remain visible in GitHub's history.
+GitHub's Contributors graph counts commits on the default branch; issue reports and PR proposals cannot be manually added to it. This page credits community members by how they contributed, through 2026-10-26. The repository maintainer and automated dependency updates remain visible in GitHub's history.
 
-## 待发布贡献与反馈 / Unreleased contributions and reports
+## 待发布候选 / Unreleased candidate
 
-[@abworks-dev](https://github.com/abworks-dev) 的 [#252](https://github.com/saya-ch/dsh-mobile/pull/252) 提供经认证的同电脑通道切换与有限纯文本草稿迁移；[@chintoleung](https://github.com/chintoleung) 的 [#253](https://github.com/saya-ch/dsh-mobile/pull/253) 让浏览器配对／重连页记住 DSH 语言偏好。原作者提交保留，维护者另补桥接生命周期和回归测试修正。这批功能仍为待发布候选，不代表正式 App 已具备。
+感谢 [@OranImp](https://github.com/OranImp) 在 [#271](https://github.com/saya-ch/dsh-mobile/issues/271) 反馈目录选择流程缺少新建文件夹，[@LzBsA](https://github.com/LzBsA) 在 [#272](https://github.com/saya-ch/dsh-mobile/issues/272) 提出受控 NAS 管理入口需求，以及 [@LUgABeEEE](https://github.com/LUgABeEEE) 在 [#275](https://github.com/saya-ch/dsh-mobile/issues/275)、[#276](https://github.com/saya-ch/dsh-mobile/issues/276) 提供慢链路启动与模块恢复的详细报告。[@LUgABeEEE](https://github.com/LUgABeEEE) 的 [#274](https://github.com/saya-ch/dsh-mobile/pull/274) 配置快照修正和 [#280](https://github.com/saya-ch/dsh-mobile/pull/280) 插件适配指南已保留原作者提交，候选另附维护者修正。候选尚未发布，不代表正式版已包含这些改动。
 
-[@abworks-dev](https://github.com/abworks-dev)'s [#252](https://github.com/saya-ch/dsh-mobile/pull/252) contributes authenticated same-computer endpoint switching and limited plain-text draft transfer; [@chintoleung](https://github.com/chintoleung)'s [#253](https://github.com/saya-ch/dsh-mobile/pull/253) remembers DSH's language for browser pairing/reconnect pages. Original author commits are retained alongside maintainer Bridge-lifecycle and regression-test corrections. These features remain unreleased candidates, not capabilities of the current stable App.
+Thanks [@OranImp](https://github.com/OranImp) for reporting missing folder creation in [#271](https://github.com/saya-ch/dsh-mobile/issues/271), [@LzBsA](https://github.com/LzBsA) for the controlled NAS administration request in [#272](https://github.com/saya-ch/dsh-mobile/issues/272), and [@LUgABeEEE](https://github.com/LUgABeEEE) for the detailed slow-link boot and module-recovery reports in [#275](https://github.com/saya-ch/dsh-mobile/issues/275) and [#276](https://github.com/saya-ch/dsh-mobile/issues/276). Original commits for [@LUgABeEEE](https://github.com/LUgABeEEE)'s setup snapshot correction in [#274](https://github.com/saya-ch/dsh-mobile/pull/274) and adaptation guide in [#280](https://github.com/saya-ch/dsh-mobile/pull/280) are retained alongside maintainer corrections. This candidate is not yet a published release.
 
-[@abworks-dev](https://github.com/abworks-dev) 的 [#249](https://github.com/saya-ch/dsh-mobile/pull/249) 提供相册图片选择入口；[@ayiejosh](https://github.com/ayiejosh) 的 [#241](https://github.com/saya-ch/dsh-mobile/pull/241) 提供前台恢复与原生续期方案。两份 PR 的原作者提交保留，随后追加选择器、恢复归属、取消和 Cookie 写入修正；未保留上游前端包改写。感谢 [@chenyxuan](https://github.com/chenyxuan) 在 [#250](https://github.com/saya-ch/dsh-mobile/issues/250) 反馈 FRP 表单报错不明确，推动字段级提示改进。这批改动尚未发布；审查与整合历史见对应 PR。
+## 0.6.17 代码贡献与反馈 / Code contributions and reports for 0.6.17
 
-[@abworks-dev](https://github.com/abworks-dev)'s [#249](https://github.com/saya-ch/dsh-mobile/pull/249) contributes the Gallery image-picker shortcut; [@ayiejosh](https://github.com/ayiejosh)'s [#241](https://github.com/saya-ch/dsh-mobile/pull/241) contributes foreground recovery and native renewal proposals. Both authors' original commits are retained alongside picker, recovery ownership, cancellation and Cookie-write corrections; upstream frontend-bundle rewriting is not retained. Thanks [@chenyxuan](https://github.com/chenyxuan) for reporting unclear FRP form errors in [#250](https://github.com/saya-ch/dsh-mobile/issues/250), informing field-level feedback. These changes are unreleased; the linked PRs record their review and integration history.
+感谢 [@LUgABeEEE](https://github.com/LUgABeEEE) 提供 [#259](https://github.com/saya-ch/dsh-mobile/pull/259)、[#260](https://github.com/saya-ch/dsh-mobile/pull/260)、[#261](https://github.com/saya-ch/dsh-mobile/pull/261)、[#262](https://github.com/saya-ch/dsh-mobile/pull/262) 的慢链路压缩、启动分批、模块体积与最小预设、静态资源校验方案。原始提交已随 0.6.17 进入默认分支，维护者的兼容性、生命周期和交互修正作为追加提交保留在旁。另保留 [#263](https://github.com/saya-ch/dsh-mobile/pull/263) 的 API 短缓存提案与贡献历史，但本版不启用泛 API 响应缓存；该提案不计入本版功能。
+
+Thanks [@LUgABeEEE](https://github.com/LUgABeEEE) for the slow-link compression, boot batching, module-size/minimal-preset and static-resource revalidation work in [#259](https://github.com/saya-ch/dsh-mobile/pull/259), [#260](https://github.com/saya-ch/dsh-mobile/pull/260), [#261](https://github.com/saya-ch/dsh-mobile/pull/261) and [#262](https://github.com/saya-ch/dsh-mobile/pull/262). Original commits entered the default branch with 0.6.17, with maintainer compatibility, lifecycle and interaction corrections retained as follow-up commits. The proposal and original history of [#263](https://github.com/saya-ch/dsh-mobile/pull/263) are also retained, but generic API-response caching is not enabled in this release and does not count as a 0.6.17 feature.
+
+感谢 [@ChaoPhone](https://github.com/ChaoPhone) 在 [#257](https://github.com/saya-ch/dsh-mobile/issues/257) 提供官方 Desktop 目录选择器重复注册的分析，以及 [@bvbhu](https://github.com/bvbhu) 在 [#258](https://github.com/saya-ch/dsh-mobile/issues/258) 提供停用目录选择界面后工作区入口消失的复现，帮助明确桌面原生选择器与移动页面浏览器应分别管理。对应修复随 0.6.17 发布。
+
+Thanks [@ChaoPhone](https://github.com/ChaoPhone) for analyzing duplicate directory-picker registration in official Desktop in [#257](https://github.com/saya-ch/dsh-mobile/issues/257), and [@bvbhu](https://github.com/bvbhu) for reproducing missing workspace actions after disabling the picker surface in [#258](https://github.com/saya-ch/dsh-mobile/issues/258). These reports helped separate desktop-native selection from mobile in-page browsing. The related fix shipped in 0.6.17.
+
+## 0.6.16 代码贡献与反馈 / Code contributions and reports for 0.6.16
+
+[@abworks-dev](https://github.com/abworks-dev) 的 [#252](https://github.com/saya-ch/dsh-mobile/pull/252) 提供经认证的同电脑通道切换与有限纯文本草稿迁移；[@chintoleung](https://github.com/chintoleung) 的 [#253](https://github.com/saya-ch/dsh-mobile/pull/253) 让浏览器配对／重连页记住 DSH 语言偏好。原作者提交保留，维护者另补桥接生命周期和回归测试修正。插件相关改动随 0.6.16 发布，原生切换功能随独立的 Android App 0.6.7 发布。
+
+[@abworks-dev](https://github.com/abworks-dev)'s [#252](https://github.com/saya-ch/dsh-mobile/pull/252) contributes authenticated same-computer endpoint switching and limited plain-text draft transfer; [@chintoleung](https://github.com/chintoleung)'s [#253](https://github.com/saya-ch/dsh-mobile/pull/253) remembers DSH's language for browser pairing/reconnect pages. Original author commits are retained alongside maintainer Bridge-lifecycle and regression-test corrections. Plugin changes shipped in 0.6.16; native switching shipped independently in Android App 0.6.7.
+
+[@abworks-dev](https://github.com/abworks-dev) 的 [#249](https://github.com/saya-ch/dsh-mobile/pull/249) 提供相册图片选择入口；[@ayiejosh](https://github.com/ayiejosh) 的 [#241](https://github.com/saya-ch/dsh-mobile/pull/241) 提供前台恢复与原生续期方案。两份 PR 的原作者提交保留，随后追加选择器、恢复归属、取消和 Cookie 写入修正；未保留上游前端包改写。感谢 [@chenyxuan](https://github.com/chenyxuan) 在 [#250](https://github.com/saya-ch/dsh-mobile/issues/250) 反馈 FRP 表单报错不明确，推动字段级提示改进。插件改进随 0.6.16 发布，原生恢复改进随 App 0.6.7 发布；审查与整合历史见对应 PR。
+
+[@abworks-dev](https://github.com/abworks-dev)'s [#249](https://github.com/saya-ch/dsh-mobile/pull/249) contributes the Gallery image-picker shortcut; [@ayiejosh](https://github.com/ayiejosh)'s [#241](https://github.com/saya-ch/dsh-mobile/pull/241) contributes foreground recovery and native renewal proposals. Both authors' original commits are retained alongside picker, recovery ownership, cancellation and Cookie-write corrections; upstream frontend-bundle rewriting is not retained. Thanks [@chenyxuan](https://github.com/chenyxuan) for reporting unclear FRP form errors in [#250](https://github.com/saya-ch/dsh-mobile/issues/250), informing field-level feedback. Plugin improvements shipped in 0.6.16, while native recovery improvements shipped in App 0.6.7; the linked PRs record their review and integration history.
 
 ## 0.6.15 反馈 / Reports for 0.6.15
 
@@ -60,9 +76,9 @@ Thanks [@jamorzzz](https://github.com/jamorzzz) for the community-auth navigatio
 
 ## 0.6.3 代码贡献 / Code contributions in 0.6.3
 
-[@abworks-dev](https://github.com/abworks-dev) 的 [#190](https://github.com/saya-ch/dsh-mobile/pull/190)、[#192](https://github.com/saya-ch/dsh-mobile/pull/192)，以及 [@chintoleung](https://github.com/chintoleung) 的 [#191](https://github.com/saya-ch/dsh-mobile/pull/191) 和在 [#189](https://github.com/saya-ch/dsh-mobile/issues/189) 提供的三个 Worker 原型提交参与本版，保留原始提交并追加适配与修正。具体范围见 [更新记录](CHANGELOG.md#063---2026-10-10)。
+[@abworks-dev](https://github.com/abworks-dev) 的 [#190](https://github.com/saya-ch/dsh-mobile/pull/190)、[#191](https://github.com/saya-ch/dsh-mobile/pull/191)、[#192](https://github.com/saya-ch/dsh-mobile/pull/192)，以及 [@chintoleung](https://github.com/chintoleung) 在 [#189](https://github.com/saya-ch/dsh-mobile/issues/189) 提供的三个 Worker 原型提交参与本版，保留原始提交并追加适配与修正。具体范围见 [更新记录](CHANGELOG.md#063---2026-10-10)。
 
-[@abworks-dev](https://github.com/abworks-dev)'s [#190](https://github.com/saya-ch/dsh-mobile/pull/190) and [#192](https://github.com/saya-ch/dsh-mobile/pull/192), plus [@chintoleung](https://github.com/chintoleung)'s [#191](https://github.com/saya-ch/dsh-mobile/pull/191) and three Worker prototype commits supplied through [#189](https://github.com/saya-ch/dsh-mobile/issues/189), contribute to this release with original history and maintainer corrections. See the [release scope](CHANGELOG.md#063---2026-10-10).
+[@abworks-dev](https://github.com/abworks-dev)'s [#190](https://github.com/saya-ch/dsh-mobile/pull/190), [#191](https://github.com/saya-ch/dsh-mobile/pull/191) and [#192](https://github.com/saya-ch/dsh-mobile/pull/192), plus three Worker prototype commits supplied by [@chintoleung](https://github.com/chintoleung) through [#189](https://github.com/saya-ch/dsh-mobile/issues/189), contribute to this release with original history and maintainer corrections. See the [release scope](CHANGELOG.md#063---2026-10-10).
 
 ## 已合并 PR / Merged PRs
 
@@ -127,9 +143,10 @@ Thanks [@xhwxt](https://github.com/xhwxt) for the document-picker proposal in [#
 | [@abworks-dev](https://github.com/abworks-dev) | [#174](https://github.com/saya-ch/dsh-mobile/issues/174) |
 | [@Ann-luo](https://github.com/Ann-luo) | [#150](https://github.com/saya-ch/dsh-mobile/issues/150) |
 | [@Anyways366](https://github.com/Anyways366) | [#223](https://github.com/saya-ch/dsh-mobile/issues/223) |
-| [@azri57806-design](https://github.com/azri57806-design) | [#97](https://github.com/saya-ch/dsh-mobile/issues/97) |
 | [@BrainZombie](https://github.com/BrainZombie) | [#128](https://github.com/saya-ch/dsh-mobile/issues/128) |
+| [@bvbhu](https://github.com/bvbhu) | [#258](https://github.com/saya-ch/dsh-mobile/issues/258) |
 | [@CESAEREE](https://github.com/CESAEREE) | [#1](https://github.com/saya-ch/dsh-mobile/issues/1) |
+| [@ChaoPhone](https://github.com/ChaoPhone) | [#257](https://github.com/saya-ch/dsh-mobile/issues/257) |
 | [@CharlesLueng](https://github.com/CharlesLueng) | [#68](https://github.com/saya-ch/dsh-mobile/issues/68) |
 | [@chintoleung](https://github.com/chintoleung) | [#103](https://github.com/saya-ch/dsh-mobile/issues/103), [#166](https://github.com/saya-ch/dsh-mobile/issues/166), [#189](https://github.com/saya-ch/dsh-mobile/issues/189), [#228](https://github.com/saya-ch/dsh-mobile/issues/228) |
 | [@chmzs](https://github.com/chmzs) | [#73](https://github.com/saya-ch/dsh-mobile/issues/73) |
@@ -148,6 +165,7 @@ Thanks [@xhwxt](https://github.com/xhwxt) for the document-picker proposal in [#
 | [@KMGTPEZY](https://github.com/KMGTPEZY) | [#95](https://github.com/saya-ch/dsh-mobile/issues/95) |
 | [@luoyangchan](https://github.com/luoyangchan) | [#187](https://github.com/saya-ch/dsh-mobile/issues/187) |
 | [@LWping](https://github.com/LWping) | [#94](https://github.com/saya-ch/dsh-mobile/issues/94) |
+| [@miqian-nomad](https://github.com/miqian-nomad) | [#97](https://github.com/saya-ch/dsh-mobile/issues/97) |
 | [@MLYR](https://github.com/MLYR) | [#193](https://github.com/saya-ch/dsh-mobile/issues/193) |
 | [@oliverwan97](https://github.com/oliverwan97) | [#26](https://github.com/saya-ch/dsh-mobile/issues/26) |
 | [@optttt](https://github.com/optttt) | [#111](https://github.com/saya-ch/dsh-mobile/issues/111) |
