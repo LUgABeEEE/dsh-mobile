@@ -931,6 +931,35 @@ describe('mobile-control localization', () => {
     expect(source).toContain('remoteCopyLink.hidden = iroh')
   })
 
+  it('declares the QR viewer as a modal dialog only while it is open', () => {
+    const source = readFileSync(new URL('../src/client.ts', import.meta.url), 'utf8')
+    // The viewer is mounted with the control root, so a permanent
+    // role=dialog/aria-modal="true" would make every current-modal query
+    // (this plugin's native Back router, third-party scripts and the packed
+    // Mobile fixtures) observe a modal the user cannot see. A hidden element
+    // must not claim modal semantics.
+    const mount = source.slice(source.indexOf("const irohQrZoom = element('div', 'dsh-mobile-control__qr-zoom')"),
+      source.indexOf('const setIrohQrZoomOpen = '))
+    expect(mount).not.toContain("irohQrZoom.setAttribute('role', 'dialog')")
+    expect(mount).not.toContain("irohQrZoom.setAttribute('aria-modal', 'true')")
+    expect(mount).toContain('irohQrZoom.hidden = true')
+    expect(source).toContain('const setIrohQrZoomOpen = (open: boolean): void => {')
+    const toggler = source.slice(source.indexOf('const setIrohQrZoomOpen = '), source.indexOf('irohQrZoom.append(irohQrZoomImage'))
+    expect(toggler).toContain("irohQrZoom.setAttribute('role', 'dialog')")
+    expect(toggler).toContain("irohQrZoom.setAttribute('aria-modal', 'true')")
+    expect(toggler).toContain("irohQrZoom.removeAttribute('role')")
+    expect(toggler).toContain("irohQrZoom.removeAttribute('aria-modal')")
+    expect(toggler).toContain('irohQrZoom.hidden = !open')
+    // Opening and closing, plus the provider-reset path, share that switch.
+    expect(source).toContain('setIrohQrZoomOpen(true)')
+    expect(source.match(/setIrohQrZoomOpen\(false\)/gu)?.length).toBe(2)
+    // No leftover direct visibility write can bypass the attribute owner: the
+    // element starts hidden at mount, and every later change goes through the
+    // toggler so role/aria-modal can never drift from the visible state.
+    expect(source).not.toContain('irohQrZoom.hidden = false')
+    expect(source.match(/irohQrZoom\.hidden = true/gu)?.length).toBe(1)
+  })
+
   it('creates the restricted FRP VPS template entirely in the loopback client', () => {
     const template = createFrpServerTemplateForClipboard(
       7000,

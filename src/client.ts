@@ -1406,9 +1406,24 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
   const irohQrZoom = element('div', 'dsh-mobile-control__qr-zoom'); irohQrZoom.hidden = true
   const irohQrZoomImage = element('img', 'dsh-mobile-control__qr-zoom-image'); irohQrZoomImage.alt = t('pairingQr')
   const irohQrZoomClose = element('button', 'dsh-mobile-control__qr-zoom-close'); irohQrZoomClose.type = 'button'; irohQrZoomClose.textContent = '×'; irohQrZoomClose.setAttribute('aria-label', t('closeEnlargedQr'))
-  irohQrZoom.setAttribute('role', 'dialog')
-  irohQrZoom.setAttribute('aria-modal', 'true')
-  irohQrZoom.setAttribute('aria-label', t('enlargeQr'))
+  // The viewer is mounted with the rest of the control root, so its dialog
+  // semantics may only exist while it is actually open. A hidden element that
+  // permanently claims role=dialog/aria-modal makes every consumer of the
+  // current-modal query (this plugin, third-party scripts, mobile fixtures)
+  // observe a modal that the user cannot see. The attributes are added on open
+  // and withdrawn on close, including the reset path below.
+  const setIrohQrZoomOpen = (open: boolean): void => {
+    if (open) {
+      irohQrZoom.setAttribute('role', 'dialog')
+      irohQrZoom.setAttribute('aria-modal', 'true')
+      irohQrZoom.setAttribute('aria-label', t('enlargeQr'))
+    } else {
+      irohQrZoom.removeAttribute('role')
+      irohQrZoom.removeAttribute('aria-modal')
+      irohQrZoom.removeAttribute('aria-label')
+    }
+    irohQrZoom.hidden = !open
+  }
   irohQrZoom.append(irohQrZoomImage, irohQrZoomClose)
   root.append(irohQrZoom)
   const remoteAccess = element('div', 'dsh-mobile-control__access'); remoteAccess.hidden = true
@@ -2353,7 +2368,7 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
       activeIrohDescriptor = ''
       activeIrohQrSvg = ''
       showQr('', irohQr)
-      irohQrZoom.hidden = true
+      setIrohQrZoomOpen(false)
       irohCopyDescriptor.hidden = true
       irohPairStatus.textContent = ''
     }
@@ -2456,11 +2471,11 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
   const openIrohQrZoom = (): void => {
     if (activeIrohQrSvg === '' || irohQr.hidden) return
     irohQrZoomImage.src = `data:image/svg+xml;base64,${btoa(activeIrohQrSvg)}`
-    irohQrZoom.hidden = false
+    setIrohQrZoomOpen(true)
     irohQrZoomClose.focus()
   }
   const closeIrohQrZoom = (): void => {
-    irohQrZoom.hidden = true
+    setIrohQrZoomOpen(false)
     if (!irohQr.hidden) irohQr.focus()
   }
   irohQr.setAttribute('role', 'button')

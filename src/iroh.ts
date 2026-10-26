@@ -67,30 +67,61 @@ function publicStatus(status: IrohStatus): IrohStatus {
   return Object.freeze({ ...status })
 }
 
-async function defaultResolveIdentity(executable: string, dataDir: string): Promise<string> {
-  const child = spawn(executable, ['--lang', 'en', 'id', '--data-dir', dataDir], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
+/**
+ * Resolve the persistent endpoint identity from the sidecar.
+ *
+ * The probe owns a real child process, so every failure path must settle only
+ * after that process is gone: reporting a timeout while the probe is still
+ * running lets a later start observe a half-owned data directory, and two
+ * overlapping probes can race on the same identity files. Each rejection is
+ * therefore sequenced behind an actual close (or a proven termination).
+ * @param executable - verified sidecar path.
+ * @param dataDir - private directory owning the endpoint identity.
+ * @param options - test seams for the launcher and deadline; production callers omit both.
+ */
+export async function defaultResolveIdentity(executable: string, dataDir: string, options: {
+  readonly launch?: (executable: string, args: readonly string[]) => ChildProcessWithoutNullStreams
+  readonly timeoutMs?: number
+} = {}): Promise<string> {
+  const args = ['--lang', 'en', 'id', '--data-dir', dataDir]
+  const child = options.launch === undefined
+    ? spawn(executable, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
+    : options.launch(executable, args)
   let output = Buffer.alloc(0)
+  let settled = false
+  // Resolve only once the probe process is gone. terminateRemoteProcess waits
+  // for the real close event (SIGTERM, then SIGKILL) instead of assuming that
+  // kill() returned means the child exited.
+  const stopProbe = async (): Promise<void> => { await terminateRemoteProcess(child).catch(() => {}) }
   const result = await new Promise<string>((resolve, reject) => {
-    const deadline = setTimeout(() => {
-      child.kill()
-      reject(new Error('iroh_identity_timeout'))
-    }, IDENTITY_TIMEOUT_MS)
+    const fail = (code: string): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(deadline)
+      // Keep the failure reason, but publish it only after the process exits.
+      void stopProbe().then(() => { reject(new Error(code)) })
+    }
+    const deadline = setTimeout(() => { fail('iroh_identity_timeout') }, options.timeoutMs ?? IDENTITY_TIMEOUT_MS)
     deadline.unref?.()
     child.stdout.on('data', (chunk: Buffer) => {
-      if (output.length + chunk.length > 128) {
-        child.kill()
-        reject(new Error('iroh_identity_output_too_large'))
-        return
-      }
+      if (settled) return
+      if (output.length + chunk.length > 128) { fail('iroh_identity_output_too_large'); return }
       output = Buffer.concat([output, chunk])
     })
+    // The probe is short-lived and writes nothing useful to stderr; drain it so
+    // a full pipe cannot block the child's exit.
     child.stderr?.resume()
     child.once('error', () => {
+      if (settled) return
+      settled = true
       clearTimeout(deadline)
+      // A spawn failure means no process was created, so there is nothing to await.
       reject(new Error('iroh_identity_failed'))
     })
     child.once('close', code => {
       clearTimeout(deadline)
+      if (settled) return
+      settled = true
       let id = ''
       try { id = new TextDecoder('utf-8', { fatal: true }).decode(output).trim() } catch { reject(new Error('iroh_identity_invalid')); return }
       if (code !== 0 || !/^[0-9a-f]{64}$/u.test(id)) reject(new Error('iroh_identity_invalid'))
