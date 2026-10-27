@@ -16,7 +16,7 @@ function stubDocument() {
     listeners: Map<string, () => void>; dataset: Record<string, string>; className: string; removed: boolean
     remove: () => void; append: (...nodes: unknown[]) => void
     setAttribute: (name: string, value: string) => void; getAttribute: (name: string) => string | null
-    addEventListener: (type: string, handler: () => void) => void; click: () => void
+    addEventListener: (type: string, handler: () => void) => void; removeEventListener: (type: string, handler: () => void) => void; click: () => void
   }
   const created: StubNode[] = []
   const make = (tag: string): StubNode => {
@@ -28,6 +28,7 @@ function stubDocument() {
       setAttribute(name: string, value: string) { node.attributes.set(name, value) },
       getAttribute(name: string) { return node.attributes.get(name) ?? null },
       addEventListener(type: string, handler: () => void) { node.listeners.set(type, handler) },
+      removeEventListener(type: string, handler: () => void) { if (node.listeners.get(type) === handler) node.listeners.delete(type) },
       click() { node.listeners.get('click')?.() },
     }
     created.push(node)
@@ -74,7 +75,7 @@ describe('customization notice', () => {
     // The copy must name the failure rather than repeat a generic error.
     expect(mounted.notice?.children.length).toBeGreaterThan(0)
     const text = mounted.notice?.children[0] as { textContent: string }
-    expect(text.textContent).toContain('no longer signed in')
+    expect(text.textContent).toContain('authentication is unavailable')
     expect(text.textContent).toContain('detail:authentication_required')
   })
 
@@ -82,7 +83,7 @@ describe('customization notice', () => {
     const mounted = mount({ locale: () => 'zh' })
     mounted.emit('authentication_required')
     const text = mounted.notice?.children[0] as { textContent: string }
-    expect(text.textContent).toContain('设备登录已失效')
+    expect(text.textContent).toContain('设备认证暂不可用')
   })
 
   it('hides again once the channel recovers', () => {
@@ -112,7 +113,7 @@ describe('customization notice', () => {
     mounted.emit('authentication_required')
     expect(mounted.notice?.hidden).toBe(false)
     mounted.action?.click()
-    expect(mounted.notice?.hidden).toBe(true)
+    expect(mounted.notice?.hidden).toBe(false)
   })
 
   it('keeps the notice while a real recovery attempt is running', () => {
@@ -131,6 +132,15 @@ describe('customization notice', () => {
     expect(mounted.notice?.removed).toBe(true)
     const style = mounted.stub.created.find(node => node.tag === 'style')
     expect(style?.removed).toBe(true)
+  })
+
+  it('does not invoke recovery through a retained button after disposal', () => {
+    const reconnect = vi.fn(() => true)
+    const mounted = mount({ reconnect })
+    mounted.emit('authentication_required')
+    mounted.dispose()
+    mounted.action?.click()
+    expect(reconnect).not.toHaveBeenCalled()
   })
 
   it('degrades instead of throwing when the document cannot build nodes', () => {

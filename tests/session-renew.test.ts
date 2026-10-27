@@ -404,19 +404,72 @@ describe('a rejected gateway request renews a Session the transport still calls 
     const document = Object.assign(new EventTarget(), { visibilityState: 'visible', cookie: 'dsh_ma_csrf=before' })
     const page = Object.assign(new EventTarget(), { document, location: { origin: 'https://computer.example' }, __DSH_MOBILE_NATIVE__: bridge })
     let rejected: ((status: number) => void) | undefined
+    let retry: (() => boolean) | undefined
+    const renewed = vi.fn()
     // The owner only reads visibility, the origin and the native bridge, so the
     // owned stub is cast at the boundary exactly like the existing fixture does.
     const dispose = installMobileConnectionRecovery(
       () => connection, page as unknown as Parameters<typeof installMobileConnectionRecovery>[1],
-      document as unknown as Document, signal => { rejected = signal },
+      document as unknown as Document, (signal, manual) => { rejected = signal; retry = manual }, renewed,
     )
     disposers.push(async () => { await dispose?.() })
     return {
       connection, reconnect,
       reject: (status: number) => rejected?.(status),
+      retry: () => retry?.() ?? false,
+      dispose, renewed,
       setState(next: MobileConnectionState) { snapshot = next; for (const listener of listeners) listener() },
     }
   }
+
+  it('allows explicit retry after a transient failure and refreshes only after confirmed renewal', async () => {
+    const invoke = vi.fn<MobileRecoveryBridge['invoke']>()
+      .mockRejectedValueOnce(Object.assign(new Error('deadline'), { code: 'timeout' }))
+      .mockResolvedValue({ renewed: true })
+    const mounted = owner(native(invoke))
+    mounted.reject(401)
+    await flush()
+    expect(invoke).toHaveBeenCalledTimes(1)
+    expect(mounted.renewed).not.toHaveBeenCalled()
+    mounted.reject(401)
+    await flush()
+    expect(invoke).toHaveBeenCalledTimes(1)
+    expect(mounted.retry()).toBe(true)
+    expect(mounted.retry()).toBe(false)
+    await flush()
+    expect(invoke).toHaveBeenCalledTimes(2)
+    expect(mounted.renewed).toHaveBeenCalledTimes(1)
+    await mounted.dispose?.()
+    expect(mounted.retry()).toBe(false)
+  })
+
+  it.each(['device_revoked', 'device_expired', 'authentication_failed'])('does not rearm rejected credentials after %s', async code => {
+    const invoke = vi.fn<MobileRecoveryBridge['invoke']>()
+      .mockRejectedValue(Object.assign(new Error('credentials rejected'), { code }))
+    const mounted = owner(native(invoke))
+    mounted.reject(401)
+    await flush()
+    mounted.setState('connecting')
+    mounted.setState('connected')
+    mounted.reject(401)
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(mounted.retry()).toBe(false)
+    expect(invoke).toHaveBeenCalledTimes(1)
+    expect(mounted.renewed).not.toHaveBeenCalled()
+  })
+
+  it('keeps independently mounted recovery owners separate', async () => {
+    const firstInvoke = vi.fn(async () => ({ renewed: true }))
+    const secondInvoke = vi.fn(async () => ({ renewed: true }))
+    const first = owner(native(firstInvoke))
+    const second = owner(native(secondInvoke))
+    await first.dispose?.()
+    second.reject(401)
+    await flush()
+    expect(firstInvoke).not.toHaveBeenCalled()
+    expect(secondInvoke).toHaveBeenCalledTimes(1)
+    expect(second.renewed).toHaveBeenCalledTimes(1)
+  })
 
   it('does not request a renewal from a page with no native bridge', async () => {
     // An ordinary browser must not promise automatic recovery it cannot perform.

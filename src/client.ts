@@ -223,17 +223,6 @@ declare global {
 
 const queuedDefinitions: MobileClientDefinition[] = []
 let queuedLegacyMount: MobileExtensionMount | undefined
-/**
- * Reports a rejected authenticated gateway request to the single connection
- * recovery owner.
- *
- * The customization loader and the connection owner are installed by separate
- * effects, so they cannot call each other directly. This slot keeps one renewal
- * implementation: the loader only says "this request was rejected", and the owner
- * decides whether a renewal is warranted. `undefined` when no owner is installed,
- * for example on a page without the public connection service.
- */
-let gatewayRejectionSink: ((status: number) => void) | undefined
 if (typeof window !== 'undefined' && window.dshMobile === undefined) {
   window.dshMobile = {
     register: mount => { queuedLegacyMount = mount },
@@ -3973,9 +3962,18 @@ export class PerIdActivationLifecycle<T> {
   }
 }
 
-/** Install authenticated mobile customization refresh, retaining loaded legacy assets through temporary failures. */
-export function installCustomAssets(): () => void {
+/**
+ * Install authenticated customization refresh, retaining assets through temporary failures.
+ * @param recovery - optional instance-owned authentication feedback and refresh registration.
+ * @returns synchronous teardown for the customization UI and refresh admission.
+ */
+export function installCustomAssets(recovery?: {
+  readonly rejected: (status: number) => void
+  readonly retry: () => boolean
+  readonly registerRefresh: (refresh: () => void) => () => void
+}): () => void {
   const reporter = createMobileAssetLoadReporter(selectedMobileControlLocale)
+  let refreshNow = (): void => { /* Assigned before the first resource result. */ }
   const customizationOwner = ownsMobileCustomization(document.querySelector('meta[name="dsh-mobile-gateway"][content="authenticated"]') !== null, window.__DSH_MOBILE_FRONTEND__)
   // A silent failure leaves the user thinking a third-party plugin broke, so the
   // channel that failed is also shown on screen (issue #298). The action only
@@ -3989,10 +3987,9 @@ export function installCustomAssets(): () => void {
       reconnect: () => {
         // With a native bridge the recovery owner renews and reconnects; without
         // one there is nothing this page can do, so do not promise it.
-        const bridge = window.__DSH_MOBILE_NATIVE__
-        if (bridge === undefined) return false
-        gatewayRejectionSink?.(401)
-        return gatewayRejectionSink !== undefined
+        const attempted = recovery?.retry() ?? false
+        refreshNow()
+        return attempted
       },
       subscribe: listener => reporter.subscribe(listener),
       message: reason => reporter.message(reason),
@@ -4034,7 +4031,7 @@ export function installCustomAssets(): () => void {
     // Issue #298: a rejected authenticated request means the Session is gone even
     // if the live transport still reports `connected`. Ask the single recovery
     // owner for one renewal instead of waiting for a disconnect that may not come.
-    if (rejectedAuth && !disposed && !signal.aborted) gatewayRejectionSink?.(response.status)
+    if (rejectedAuth && !disposed && !signal.aborted) recovery?.rejected(response.status)
     void response.body?.cancel().catch((error: unknown) => {
       // Unread rejected bodies are disposed without replacing the reported HTTP failure.
       void error
@@ -4429,6 +4426,8 @@ export function installCustomAssets(): () => void {
       events?.setEnabled(true)
     }
   })
+  refreshNow = () => { stopRefresh.refresh() }
+  const unregisterRefresh = recovery?.registerRefresh(refreshNow)
   const stopEvents = startExtensionChangeStream(
     () => { stopRefresh.refresh() },
     undefined,
@@ -4456,7 +4455,7 @@ export function installCustomAssets(): () => void {
     false,
   )
   events = stopEvents
-  return () => { disposed = true; removeNotice(); reporter.dispose(); stopNativeBack(); stopEvents(); stopRefresh(); started = false; legacyDispose?.(); legacyDispose = undefined; legacyRoot?.remove(); legacyRoot = undefined; legacyStyle.remove(); activations.dispose(); for (const node of styleNodes.values()) node.remove(); styleNodes.clear(); const layer = document.querySelector('[data-dsh-mobile-extension-layer]'); layer?.remove(); for (const host of document.querySelectorAll('[data-dsh-mobile-surface-host]')) host.remove(); if (previous === undefined) delete window.dshMobile; else window.dshMobile = previous }
+return () => { disposed = true; unregisterRefresh?.(); removeNotice(); reporter.dispose(); stopNativeBack(); stopEvents(); stopRefresh(); started = false; legacyDispose?.(); legacyDispose = undefined; legacyRoot?.remove(); legacyRoot = undefined; legacyStyle.remove(); activations.dispose(); for (const node of styleNodes.values()) node.remove(); styleNodes.clear(); const layer = document.querySelector('[data-dsh-mobile-extension-layer]'); layer?.remove(); for (const host of document.querySelectorAll('[data-dsh-mobile-surface-host]')) host.remove(); if (previous === undefined) delete window.dshMobile; else window.dshMobile = previous }
 }
 
 interface LegacyCssState { etag: string; modified: string }
@@ -4534,6 +4533,9 @@ export const CONTROL_STYLES = `
 
 /** Mount the desktop control or mobile feature enhancements. */
 export function apply(ctx: ClientContext): void {
+  let gatewayRejectionSink: ((status: number) => void) | undefined
+  let retryRecovery: (() => boolean) | undefined
+  let refreshCustomization: (() => void) | undefined
   ctx.effect(() => installMobileUiLocalePersistence(document, window), 'dsh-mobile: browser UI locale persistence')
 
   ctx.effect(() => {
@@ -4545,18 +4547,15 @@ export function apply(ctx: ClientContext): void {
   ctx.effect(() => {
     const gatewayPage = document.querySelector('meta[name="dsh-mobile-gateway"][content="authenticated"]') !== null
     if (!ownsMobileCustomization(gatewayPage, window.__DSH_MOBILE_FRONTEND__)) return
-    // Customization loads and the connection owner live in different effects, so
-    // the rejection signal travels through this module-level slot rather than a
-    // second renewal implementation. Issue #298: a Host restart kills the Session
-    // while the live transport can still report `connected`, and a 401 on an
-    // authenticated asset is the only signal that arrives.
+    let ownedRejection: ((status: number) => void) | undefined
     const recovery = installMobileConnectionRecovery(
       () => ctx.get('connection'), window, document,
-      rejected => { gatewayRejectionSink = rejected },
+      (rejected, retry) => { ownedRejection = rejected; gatewayRejectionSink = rejected; retryRecovery = retry },
+      () => { refreshCustomization?.() },
     )
-    if (recovery === undefined) { gatewayRejectionSink = undefined; return }
+    if (recovery === undefined) { gatewayRejectionSink = undefined; retryRecovery = undefined; return }
     return () => {
-      gatewayRejectionSink = undefined
+      if (gatewayRejectionSink === ownedRejection) { gatewayRejectionSink = undefined; retryRecovery = undefined }
       return recovery()
     }
   }, 'dsh-mobile: connection recovery')
@@ -4569,7 +4568,14 @@ export function apply(ctx: ClientContext): void {
       : NATIVE_MOBILE_STYLES
     style.textContent += CLIENT_MODULE_STYLES
     document.head.append(style)
-    const removeCustom = !desktopAdmin || gatewayCustomization ? installCustomAssets() : () => undefined
+    const removeCustom = !desktopAdmin || gatewayCustomization ? installCustomAssets({
+      rejected: status => { gatewayRejectionSink?.(status) },
+      retry: () => retryRecovery?.() ?? false,
+      registerRefresh: refresh => {
+        refreshCustomization = refresh
+        return () => { if (refreshCustomization === refresh) refreshCustomization = undefined }
+      },
+    }) : () => undefined
     const removeVoiceSession = installVoiceSession(!desktopAdmin)
     const removeDraftTransfer = !desktopAdmin && document.querySelector('meta[name="dsh-mobile-gateway"][content="authenticated"]') !== null
       ? installDraftTransfer(ctx, window, document) : () => undefined

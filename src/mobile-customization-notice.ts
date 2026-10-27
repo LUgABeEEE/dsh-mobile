@@ -22,29 +22,29 @@ const NOTICE_COPY: Record<'en' | 'zh' | 'it', {
 }> = {
   en: {
     title: {
-      authentication_required: 'Mobile customization stopped because this device is no longer signed in.',
+      authentication_required: 'Device authentication is unavailable.',
       gateway_required: 'Custom mobile CSS, scripts and extensions need the paired Mobile access entry.',
       other: 'Mobile customization could not be loaded.',
     },
-    action: 'Reconnect',
+    action: 'Retry loading',
     dismiss: 'Dismiss',
   },
   zh: {
     title: {
-      authentication_required: '设备登录已失效，移动定制（自定义样式、脚本与插件扩展）已停止加载。',
+      authentication_required: '设备认证暂不可用。',
       gateway_required: '自定义移动样式、脚本与扩展需要通过已配对的移动访问入口打开。',
       other: '移动定制加载失败。',
     },
-    action: '重新连接',
+    action: '重试加载',
     dismiss: '忽略',
   },
   it: {
     title: {
-      authentication_required: 'La personalizzazione mobile si è fermata perché questo dispositivo non è più connesso.',
+      authentication_required: 'Autenticazione del dispositivo non disponibile.',
       gateway_required: 'CSS, script ed estensioni mobili richiedono l’accesso Mobile abbinato.',
       other: 'Impossibile caricare la personalizzazione mobile.',
     },
-    action: 'Riconnetti',
+    action: 'Riprova il caricamento',
     dismiss: 'Ignora',
   },
 }
@@ -61,6 +61,10 @@ const NOTICE_STYLES = `
 [${NOTICE_ATTRIBUTE}] button{flex:none;box-sizing:border-box;min-height:44px;min-width:44px;padding:0 10px;border:1px solid transparent;border-radius:9px;background:transparent;color:var(--dsw-alias-label-primary,#16181d);font:600 13px/1.2 system-ui;cursor:pointer}
 [${NOTICE_ATTRIBUTE}] button.dshm-notice-action{background:var(--dsw-alias-state-business-primary,#2563eb);color:#fff;border-color:transparent}
 [${NOTICE_ATTRIBUTE}] button:hover{opacity:.9}
+[${NOTICE_ATTRIBUTE}]{max-height:40vh;overflow:auto;left:max(8px,env(safe-area-inset-left));right:max(8px,env(safe-area-inset-right));flex-wrap:wrap}
+[${NOTICE_ATTRIBUTE}] .dshm-notice-text{margin:0;flex-basis:100%}
+[${NOTICE_ATTRIBUTE}] button:focus-visible{outline:2px solid currentColor;outline-offset:2px}
+[${NOTICE_ATTRIBUTE}]{background-color:Canvas;background-image:linear-gradient(var(--dsw-alias-bg-layer-2,Canvas),var(--dsw-alias-bg-layer-2,Canvas));color:var(--dsw-alias-label-primary,CanvasText)}
 `
 
 /** Copy key for a failure, so the notice and the console never disagree. */
@@ -139,15 +143,17 @@ export function installCustomizationNotice(
     notice.hidden = false
   }
 
-  action.addEventListener('click', () => {
-    // Only claim an attempt when the page can actually make one.
-    const attempted = options.reconnect()
-    if (!attempted) notice.hidden = true
-  })
-  dismiss.addEventListener('click', () => {
+  let disposed = false
+  const retry = (): void => {
+    if (!disposed) options.reconnect()
+  }
+  const close = (): void => {
+    if (disposed) return
     dismissed = current
     render()
-  })
+  }
+  action.addEventListener('click', retry)
+  dismiss.addEventListener('click', close)
 
   const unsubscribe = options.subscribe(reason => {
     if (reason !== current) dismissed = undefined
@@ -157,6 +163,9 @@ export function installCustomizationNotice(
   render()
 
   return () => {
+    disposed = true
+    action.removeEventListener('click', retry)
+    dismiss.removeEventListener('click', close)
     unsubscribe()
     notice.remove()
     style.remove()

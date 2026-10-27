@@ -41,10 +41,10 @@ const fixtureClient = `window.__ModuleLoader__.load({id:${JSON.stringify(fixture
  function Footer({wide}){const current=useFixture();if(current.footerMode==='hidden')return null;if(current.footerMode==='shared')return wide?h('div',{'data-sidebar-fixture-shared':true,style:{position:'relative',display:'flex',minWidth:0,width:'100%'}},h('button',{id:'sidebar-fixture-shared',style:{boxSizing:'border-box',width:'100%',minWidth:0,height:42,display:'flex',alignItems:'center',gap:8,padding:'0 6px 0 8px',border:0,background:'transparent',color:'inherit',font:'14px/22px system-ui',whiteSpace:'nowrap'},onClick:()=>state.clicks.push('shared')},h('span',null,'Balance'),h('span',{'data-sidebar-fixture-amount':true,style:{marginLeft:'auto',flex:'none'}},'310.13 CNY'))):null;return h('div',{'data-sidebar-fixture-footer':true,style:{width:'100%',minHeight:wide&&current.long?280:48,display:'flex',flexDirection:'column',justifyContent:'flex-end'}},h('button',{id:'sidebar-fixture-footer',style:{font:'inherit',minHeight:48,width:'100%'},onClick:()=>{state.clicks.push('footer');state.overlay=true;update()}},'Owned footer action'))}
  function Overlay(){const current=useFixture();return current.overlay?h('div',{id:'sidebar-fixture-dialog',role:'dialog','aria-label':'Owned sidebar overlay',style:{position:'fixed',inset:'72px 16px auto',padding:16,zIndex:1200,background:'var(--dsw-alias-bg-base)',color:'var(--dsw-alias-label-primary)'}},h('button',{id:'sidebar-fixture-close',style:{minWidth:48,minHeight:48},onClick:()=>{state.clicks.push('overlay');state.overlay=false;update()}},'Close owned overlay')):null}
  function Stop(){return h('button',{id:'sidebar-fixture-stop',style:{minWidth:44,minHeight:44},onClick:()=>state.clicks.push('stop')},'Owned Stop control')}
- function apply(ctx){ctx.effect(()=>{const off=[];state.setLong=value=>{state.long=value;update()};state.setFooterMode=value=>{state.footerMode=value;update()};state.hasSession=id=>ctx.sessions.list.getSnapshot().byId[id]!==undefined;state.openSession=id=>ctx.uiWorkspace.openSession(id);
+ function apply(ctx){ctx.effect(()=>{const off=[];state.setLong=value=>{state.long=value;update()};state.setFooterMode=value=>{state.footerMode=value;update()};state.hasSession=id=>ctx.sessions.list.getSnapshot().byId[id]!==undefined;state.openSession=id=>ctx.uiWorkspace.openSession(id);state.openRightbar=()=>{if(!ctx.sidebarRight.isExpanded())ctx.sidebarRight.toggleExpanded()};
  for(const [name,id,component] of [['sidebar.footer.action','sidebar-fixture-footer',Footer],['shell.overlay','sidebar-fixture-overlay',Overlay],['conversation.input.right','sidebar-fixture-stop',Stop]])off.push(ctx.slots.inject(name,()=>ctx.slots.register({name,id},component)));
  for(let i=0;i<5;i++){const id='sidebar-fixture-panel-'+i;off.push(ctx.slots.inject('sidebar.panellist',()=>ctx.slots.register({name:'sidebar.panellist',id,label:'Owned panel '+i},()=>h('span',null,'P'))));off.push(ctx.slots.inject('main',()=>ctx.slots.register({name:'main',key:id},()=>h('div',{'data-sidebar-fixture-panel':id},'Owned panel '+i))))}
- return()=>{off.reverse().forEach(dispose=>dispose());delete window.__sidebarFixture}})}return{inject:['slots','uiWorkspace','sessions'],apply};}});`
+ return()=>{off.reverse().forEach(dispose=>dispose());delete window.__sidebarFixture}})}return{inject:['slots','uiWorkspace','sessions','sidebarRight'],apply};}});`
 
 async function addFixture(home) {
   const directory = join(root, fixtureName)
@@ -52,7 +52,7 @@ async function addFixture(home) {
   await writeFile(join(directory, 'package.json'), JSON.stringify({ name: fixtureName, version: '1.0.0', type: 'module',
     main: './lib/index.mjs', exports: { '.': './lib/index.mjs', './package.json': './package.json', './client': './lib/client.js' },
     peerDependencies: { '@deepseek-ai/dsh-llm': '*' },
-    dsh: { bundle: { patch: './cordis.patch.yml' }, client: { platform: 'web', inject: ['@deepseek-ai/dsh-client-ui-sidebar', '@deepseek-ai/dsh-client-ui-workspace'], immediately: true } } }) + '\n')
+    dsh: { bundle: { patch: './cordis.patch.yml' }, client: { platform: 'web', inject: ['@deepseek-ai/dsh-client-ui-sidebar', '@deepseek-ai/dsh-client-ui-workspace', '@deepseek-ai/dsh-client-ui-sidebar-right'], immediately: true } } }) + '\n')
   // Blank Sessions are intentionally omitted from the real Workspace tree.
   // Commit a completed synthetic message in these owned Sessions, without a
   // prompt RPC, model, tool or replacement client projection.
@@ -408,6 +408,25 @@ try {
     assert.notEqual(wide.region.shrink, '0', 'Narrow scroll-seat override leaked onto a wide viewport')
     if (frontend === 'stock') assert.equal(wide.frame, 'auto', 'Narrow frame hit policy leaked onto wide stock')
     record.checks.push(`${frontend}: wide geometry/hit policy remained stock`)
+    if (frontend === 'dedicated') {
+      await phone.evaluate(() => window.__sidebarFixture.openRightbar())
+      const nativePanel = phone.locator('[data-sidebar-right-panel][data-sidebar-right-open]')
+      await nativePanel.waitFor({ state: 'visible' })
+      await nativePanel.locator('[data-sidebar-right-mode="fullscreen"]').click()
+      await phone.waitForFunction(() => document.querySelector('.dshm-shell')?.dataset.rightbarFullscreen === 'true')
+      const full = await phone.locator('.dshm-details').evaluate(node => {
+        const rect = node.getBoundingClientRect()
+        return { left: rect.left, right: rect.right, width: rect.width, viewport: innerWidth, inert: document.querySelector('.dshm-main')?.inert }
+      })
+      assert(Math.abs(full.left) < 1 && Math.abs(full.width - full.viewport) < 1 && full.inert, `Real fullscreen panel clipped: ${JSON.stringify(full)}`)
+      await hit(nativePanel.locator('[data-sidebar-right-mode="push"]'), 'Real fullscreen exit')
+      await phone.waitForFunction(() => document.querySelector('.dshm-shell')?.dataset.rightbarFullscreen === 'false')
+      const restored = await phone.locator('.dshm-details').evaluate(node => ({ width: node.getBoundingClientRect().width, viewport: innerWidth, inert: document.querySelector('.dshm-main')?.inert }))
+      assert(restored.width < restored.viewport && !restored.inert, 'Leaving fullscreen did not restore the conversation')
+      await hit(nativePanel.locator('[data-sidebar-right-toggle]'), 'Real right panel close')
+      await phone.waitForFunction(() => document.querySelector('.dshm-details')?.getAttribute('data-open') === 'false')
+      record.checks.push('dedicated: real stock right-panel fullscreen entry, exit and close kept geometry and background ownership')
+    }
     await phone.evaluate(() => window.__sidebarFixture.setLong(true))
     await phone.setViewportSize({ width: 393, height: 659 })
   }
