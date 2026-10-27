@@ -22,6 +22,7 @@ import { EXTENSION_RECOVERY_STYLES, installExtensionRecoveryControl } from './ex
 import { invokeBoundNativeCapability } from './native-capability.js'
 import { pickBrowserFiles } from './browser-file-picker.js'
 import { createMobileAssetLoadReporter, ownsMobileCustomization, readMobileAssetText, type MobileAssetLoadFailure } from './mobile-custom-assets.js'
+import { installCustomizationNotice } from './mobile-customization-notice.js'
 import { EXTENSION_LIMITS, LEGACY_CUSTOM_ASSET_LIMIT } from './extension-limits.js'
 import { installMobileConnectionRecovery, type MobileConnectionState } from './client-recovery.js'
 import { installMobileUiLocalePersistence } from './mobile-ui-locale.js'
@@ -222,6 +223,17 @@ declare global {
 
 const queuedDefinitions: MobileClientDefinition[] = []
 let queuedLegacyMount: MobileExtensionMount | undefined
+/**
+ * Reports a rejected authenticated gateway request to the single connection
+ * recovery owner.
+ *
+ * The customization loader and the connection owner are installed by separate
+ * effects, so they cannot call each other directly. This slot keeps one renewal
+ * implementation: the loader only says "this request was rejected", and the owner
+ * decides whether a renewal is warranted. `undefined` when no owner is installed,
+ * for example on a page without the public connection service.
+ */
+let gatewayRejectionSink: ((status: number) => void) | undefined
 if (typeof window !== 'undefined' && window.dshMobile === undefined) {
   window.dshMobile = {
     register: mount => { queuedLegacyMount = mount },
@@ -3965,6 +3977,27 @@ export class PerIdActivationLifecycle<T> {
 export function installCustomAssets(): () => void {
   const reporter = createMobileAssetLoadReporter(selectedMobileControlLocale)
   const customizationOwner = ownsMobileCustomization(document.querySelector('meta[name="dsh-mobile-gateway"][content="authenticated"]') !== null, window.__DSH_MOBILE_FRONTEND__)
+  // A silent failure leaves the user thinking a third-party plugin broke, so the
+  // channel that failed is also shown on screen (issue #298). The action only
+  // claims a recovery when this page can actually request one.
+  const removeNotice = customizationOwner
+    ? installCustomizationNotice(document, {
+      locale: () => {
+        const locale = selectedMobileControlLocale()
+        return locale === 'zh' || locale === 'it' ? locale : 'en'
+      },
+      reconnect: () => {
+        // With a native bridge the recovery owner renews and reconnects; without
+        // one there is nothing this page can do, so do not promise it.
+        const bridge = window.__DSH_MOBILE_NATIVE__
+        if (bridge === undefined) return false
+        gatewayRejectionSink?.(401)
+        return gatewayRejectionSink !== undefined
+      },
+      subscribe: listener => reporter.subscribe(listener),
+      message: reason => reporter.message(reason),
+    })
+    : () => {}
   const legacyStyle = element('style'); legacyStyle.dataset.plugin = 'dsh-mobile-custom'; document.head.append(legacyStyle)
   const legacyCssState = { etag: '', modified: '' }
   const previous = window.dshMobile
@@ -3996,7 +4029,12 @@ export function installCustomAssets(): () => void {
     if (reason === 'authentication_required') events?.setEnabled(false)
   }
   const unavailable = (response: Response, signal: AbortSignal, fallback: MobileAssetLoadFailure): void => {
-    failed(response.status === 401 || response.status === 403 ? 'authentication_required' : fallback, signal)
+    const rejectedAuth = response.status === 401 || response.status === 403
+    failed(rejectedAuth ? 'authentication_required' : fallback, signal)
+    // Issue #298: a rejected authenticated request means the Session is gone even
+    // if the live transport still reports `connected`. Ask the single recovery
+    // owner for one renewal instead of waiting for a disconnect that may not come.
+    if (rejectedAuth && !disposed && !signal.aborted) gatewayRejectionSink?.(response.status)
     void response.body?.cancel().catch((error: unknown) => {
       // Unread rejected bodies are disposed without replacing the reported HTTP failure.
       void error
@@ -4418,7 +4456,7 @@ export function installCustomAssets(): () => void {
     false,
   )
   events = stopEvents
-  return () => { disposed = true; reporter.dispose(); stopNativeBack(); stopEvents(); stopRefresh(); started = false; legacyDispose?.(); legacyDispose = undefined; legacyRoot?.remove(); legacyRoot = undefined; legacyStyle.remove(); activations.dispose(); for (const node of styleNodes.values()) node.remove(); styleNodes.clear(); const layer = document.querySelector('[data-dsh-mobile-extension-layer]'); layer?.remove(); for (const host of document.querySelectorAll('[data-dsh-mobile-surface-host]')) host.remove(); if (previous === undefined) delete window.dshMobile; else window.dshMobile = previous }
+  return () => { disposed = true; removeNotice(); reporter.dispose(); stopNativeBack(); stopEvents(); stopRefresh(); started = false; legacyDispose?.(); legacyDispose = undefined; legacyRoot?.remove(); legacyRoot = undefined; legacyStyle.remove(); activations.dispose(); for (const node of styleNodes.values()) node.remove(); styleNodes.clear(); const layer = document.querySelector('[data-dsh-mobile-extension-layer]'); layer?.remove(); for (const host of document.querySelectorAll('[data-dsh-mobile-surface-host]')) host.remove(); if (previous === undefined) delete window.dshMobile; else window.dshMobile = previous }
 }
 
 interface LegacyCssState { etag: string; modified: string }
@@ -4507,7 +4545,20 @@ export function apply(ctx: ClientContext): void {
   ctx.effect(() => {
     const gatewayPage = document.querySelector('meta[name="dsh-mobile-gateway"][content="authenticated"]') !== null
     if (!ownsMobileCustomization(gatewayPage, window.__DSH_MOBILE_FRONTEND__)) return
-    return installMobileConnectionRecovery(() => ctx.get('connection'), window, document)
+    // Customization loads and the connection owner live in different effects, so
+    // the rejection signal travels through this module-level slot rather than a
+    // second renewal implementation. Issue #298: a Host restart kills the Session
+    // while the live transport can still report `connected`, and a 401 on an
+    // authenticated asset is the only signal that arrives.
+    const recovery = installMobileConnectionRecovery(
+      () => ctx.get('connection'), window, document,
+      rejected => { gatewayRejectionSink = rejected },
+    )
+    if (recovery === undefined) { gatewayRejectionSink = undefined; return }
+    return () => {
+      gatewayRejectionSink = undefined
+      return recovery()
+    }
   }, 'dsh-mobile: connection recovery')
 
   ctx.effect(() => {
