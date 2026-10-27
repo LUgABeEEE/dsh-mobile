@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { isAbsolute, join, relative } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { parseGatewayConfig } from '../src/config.js'
-import { limitMobileBootBatches, MobileAccessGateway, parseMobileBootPlan, splitMobileBootBatch } from '../src/gateway.js'
+import { limitMobileBootBatches, MobileAccessGateway, parseMobileBootPlan, rewriteMobileIndex, splitMobileBootBatch } from '../src/gateway.js'
 import { SESSION_COOKIE } from '../src/http-security.js'
 import { MemoryDeviceStore } from '../src/storage.js'
 
@@ -117,6 +117,64 @@ describe('mobile boot graph budget', () => {
     expect(direct.body.equals(source)).toBe(true)
   })
 
+  it('serves a valid head-less dedicated document through the gateway instead of a 502', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-mobile-boot-headless-'))
+    cleanups.push(async () => {
+      const inside = relative(tmpdir(), root)
+      if (isAbsolute(inside) || !inside.startsWith('dsh-mobile-boot-headless-')) throw new Error('Unsafe head-less fixture root')
+      await rm(root, { recursive: true, force: true })
+    })
+    const graph = bootGraph(['feature-0'])
+    const index = `<!doctype html><html><script>window.__DSH_BOOT__=${JSON.stringify(graph)};</script><body></body></html>`
+    const upstream = createServer((request, response) => {
+      response.writeHead(200, { 'content-type': 'text/html', 'content-length': Buffer.byteLength(index) })
+      response.end(index)
+    })
+    cleanups.push(async () => {
+      upstream.closeAllConnections()
+      if (upstream.listening) await new Promise<void>((resolve, reject) => {
+        upstream.close(error => { if (error) reject(error); else resolve() })
+      })
+    })
+    await new Promise<void>((resolve, reject) => {
+      upstream.once('error', reject)
+      upstream.listen(0, '127.0.0.1', () => { upstream.removeListener('error', reject); resolve() })
+    })
+    const address = upstream.address()
+    if (address === null || typeof address === 'string') throw new Error('Owned upstream has no TCP address')
+    const config = parseGatewayConfig({
+      listenHost: '127.0.0.1', listenPort: 0, upstreamOrigin: `http://127.0.0.1:${address.port}`,
+      publicAuthorities: ['127.0.0.1'], allowedCidrs: ['127.0.0.0/8'],
+      stateFile: join(root, 'devices.json'), tls: { mode: 'disabled' },
+    })
+    const gateway = new MobileAccessGateway(Object.freeze({ ...config, discovery: false }), new MemoryDeviceStore())
+    cleanups.push(() => gateway.close())
+    await gateway.start()
+    const pairing = await gateway.access.openPairing()
+    const paired = await gateway.access.pair('headless-device', pairing.token, 'Head-less boot test')
+    const origin = gateway.address().origin
+    const document = await new Promise<{ status: number; body: Buffer }>((resolve, reject) => {
+      const outgoing = requestHttp({
+        host: '127.0.0.1', port: gateway.address().port, path: '/', agent: false,
+        headers: { host: new URL(origin).host, origin, accept: 'text/html', 'accept-encoding': 'identity',
+          cookie: `${SESSION_COOKIE}=${paired.sessionToken}` },
+      }, incoming => {
+        const chunks: Buffer[] = []
+        incoming.on('data', chunk => { chunks.push(Buffer.from(chunk)) })
+        incoming.once('error', reject)
+        incoming.once('end', () => resolve({ status: incoming.statusCode ?? 0, body: Buffer.concat(chunks) }))
+      })
+      outgoing.once('error', reject)
+      outgoing.setTimeout(4_000, () => { outgoing.destroy(new Error('Owned head-less request timed out')) })
+      outgoing.end()
+    })
+    expect(document.status, `head-less boot document response: ${document.status} ${document.body.toString('utf8').slice(0, 160)}`).toBe(200)
+    const html = document.body.toString('utf8')
+    expect(html).toContain('window.__DSH_BOOT__=')
+    expect(html).toContain('window.__DSH_MOBILE_FRONTEND__="dedicated"')
+    expect(html).not.toContain('/mobile-access/push/manifest.webmanifest')
+  })
+
   it('keeps seventeen 2 MiB modules loadable without evicting the layout replacement', () => {
     const ids = [...Array.from({ length: 17 }, (_value, index) => `feature-${index}`), LAYOUT]
     const original = split(ids)
@@ -182,6 +240,31 @@ describe('mobile boot graph budget', () => {
     const [cappedBounded] = limitMobileBootBatches([capped])
     expect(cappedBounded!.plans.flatMap(plan => plan.entries).map(item => item.id)).toEqual([LAYOUT])
     expect(cappedBounded!.rows.find(row => row.entries.includes('large'))!.url).toBe(entry('large').url)
+  })
+
+  const bootGraph = (ids: readonly string[]) => ({ rev: 'current', entries: [...ids.map(entry), { ...entry(LAYOUT), inject: ['@deepseek-ai/dsh-client-runtime', '@deepseek-ai/dsh-client-ui-theme'] }], batches: [{ phase: 'application', url: '/plugins/application.js', rev: 'current', entries: [...ids, LAYOUT] }] })
+
+  it('keeps a valid head-less dedicated document bootable by skipping only the optional metadata rewrite', () => {
+    const html = `<!doctype html><html><script>window.__DSH_BOOT__=${JSON.stringify(bootGraph(['feature-0']))};</script><link rel="manifest" href="/upstream.webmanifest"><link rel="apple-touch-icon" href="/upstream-icon.png"><body></body></html>`
+    const rewritten = rewriteMobileIndex(html)
+    // The boot graph replacement and dedicated bootstrap markers still apply.
+    expect(rewritten).toContain('window.__DSH_BOOT__=')
+    expect(rewritten).toContain('window.__DSH_MOBILE_FRONTEND__="dedicated"')
+    // The optional metadata-replacement step returns the document unchanged instead of throwing.
+    expect(rewritten).toContain('<link rel="manifest" href="/upstream.webmanifest">')
+    expect(rewritten).toContain('<link rel="apple-touch-icon" href="/upstream-icon.png">')
+    expect(rewritten).not.toContain('/mobile-access/push/manifest.webmanifest')
+    expect(rewritten).not.toContain('/mobile-access/push/icon-180.png')
+  })
+
+  it('a normal head document still gets exactly the dedicated push manifest and icon links', () => {
+    const html = `<!doctype html><html><head><link rel="manifest" href="/upstream.webmanifest"><link rel="apple-touch-icon" href="/upstream-icon.png"><script>window.__DSH_BOOT__=${JSON.stringify(bootGraph(['feature-1']))};</script></head><body></body></html>`
+    const rewritten = rewriteMobileIndex(html)
+    expect(rewritten).toContain('<link rel="manifest" href="/mobile-access/push/manifest.webmanifest">')
+    expect(rewritten.match(/<link rel="manifest"[^>]*>/gu)).toHaveLength(1)
+    expect(rewritten.match(/<link rel="apple-touch-icon"[^>]*>/gu)).toHaveLength(3)
+    expect(rewritten).not.toContain('/upstream.webmanifest')
+    expect(rewritten).not.toContain('/upstream-icon.png')
   })
 
   it('does not turn an invalid overflow source into a browser script URL', () => {

@@ -836,6 +836,10 @@ const MOBILE_PUSH_HEAD_LINKS = [
 ].join('')
 
 function replaceDedicatedMobilePushLinks(html: string): string {
+  // The manifest/icon replacement is optional metadata polish: an upstream document
+  // without a literal head element keeps its own metadata unchanged rather than
+  // breaking the whole dedicated boot for ordinary Mobile access.
+  if (/<head\b[^>]*>/iu.exec(html) === null) return html
   const linkPattern = /<link\b[^>]*>/giu
   const remove: Array<{ start: number; end: number }> = []
   for (const match of html.matchAll(linkPattern)) {
