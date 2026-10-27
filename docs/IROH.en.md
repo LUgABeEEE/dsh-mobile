@@ -1,8 +1,8 @@
-# iroh experimental channel (Phase 1: computer side only)
+# iroh experimental integration candidate
 
 iroh replaces public domains and tunnel accounts with an encrypted direct connection (relay fallback when direct fails): the phone finds the computer's cryptographic identity first, then traffic returns to the loopback gateway. You need no domain, port mapping, or separate HTTPS tunnel.
 
-> **Experimental.** The computer side is merged: provider registration, sidecar lifecycle, endpoint-pinned gateway TLS, panel status, and QR pairing. The phone side is merged into the main App (transport modules, versioned pairing records, QR pairing, carrier-aware restore and revocation monitoring) but ships only in native-enabled builds with `-PirohNative=true`; default builds remain the plain HTTPS shell.
+> **Unreleased candidate.** This branch integrates the computer provider, pinned TLS, pairing UI and Android transport into DSH Mobile. Development builds include arm64-v8a and x86_64 native libraries by default; `-PirohNative=false` explicitly omits them. The published plugin and APK do not gain iroh merely by this local integration. Physical-device, cross-network and final release-CI acceptance remain outstanding.
 > The design lives in the companion's [integration seam](https://github.com/saya-ch/dsh-mobile-iroh/blob/main/docs/INTEGRATION_SEAM.md).
 
 ## Prerequisites
@@ -16,8 +16,8 @@ iroh replaces public domains and tunnel accounts with an encrypted direct connec
 1. Under **Mobile access → Remote**, pick `iroh (Experimental)`.
 2. Press **Prepare iroh → Install official component** (labelled with the download size): the first run downloads and verifies the sidecar; later runs reuse the verified copy. A hash mismatch or an unsupported platform stops here with a reason instead of a half-started channel. Merely switching the channel on never triggers a download.
 3. Turn remote access on: the plugin resolves the endpoint identity, issues the endpoint gateway certificate (own CA, 90-day leaf, 30-day renewal headroom), starts a dedicated gateway, launches the sidecar, and waits for `ready`. `ready` means the sidecar is connected and the gateway serves its loopback socket.
-4. Press **Generate iroh pairing QR code**: the sidecar issues a six-digit one-time code while the gateway opens a one-time pairing window, and both are sealed into the descriptor with the pinned CA. Scanning replaces nothing server-side, but minting again replaces the old window. The gateway token reuses the standard one-time pairing mechanism, redeemed by the Phase 2 phone through the ordinary pair flow over the iroh transport.
-5. Switching off or switching providers sends `shutdown` first, then reclaims the process and gateway. An already installed companion keeps being reused during the transition; remove it through DSH plugin management.
+4. Press **Generate iroh pairing QR code** and scan it with a native-enabled candidate App. The descriptor binds the sidecar's six-digit code, the Gateway's one-time token and pinned CA. Generating another descriptor replaces the previous pairing window; pairing a phone redeems the Gateway token through the normal pair endpoint over iroh.
+5. Switching off or switching providers stops the owned process and Gateway without deleting stored pairings. The independent App has a different package identity; its Keystore credentials are not automatically migrated into this App.
 
 ## Security boundaries
 
@@ -33,6 +33,6 @@ iroh replaces public domains and tunnel accounts with an encrypted direct connec
 | `iroh_sidecar_invalid` | An installed file was modified; reinstalling overwrites it in place, or reinstall the companion for a damaged companion copy |
 | `iroh_platform_unsupported` | No sidecar is published for this OS/architecture |
 | `iroh_identity_failed` / `iroh_start_timeout` | Sidecar process misbehaving; check the iroh lines in the DSH log, then retry. A persistent failure can be reproduced directly: `<sidecar> --lang en id --data-dir "<data-dir>"` should exit 0 and print 64 hex chars. If creation in an empty directory fails while an existing `identity.key` still reads, endpoint protection is likely intercepting private file creation; back up `identity.key` first. Confirm on a real binary with `DSH_IROH_SIDECAR=<sidecar> npx vitest run tests/iroh-host-real.test.ts` |
-| Channel `ready` but no phone connects | Expected: waits on the Phase 2 Android transport |
+| Channel `ready` but no phone connects | Check that the App is the native-enabled candidate, the device supports a packaged ABI and the descriptor is fresh; computer readiness alone is not end-to-end acceptance |
 
 Chinese version: [IROH.md](IROH.md).
