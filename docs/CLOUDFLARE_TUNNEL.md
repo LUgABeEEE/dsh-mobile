@@ -2,6 +2,8 @@
 
 [English guide](CLOUDFLARE_TUNNEL.en.md)
 
+> 已经自己运行 cloudflared 或使用系统服务？可改用[自备反向代理模式](SELF_HOSTED_ORIGIN.md#已经自己运行-cloudflared-时)，将现有隧道指向面板展示的受保护 HTTP 后端，无需再安装组件或在插件保存隧道 Token。以下步骤介绍由插件管理 cloudflared 的另一种方式。
+
 内置的 cloudflared 通道有两种模式，在面板 **移动访问 → 远程 → cloudflared → 隧道类型** 中切换：
 
 | | 快速隧道（默认） | 命名隧道 |
