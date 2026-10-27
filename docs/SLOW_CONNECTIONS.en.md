@@ -108,6 +108,14 @@ These optional fields sit alongside `paths`; their defaults normally suffice:
 
 Restart DSH and reopen the phone page after a change. Developer tools can show whether the WebSocket handshake negotiated `permessage-deflate`; a client that does not negotiate it can still connect without compression. Compare actual channel transfer volume and CPU use for the same Session, rather than judging savings from the decompressed message lengths shown in developer tools. Set `paths` back to `[]` to disable it. Compression does not raise provider quotas or replace connection troubleshooting.
 
+### When it is worth enabling
+
+Compression is most useful when large, compressible live messages cross a bandwidth-limited link. In an isolated Gateway/`ws` test with synthetic repetitive text, an 8 KiB message used 8,196 bytes without compression and 249 bytes with it; a 64 KiB sample used 65,546 and 692 bytes. These are WebSocket frame bytes, not TLS/TCP overhead or measurements of a real Session. Savings depend strongly on the content.
+
+With the default 1 KiB threshold and no-context-takeover negotiation, the tested 1,023-byte message stayed uncompressed. Incompressible 64 KiB data grew by 22 bytes and added about 1.1 ms to the local round trip. A local bandwidth-shaped test showed lower delivery latency for repetitive messages, but does not predict any particular cellular, relay or LAN result; sustained-load memory and physical-device behavior were not measured.
+
+Compare the same workload with and without compression before drawing a conclusion. HTTP history responses and `/api/remote.mux` frames are separate paths: a faster Session switch after several simultaneous upgrades cannot be attributed to WebSocket compression alone. Compression remains opt-in.
+
 ## Static-resource caching and repeated downloads
 
 Owned static resources (`/mobile-access/compat.js`, `mobile-layout.js` and custom CSS/JS) use quoted content ETags and `Cache-Control: private, no-cache`. A browser may store the body but must revalidate before reuse. The gateway checks device authorization and the current resource before processing conditional GET/HEAD requests: unchanged content receives `304`, while a file edit returns the new body. Actual cache reuse still depends on browser behavior.

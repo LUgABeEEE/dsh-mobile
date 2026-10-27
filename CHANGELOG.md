@@ -10,6 +10,8 @@ Notable changes are recorded here. GitHub Releases provide the downloadable pack
 - Add iroh to the Android development candidate through a JNI-backed HTTPS CONNECT transport, pairing parsing, connection/status controllers and optional pairing-record fields. Native-enabled builds currently include arm64-v8a and x86_64 only; the existing published APK is unchanged. Thanks @qzyqmzn for [#284](https://github.com/saya-ch/dsh-mobile/pull/284), based on the independent dsh-mobile-iroh experiment.
 
 - Retain iroh probe and sidecar ownership until cleanup succeeds; concurrent shutdown waits for admitted startup, and failed termination remains visible and retryable.
+- Keep the shell chrome opaque under translucent skins. The navigation drawer, the right detail panel and the panel return bar composite their theme token over the CSS `Canvas` system colour, so a skin that makes those tokens translucent — or leaves them unresolvable — no longer lets conversation text show through the sidebar labels. Thanks @LUgABeEEE for [#286](https://github.com/saya-ch/dsh-mobile/pull/286).
+- Isolate the dedicated mobile shell's stacking context so positioned, positive-z-index menus attached to `document.body` can appear above its drawer. Preserve the existing stock-adapter layer values; see the [overlay guidance](docs/MOBILE_PLUGIN_ADAPTATION.en.md#overlay-layering-and-portals) for limits and modal behavior. Thanks @LUgABeEEE for [#295](https://github.com/saya-ch/dsh-mobile/pull/295) and @eeeggplant for [#288](https://github.com/saya-ch/dsh-mobile/issues/288).
 
 ## 0.6.18 - 2026-10-26
 

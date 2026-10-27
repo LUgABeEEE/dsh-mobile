@@ -317,6 +317,27 @@ try {
         console.log(`Checking ${label}`)
         if (large) await phone.addStyleTag({ content: '[data-dsh-mobile-sidebar-root] :is(button,[role="treeitem"],span){font-size:22px!important;line-height:1.5!important}' }).then(style => style.evaluate(node => { node.dataset.sidebarLargeText = 'true' }))
         await openDrawer()
+        if (frontend === 'dedicated' && !negative && !large) {
+          for (const portalZ of [10, 60]) {
+            await phone.evaluate(z => {
+              const menu = document.createElement('button')
+              menu.id = 'sidebar-fixture-body-menu'
+              menu.textContent = 'Owned body menu'
+              Object.assign(menu.style, { position: 'fixed', zIndex: String(z), left: '12px', top: '150px', width: '180px', height: '48px', background: 'Canvas', color: 'CanvasText' })
+              menu.onclick = () => { menu.dataset.clicked = 'true' }
+              document.body.append(menu)
+            }, portalZ)
+            try {
+              const menu = phone.locator('#sidebar-fixture-body-menu')
+              await hit(menu, `${label} body portal z=${portalZ}`)
+              assert.equal(await menu.getAttribute('data-clicked'), 'true')
+            } finally {
+              await phone.locator('#sidebar-fixture-body-menu').evaluateAll(nodes => nodes.forEach(node => node.remove()))
+            }
+            await openDrawer()
+          }
+          record.checks.push(`${label}: body-portal menus at z=10/60 received taps above the real drawer`)
+        }
         const mounted = await sidebar().locator('[data-row-key^="session:"]').evaluateAll(nodes => nodes.map(node => node.dataset.rowKey))
         record.mountedRows = mounted
         assert(mounted.length > 0, 'Actual WorkspaceBrowser did not render any Session rows')
