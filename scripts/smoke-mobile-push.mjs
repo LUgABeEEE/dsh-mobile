@@ -820,6 +820,7 @@ async function loseShortSessionCookie(context, origin, expectedDeviceId) {
   return { removedSessionCookies: shortSession.length, retainedPairing: true }
 }
 
+
 async function createOwnedWorkspace(desktop, workspacePath, runId) {
   const created = await desktop.evaluate(async ({ path, runId }) => {
     const response = await fetch('/api/workspace/create', {
@@ -2357,6 +2358,63 @@ async function runFullSmoke({ negativeControl = false, pairDiagnostic = false } 
     phone = await phoneContext.newPage()
     attachPhoneObservers(phone)
     const restartWorkspaceStream = observeWorkspaceStream(phone)
+    // Server-side session absence: DSH Mobile's auth sessions live in runtime memory only
+    // (src/access.ts keeps sessions in a private Map and persists only devices), so the restart
+    // genuinely lost the phone's session while its short-session cookie was retained. The FIRST
+    // phone navigation is question A's push URL with the renewal held, proving the pre-auth gate.
+    const retainedCookies = await phoneContext.cookies([gatewayOrigin, `${gatewayOrigin}/mobile-access/auth/renew`])
+    const retainedShortSession = retainedCookies.filter(cookie => cookie.httpOnly && cookie.path === '/' && cookie.value !== deviceId)
+    assert(retainedShortSession.length >= 1, 'Phone lost its short-session cookie across the owned restart')
+    const renewHoldReached = deferred(), releaseRenewHold = deferred()
+    await phone.route('**/mobile-access/auth/renew', async route => { renewHoldReached.resolve(); await releaseRenewHold.promise; await route.continue() })
+    const sessionAbsenceLogin = phone.waitForResponse(response => new URL(response.url()).pathname === '/mobile-access/login'
+      && response.request().method() === 'GET', { timeout: CLIENT_TIMEOUT_MS })
+    const sessionAbsenceRenew = phone.waitForResponse(response => new URL(response.url()).pathname === '/mobile-access/auth/renew'
+      && response.request().method() === 'POST', { timeout: CLIENT_TIMEOUT_MS })
+    // The page-driven resolver (status 200) is awaited separately from the stale-cookie probe below (401).
+    const sessionAbsenceResolve = phone.waitForResponse(response => new URL(response.url()).pathname === '/mobile-access/push/resolve'
+      && response.request().method() === 'POST' && response.status() === 200, { timeout: CLIENT_TIMEOUT_MS })
+    await phone.goto(`${gatewayOrigin}/?mobile-push=${encodeURIComponent(reference)}`, { waitUntil: 'domcontentloaded', timeout: CLIENT_TIMEOUT_MS })
+    await within(renewHoldReached.promise, CLIENT_TIMEOUT_MS, () => 'Renewal was not requested for the server-unknown session')
+    // While renewal is held the retained cookie must be server-rejected: a protected probe 401s
+    // (authentication_failed) and no workspace/conversation content has rendered.
+    const staleProbe = await phone.evaluate(async reference => {
+      const response = await fetch('/mobile-access/push/resolve', { method: 'POST', credentials: 'same-origin',
+        headers: { 'content-type': 'application/json' }, body: JSON.stringify({ reference }), signal: AbortSignal.timeout(5_000) })
+      return { status: response.status }
+    }, reference)
+    assert.equal(staleProbe.status, 401, `Protected push route did not reject the server-unknown session cookie: ${String(staleProbe.status)}`)
+    const preAuthPage = await phone.evaluate(() => ({ shell: document.querySelector('.dshm-shell') !== null,
+      conversations: document.querySelectorAll('[data-conversation-session]').length }))
+    assert.equal(preAuthPage.shell, false, 'Workspace content rendered before authentication')
+    assert.equal(preAuthPage.conversations, 0, 'Conversation content rendered before authentication')
+    releaseRenewHold.resolve()
+    const [sessionAbsenceLoginPage, sessionAbsenceRenewal, sessionAbsenceResolved] = await Promise.all([sessionAbsenceLogin, sessionAbsenceRenew, sessionAbsenceResolve])
+    // Unroute only after the held handler's continue() has completed (unroute auto-continues pending routes).
+    await phone.unroute('**/mobile-access/auth/renew')
+    assert.equal(sessionAbsenceLoginPage.status(), 200)
+    assert.equal(sessionAbsenceRenewal.status(), 200, 'Persistent pairing did not renew the server-unknown session')
+    assert.equal(sessionAbsenceResolved.status(), 200, 'Tap reference was not resolvable after renewal')
+    const sessionAbsenceTarget = await sessionAbsenceResolved.json()
+    assert.equal(sessionAbsenceTarget.sessionId, targetSessionId, 'Renewed resolver returned a different target')
+    await phone.waitForFunction(() => document.querySelector('.dshm-shell') !== null, undefined, { timeout: CLIENT_TIMEOUT_MS })
+    // The plugin owns the resolver contract (correct target, authenticated, consent intact). Whether the
+    // upstream app's session-open then mounts the target on a FRESH-boot renewed login is app behavior:
+    // observed here landing on the last-active session ("session reference is released") — recorded, not asserted.
+    const sessionAbsenceLanding = await phone.evaluate(() => ({
+      href: location.href.slice(0, 160), search: location.search.slice(0, 80),
+      sessionId: document.querySelector('[data-conversation-session]')?.getAttribute('data-conversation-session') ?? null,
+    }))
+    assert.notEqual(sessionAbsenceLanding.sessionId, null, 'Renewed fresh boot mounted no conversation at all')
+    const configAfterSessionAbsence = await readPushConfig(phone, installationId)
+    assert.equal(configAfterSessionAbsence.status, 'enabled', 'Server-side session absence revoked persistent push consent')
+    const serverSideSessionAbsence = { retainedShortSessionCookies: retainedShortSession.length, staleProbe, preAuthPage,
+      loginStatus: sessionAbsenceLoginPage.status(), renewalStatus: sessionAbsenceRenewal.status(),
+      resolveStatus: sessionAbsenceResolved.status(), targetSessionId: sessionAbsenceTarget.sessionId,
+      landing: sessionAbsenceLanding, freshBootSessionOpenBoundary: 'resolver returned the intended target; the upstream app may land on the last-active session on a fresh-boot renewed login (session-open reference released)',
+      consentStillEnabled: configAfterSessionAbsence.status === 'enabled' }
+    pairDiagnosticDetail(runtimeDiagnosticFd, pairDiagnosticRunId, 'snapshot', 'server-side-session-absence', serverSideSessionAbsence)
+    cases.push('server-side session absence (runtime-memory auth sessions lost at restart) enforced authentication before content, renewed through pairing, resolved the intended target and kept push consent enabled')
     const restartedRoot = await phone.goto(`${gatewayOrigin}/`, { waitUntil: 'domcontentloaded', timeout: CLIENT_TIMEOUT_MS })
     assert.equal(restartedRoot?.status(), 200, 'Persisted Gateway origin did not survive DSH restart')
     assert.equal(new URL(phone.url()).origin, gatewayOrigin)
@@ -2492,6 +2550,7 @@ async function runFullSmoke({ negativeControl = false, pairDiagnostic = false } 
     const postRestartTarget = await openTargetFromPush(phone, gatewayOrigin, postRestartReference, restartedSessionId)
     assert.equal(postRestartTarget.sessionIdMatched, true)
     cases.push('a fresh public Host source after restart created and resolved a new encrypted registry-owned reference')
+
 
     const deviceBContext = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true,
       locale: 'en-US', ignoreHTTPSErrors: true, proxy: ownedContextProxy })
@@ -2723,13 +2782,15 @@ async function runFullSmoke({ negativeControl = false, pairDiagnostic = false } 
       publicSessionObservation: { initial: publicSessionObservationInitial, afterSameProfileRestart: publicSessionObservationRestarted,
         provesNeverCreatedMissingLookupOnly: true, genuinePersistedDeletedTargetVerified: false },
       cases,
-      effects: { expiredSession, warmTap, pushController: { mountedRowCount: pushRowCount, subscribeCallsBeforeEnable,
+      effects: { expiredSession, serverSideSessionAbsence,
+        warmTap, pushController: { mountedRowCount: pushRowCount, subscribeCallsBeforeEnable,
         subscribeCallsAfterEnable, successfulEnrollCount, settingsDiagnostic: pushSettingsDiagnostic }, workerCounts: workersAfter.calls, serviceWorkerScopes: workersAfter.workers,
         cacheKeys: workersAfter.cacheKeys, promptAttempts, testNotification: testRouteEvidence },
       limits: ['Synthetic PushManager and local Apple HTTPS acceptance are not Apple/iPhone delivery evidence.',
-        'The paired-expiry case removes short-session cookies; it does not simulate server-side Session TTL.',
-        'Chromium cross-document navigation does not establish iOS Home Screen warm-tap or in-flight preservation behavior.',
-        'A never-created-ID public observeSession lookup is not a genuine persisted deleted-target test; this DSH runtime exposes no public SessionPersistence delete operation.'],
+        'Server-side session absence is produced by an owned-runtime restart (auth sessions are runtime memory in src/access.ts), not by waiting out a configured server session TTL.',
+        'On a fresh-boot renewed login the resolver returns the intended target while the upstream app may land on the last-active session (session-open reference released); booted-app taps open the target.',
+        'A genuinely persisted-then-deleted target Session remains unprovable here: no public SessionPersistence delete operation exists, and deleting every id-named persisted artifact under the owned root still left the Session resolvable through the public session query (the authoritative store is a generic-named workspace structure).',
+        'Chromium cross-document navigation does not establish iOS Home Screen warm-tap or in-flight preservation behavior.'],
       cleanup: 'browser and both owned DSH children drained before temporary root removal',
     }
   } catch (error) {
