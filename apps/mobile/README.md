@@ -4,14 +4,14 @@
 
 DeepSeek Harness is the display name of this community-maintained Android WebView app. It opens the plugin's authenticated HTTPS page rather than bundling another DSH frontend. The app and mobile browsers receive the same DSH features and computer-side mobile customizations.
 
-The current stable app is **0.6.7** (build 83). The npm plugin and Android App have independent versions: a plugin update does not automatically require another APK. See the [0.6.7 changes](#067-update).
+The current stable app is **0.6.8** (build 84). The npm plugin and Android App have independent versions: a plugin update does not automatically require another APK. See the [0.6.8 changes](#068-update).
 
 Android 10 or later is supported. The local iOS experiment is not a published or supported client.
 
 ## Install and pair
 
 1. Install and enable the plugin using the [project quick start](../../README.en.md#quick-start). Complete LAN setup from the command line or the computer's **Mobile Access** panel.
-2. Install the signed Android APK from [GitHub Releases](https://github.com/saya-ch/dsh-mobile/releases/tag/android-v0.6.7). Upgrade an official installation in place using the same release signer to retain its pairings. A differently signed Debug APK cannot replace it; do not uninstall or clear data just to bypass that mismatch.
+2. Install the signed Android APK from [GitHub Releases](https://github.com/saya-ch/dsh-mobile/releases/tag/android-v0.6.8). Upgrade an official installation in place using the same release signer to retain its pairings. A differently signed Debug APK cannot replace it; do not uninstall or clear data just to bypass that mismatch.
 3. On the computer, generate a pairing key/link under **Mobile Access → Local network**, or configure a remote provider and generate its remote pairing QR code. In the app, choose the matching connection mode and scan or paste the link.
 4. Name the computer. The app stores each LAN or remote pairing as its own record. The phone does not need a cpolar, Cloudflare or Tailscale app.
 
@@ -35,6 +35,10 @@ The **Paired computers** list shows names, connection types, addresses, reachabi
 Page zoom changes the whole page and is separate from per-address text preferences. App-only actions are shown only when the native bridge supports them. Native screens follow the Android system language in Simplified Chinese, English or Italian; webpage copy follows DSH's selected locale. DSH does not currently expose Italian.
 
 Deleting a local record removes its saved token and pinned CA, not the computer's authorization or every short-lived WebView cookie. Use **Mobile Access** on the computer to revoke access immediately. A full Android clear-app-data reset removes all pairings and web data and is not a normal reconnection step.
+
+## 0.6.8 update
+
+App 0.6.8/build 84 keeps the first page download under the existing overall connection deadline instead of interrupting it with a shorter page timer and automatically starting over. A genuine first-load failure keeps explicit retry; recovery for an already running page, TLS verification and cancellation remain available. Upgrade the App to receive this native fix; a plugin-only update cannot provide it.
 
 ## 0.6.7 update
 
@@ -149,9 +153,11 @@ The Debug APK is `app/build/outputs/apk/debug/app-debug.apk`. Official releases 
 
 Current-source Debug builds use package `io.github.sayach.dshmobile.debug` with a `-debug` version suffix. They install beside the official App with separate storage and pairings. They do not upgrade or migrate an older unsuffixed Debug installation; preserve that app and its data rather than uninstalling or clearing it to switch packages. Release builds keep `io.github.sayach.dshmobile` and the established signer.
 
-The verified stable release is [Android 0.6.7](https://github.com/saya-ch/dsh-mobile/releases/tag/android-v0.6.7), build 83, SHA-256 `919153244e6b84eb55c4701146f50454995330e080da9c91389e8816b2bd9b79`. The downloaded APK retains the established release signer and package `io.github.sayach.dshmobile`. Earlier release history belongs in [CHANGELOG](../../CHANGELOG.md).
+The verified stable release is [Android 0.6.8](https://github.com/saya-ch/dsh-mobile/releases/tag/android-v0.6.8), build 84, SHA-256 `c3d1fe43c0a39619527949c37341baf3f0d54decb2ef27ee0f9b12ae022169e2`. The downloaded APK retains the established release signer and package `io.github.sayach.dshmobile`. Earlier release history belongs in [CHANGELOG](../../CHANGELOG.md).
 
 ## Acceptance and known limits
+
+- App 0.6.8's public APK passed identity, checksum and established-signer verification. A matching-signer Debug upgrade opened DSH and retained the saved device; controlled slow-link fault injection was interrupted before pairing and is not counted as passed.
 
 - App 0.6.7 Debug builds were checked on PJW110, Android 16 and WebView 153 with isolated DSH 0.2.1-rc.2 over USB-reversed pinned HTTPS. Actual automatic staged adoption retained a same-Session Unicode draft and kept target native zoom/renewal working without another page load. Confirmation cancellation, held-target Back cancellation and late responses, native renewal cancellation, keyboard Back and picker cancellation also passed; QA pairings and mappings were removed afterward. This was not a real Wi-Fi/cellular transition or an installation of the formally signed APK.
 - Connection-control development builds used Debug metadata 0.6.4/build 80 on PJW110, Android 16 and Google WebView 153.0.8010.36. Against an isolated DSH 0.2.0-rc.2/plugin 0.6.10 instance over USB and pinned HTTPS, checks covered pairing/startup/saved-connection cancellation, Back, failed manual connections and return from a failed page after stopping native recovery. Held module responses also verified early webpage display, touch-through outside compact cancellation, cancellation and later completion. Pairings were retained and owned QA records removed.

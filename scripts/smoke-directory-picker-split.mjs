@@ -310,6 +310,10 @@ try {
         return {
           lang: dialog.lang,
           panel: dialog.querySelector('.dshm-picker__panel').getBoundingClientRect().toJSON(),
+          listHeight: dialog.querySelector('.dshm-picker__list').getBoundingClientRect().height,
+          toolbarHeight: dialog.querySelector('.dshm-picker__toolbar').getBoundingClientRect().height,
+          footerHeight: dialog.querySelector('.dshm-picker__footer').getBoundingClientRect().height,
+          inlineNavigation: dialog.querySelector('.dshm-picker__navigation').parentElement === dialog.querySelector('.dshm-picker__toolbar'),
           controls: controls.map(node => node.getBoundingClientRect().toJSON()),
           background: getComputedStyle(dialog.querySelector('.dshm-picker__panel')).backgroundColor,
           foreground: getComputedStyle(dialog).color,
@@ -318,6 +322,11 @@ try {
       })
       assert.equal(measured.lang, mode.lang === 'zh-CN' ? 'zh' : mode.lang)
       assert.equal(measured.horizontalOverflow, false, `${mode.name}: page-level horizontal overflow`)
+      assert.equal(measured.inlineNavigation, true, `${mode.name}: navigation occupies a separate row`)
+      assert(measured.toolbarHeight <= 64 && measured.footerHeight <= 64,
+        `${mode.name}: directory controls occupy too much height`)
+      assert(measured.listHeight >= measured.panel.height * (mode.width < 600 ? 0.62 : 0.42),
+        `${mode.name}: folder list lost its reading space: ${measured.listHeight}/${measured.panel.height}`)
       assert(measured.controls.every(box => box.width >= 44 && box.height >= 44
         && box.left >= 0 && box.top >= 0 && box.right <= mode.width + 1 && box.bottom <= mode.height + 1),
       `${mode.name}: clipped or undersized controls: ${JSON.stringify(measured.controls)}`)

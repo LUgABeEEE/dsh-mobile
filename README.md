@@ -26,20 +26,20 @@
   <a href="#兼容性">兼容性</a> ·
   <a href="docs/README.md">文档</a> ·
   <a href="#贡献者">贡献者</a> ·
-  <a href="https://github.com/saya-ch/dsh-mobile/releases/tag/v0.6.17">更新记录</a> ·
+  <a href="https://github.com/saya-ch/dsh-mobile/releases/tag/v0.6.18">更新记录</a> ·
   <a href="README.en.md">English</a>
 </p>
 
 > DSH Mobile 是 DeepSeek Harness 社区插件，原生 App 仅支持 Android。
 >
-> **当前正式版本：0.6.17**。修正目录选择器归属：官方 Desktop 保留原生选择器、**添加工作区**与 `Ctrl+O`，移动页改用页内目录浏览；慢链路下压缩 HTML 与 API 响应、缩小启动批次并复用已下载资源；模块设置新增传输体积和最小预设。Android App **0.6.7** 继续适用，本版不含新 APK。[插件更新与下载](https://github.com/saya-ch/dsh-mobile/releases/tag/v0.6.17) · [完整更新记录](CHANGELOG.md)。
+> **当前正式版本：0.6.18**。远程目录选择支持新建文件夹，导航和按钮更紧凑，为文件夹列表留出更多空间；修复过期模块配置导致无法进入页面的问题，并增加受控 NAS 管理入口。独立发布的 App **0.6.8** 修复首次加载反复重开，插件功能仍兼容 App 0.6.7。[插件更新与下载](https://github.com/saya-ch/dsh-mobile/releases/tag/v0.6.18) · [完整更新记录](CHANGELOG.md)。
 >
 > **版本说明**：自插件 **0.6.2** 起，Android App 与插件独立编号、独立发布，版本号无需一致；插件升级不代表 App 需要同步升级。[兼容说明](#兼容性)。
 
 <p align="center">
-  <a href="https://github.com/saya-ch/dsh-mobile/releases/download/android-v0.6.7/dsh-mobile-android-v0.6.7.apk"><img src="https://raw.githubusercontent.com/saya-ch/dsh-mobile/main/assets/brand/app-icon-rounded.svg" alt="DSH Mobile 安卓应用图标" width="72" height="72"></a><br>
-  <a href="https://github.com/saya-ch/dsh-mobile/releases/download/android-v0.6.7/dsh-mobile-android-v0.6.7.apk"><strong>下载 Android App 0.6.7</strong></a><br>
-  <sub><a href="https://github.com/saya-ch/dsh-mobile/releases/tag/android-v0.6.7">版本说明与校验文件</a></sub>
+  <a href="https://github.com/saya-ch/dsh-mobile/releases/download/android-v0.6.8/dsh-mobile-android-v0.6.8.apk"><img src="https://raw.githubusercontent.com/saya-ch/dsh-mobile/main/assets/brand/app-icon-rounded.svg" alt="DSH Mobile 安卓应用图标" width="72" height="72"></a><br>
+  <a href="https://github.com/saya-ch/dsh-mobile/releases/download/android-v0.6.8/dsh-mobile-android-v0.6.8.apk"><strong>下载 Android App 0.6.8</strong></a><br>
+  <sub><a href="https://github.com/saya-ch/dsh-mobile/releases/tag/android-v0.6.8">版本说明与校验文件</a></sub>
 </p>
 
 DSH Mobile 是一个 DeepSeek Harness 插件，让手机浏览器或 Android App 通过局域网，或可选的 Tailscale Funnel、cpolar、cloudflared、自建 FRP 或自有反向代理远程通道连接电脑，继续使用同一份会话、工作区、消息和工具。电脑端分别启停局域网与远程访问、分别管理配对授权；Android App 统一显示已配对电脑。插件不修改 DeepSeek Harness 源码。
@@ -422,6 +422,7 @@ macOS 上局域网、cloudflared、自建 FRP 与自有反向代理可用；Funn
 | `0.6.15` | `0.2.1-rc.2` 的 Firefox 158 隐私模式真实管理面板配对、HTTPS 移动页面与工作区读取基线，以及静音 Blob 播放；发布 CI 8 版本全绿 |
 | `0.6.16` | `0.2.1-rc.2` 的相册选择、纯文本草稿经公开 DSH 输入接口传输、真实 mux 恢复与跨客户端待答问题；CI 另覆盖 `0.1.7-alpha.2`、`0.1.7-rc.1`、`0.1.7-rc.2`、`0.2.0-rc.1`、`0.2.0-rc.2`、`0.2.1-alpha.2`、`0.2.1-alpha.3` |
 | `0.6.17` | `0.2.0-rc.2`、`0.2.1-rc.2` 的 15 项真实打包 Chromium 目录选择检查、旧 WebView 缺失 API 模拟与工作区 mux 读取；发布后装入官方 Desktop `0.2.1-rc.2` 并核对包内文件一致 |
+| `0.6.18` | `0.2.1-rc.2` 上的 18 项真实打包 Chromium 目录选择检查，含紧凑布局、目录创建和取消；本机官方 Desktop `0.2.1-rc.3` 已装入候选并启用局域网与 Cloudflare 网关 |
 
 <details>
 <summary>历史版本验证记录</summary>
