@@ -104,7 +104,11 @@ android {
 
     sourceSets.getByName("test").resources.srcDir("../../contract")
     if (irohNativeEnabled) {
-        sourceSets.getByName("main").jniLibs.srcDir(irohJniOutput)
+        // AGP 9 rejects a Provider in the SourceSet API ("You cannot add Provider
+        // instances to the Android SourceSet API"), so the generated directory is
+        // resolved to a plain File. That is safe here because the path is a fixed
+        // build-directory location; the task dependency below still produces it.
+        sourceSets.getByName("main").jniLibs.srcDir(irohJniOutput.get().asFile)
     }
     packaging.jniLibs.useLegacyPackaging = false
     // The selected NDK strips and verifies these libraries before Gradle packages them.
