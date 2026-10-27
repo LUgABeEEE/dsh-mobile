@@ -400,8 +400,10 @@ async function decryptCaptured(bodyBase64, keyMaterial, modulePath = httpEcePath
 }
 
 async function readTransportEvidence(path) {
+  // Polled while the owned child may still be writing: a missing OR not-yet-complete file is
+  // "not ready" (undefined); the poll predicate and deadline own correctness, not this reader.
   try { return JSON.parse(await readFile(path, 'utf8')) }
-  catch (error) { if (error.code === 'ENOENT') return undefined; throw error }
+  catch (error) { if (error.code === 'ENOENT' || error instanceof SyntaxError) return undefined; throw error }
 }
 
 function projectTransportEvidence(value) {
