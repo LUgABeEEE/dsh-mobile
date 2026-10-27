@@ -10,6 +10,7 @@ import {
   type PushReceipt,
   type PushRecipientKey,
   type PushRegistration,
+  type PushReconcileResult,
   type PushSnapshot,
   type PushSource,
   type PushTarget,
@@ -303,10 +304,11 @@ export class PushDelivery {
       if (intent.source.expiresAt <= this.#now()) { await this.#removeIntent(intent); continue }
       const duplicate = snapshot.receipts.some(row => row.sourceId === intent.source.sourceId && sameKey(row.key, intent.key))
       if (duplicate) { await this.#removePending(intent); continue }
-      let result: 'eligible' | 'stale' | 'unverifiable'
-      try { result = await this.#host.reconcile(intent.source) } catch { result = 'unverifiable' }
+      const guard = await this.#sourceGuard(intent.source)
       if (this.#closed) return
-      if (result !== 'eligible') await this.#removeIntent(intent)
+      // Transient uncertainty keeps durable work for the existing bounded recheck; only proof-backed denial drops it.
+      if (guard === 'denied') await this.#removeIntent(intent)
+      else if (guard === 'unverifiable') this.#defer(intent)
     }
   }
 
@@ -324,10 +326,10 @@ export class PushDelivery {
     try { snapshot = this.#registry.snapshot() } catch { return }
     for (const intent of snapshot.pending) {
       if (intent.source.sessionId !== sessionId) continue
-      let result: 'eligible' | 'stale' | 'unverifiable'
-      try { result = await this.#host.reconcile(intent.source) } catch { result = 'unverifiable' }
+      const guard = await this.#sourceGuard(intent.source)
       if (this.#closed) return
-      if (result !== 'eligible') await this.#removeIntent(intent)
+      if (guard === 'denied') await this.#removeIntent(intent)
+      else if (guard === 'unverifiable') this.#defer(intent)
     }
     this.#kick()
   }
@@ -466,6 +468,18 @@ export class PushDelivery {
     return this.#guardKey(intent.key, intent.source, origin, true, intent.recipientGeneration)
   }
 
+  /** Maps the Host tri-state for durable-work decisions; boolean eligible() would collapse transient uncertainty into denial. */
+  async #sourceGuard(source: PushSource): Promise<GuardResult> {
+    if (!this.#host.available) return 'unverifiable'
+    let result: PushReconcileResult
+    try { result = await this.#host.reconcile(source) } catch { return 'unverifiable' }
+    if (result === 'eligible') return 'allowed'
+    if (result === 'stale') return 'denied'
+    // Returned plan/approval/callId-less-question uncertainty is deliberately non-reconstructible cold proof.
+    if (source.category === 'plan' || source.category === 'approval' || (source.category === 'question' && typeof source.callId !== 'string')) return 'denied'
+    return 'unverifiable'
+  }
+
   async #guardKey(key: PushRecipientKey, source: PushSource, origin: Origin, requireEligible: boolean, expectedGeneration?: number): Promise<GuardResult> {
     const epoch = origin.generation
     if (this.#closed || !origin.active || this.#origins.get(this.#originId(origin)) !== origin || source.expiresAt <= this.#now()) return 'denied'
@@ -474,10 +488,10 @@ export class PushDelivery {
     try { first = this.#registration(key) } catch { return 'unverifiable' }
     if (!first || !first.enabled || first.health !== 'ready' || (expectedGeneration !== undefined && first.generation !== expectedGeneration)
       || (requireEligible && !isPreferenceEnabled(first.preferences, source.category))) return 'denied'
-    let eligible = true
     if (requireEligible) {
-      try { eligible = await this.#host.eligible(source) } catch { return 'unverifiable' }
-      if (!eligible) return 'denied'
+      const guard = await this.#sourceGuard(source)
+      if (guard === 'denied') return 'denied'
+      if (guard === 'unverifiable') return 'unverifiable'
     }
     const auth = await this.#readAuthorized(origin)
     if (!auth) return 'unverifiable'

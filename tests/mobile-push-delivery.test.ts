@@ -1,4 +1,4 @@
-import { createHash, generateKeyPairSync, randomBytes } from 'node:crypto'
+import { createHash, generateKeyPairSync, randomBytes, randomUUID } from 'node:crypto'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AccessController } from '../src/access.js'
 import { createPushHost } from '../src/mobile-push/host.js'
@@ -85,6 +85,66 @@ function hostDouble(overrides: Partial<PushHost> = {}): PushHost {
   }
 }
 function senderDouble(send: PushSender['send']): PushSender { return { send } as unknown as PushSender }
+
+const emptyInbox = { inbox: { 'next-turn': [], 'next-step': [] } }
+const unverifiableOutcomeValues = { ...emptyInbox, mobilePushLifecycle: { latestTurn: 0, openTurn: null, lastTurnEnd: null, latestGoalChange: null } }
+const eligibleOutcomeValues = { ...emptyInbox, mobilePushLifecycle: { latestTurn: 1, openTurn: null, lastTurnEnd: { turn: 1, reason: 'completed' }, latestGoalChange: null }, goal: {} }
+const staleOutcomeValues = { ...emptyInbox, mobilePushLifecycle: { latestTurn: 2, openTurn: null, lastTurnEnd: { turn: 2, reason: 'completed' }, latestGoalChange: null } }
+const eligibleQuestionValues = {
+  userQuestions: { active: [{ callId: 'durable-question-call', state: 'open' }], settled: [] },
+  ...emptyInbox,
+  mobilePushLifecycle: { latestTurn: 2, openTurn: null, lastTurnEnd: null, latestGoalChange: null },
+}
+
+/** Real public Host adapter with controllable cold observations, so eligible()'s boolean collapse cannot hide tri-state results. */
+function realHostHarness(initial: { values?: Record<string, any>; error?: unknown } = {}) {
+  const state: { live: boolean; values: Record<string, any> | undefined; error: unknown; hold?: { promise: Promise<unknown>; resolve: (value: unknown) => void } } = {
+    live: false, values: initial.values, error: initial.error,
+  }
+  const listeners = new Map<string, Array<(...args: any[]) => unknown>>()
+  const agent = { id: 'session-a', session: { id: 'session-a' }, inbox: { nextTurn: [], nextStep: [] } }
+  const ctx = {
+    on(event: string, listener: (...args: any[]) => unknown) {
+      const rows = listeners.get(event) ?? []
+      rows.push(listener)
+      listeners.set(event, rows)
+      return () => listeners.set(event, rows.filter(item => item !== listener))
+    },
+    userQuestions: {}, approval: {},
+    agents: { get: (id: string) => state.live && id === agent.id ? agent : undefined, list: () => state.live ? [agent] : [], roots: () => state.live ? [agent] : [], isOwnedBy: () => false },
+    sessionProjections: { stateOf: () => undefined, snapshot: () => ({ asOfSeq: 10, values: state.values ?? {} }), register: () => () => undefined },
+    sessionQuery: {
+      observeSession: async () => {
+        if (state.error !== undefined) throw state.error
+        if (state.hold) await state.hold.promise
+        return { source: 'prepared', projections: { asOfSeq: 10, values: state.values ?? {} }, [Symbol.dispose]: () => undefined }
+      },
+    },
+  } as unknown as ContextLike
+  return {
+    ctx,
+    emitSessionEvent: (event: unknown) => {
+      for (const listener of [...(listeners.get('session/event') ?? [])]) {
+        listener.apply(agent, [agent, event])
+      }
+    },
+    setValues: (values: Record<string, any>) => { state.values = values },
+    setError: (error: unknown) => { state.error = error },
+    holdObservation: () => { state.hold = deferred<unknown>(); return state.hold },
+  }
+}
+
+async function seedIntent(registry: PushRegistry, registration: PushRegistration, intentSource: PushSource): Promise<void> {
+  await registry.transact(snapshot => ({
+    ...snapshot,
+    pending: [...snapshot.pending, {
+      id: `seed-${randomUUID()}`,
+      key: { scopeId: registration.scopeId, deviceId: registration.deviceId, origin: registration.origin, installationId: registration.installationId },
+      source: structuredClone(intentSource), ownerGeneration: 0, recipientGeneration: registration.generation,
+      attempts: 0, nextAttemptAt: Date.now(),
+    }],
+  }))
+}
 
 const opened: Array<() => Promise<void>> = []
 afterEach(async () => {
@@ -500,12 +560,12 @@ describe('push delivery coordination', () => {
     let eligibleCalls = 0
     let authReads = 0
     const host = hostDouble({
-      async reconcile() { eligibleCalls += 1; return 'eligible' },
-      async eligible() {
+      async reconcile() {
         eligibleCalls += 1
         if (eligibleCalls === 5) { retryGuardEntered.resolve(); await hostGate.promise }
-        return true
+        return 'eligible'
       },
+      async eligible() { eligibleCalls += 1; return true },
     })
     const retryStarted = deferred<void>()
     let attempts = 0
@@ -885,13 +945,10 @@ describe('push delivery coordination', () => {
   it('prunes orphaned defer entries against the pending set on maintenance and clears them on close', async () => {
     vi.useFakeTimers()
     const { store, registry, registrations } = await makeRegistry()
-    let eligibleCalls = 0
+    // Admission proves eligibility, then every send-guard reconciliation fails transiently so the intent defers.
     const host = hostDouble({
-      eligible: async () => {
-        eligibleCalls += 1
-        if (eligibleCalls === 1) return true
-        throw new Error('transient eligibility failure')
-      },
+      eligible: async () => true,
+      reconcile: async () => { throw new Error('transient reconciliation failure') },
     })
     const send = vi.fn(async () => ({ kind: 'accepted' as const }))
     const delivery = new PushDelivery({ host, registry, sender: senderDouble(send) })
@@ -915,6 +972,144 @@ describe('push delivery coordination', () => {
     await delivery.close()
     expect(deferredMap.size).toBe(0)
     expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('retains a durable outcome through transient unverifiable sweeps and send guard, then delivers on recheck', async () => {
+    vi.useFakeTimers()
+    const { registry, store, registrations } = await makeRegistry()
+    const harness = realHostHarness({ values: unverifiableOutcomeValues })
+    const host = createPushHost(harness.ctx)
+    const send = vi.fn(async () => ({ kind: 'accepted' as const }))
+    const delivery = new PushDelivery({ host, registry, sender: senderDouble(send) })
+    opened.push(async () => { await delivery.close(); await host.close() })
+    delivery.attachOrigin({ scopeId: 'scope-a', origin: 'https://mobile.example.test', authorizedDevices: async () => [{ id: 'device-a', expiresAt: Date.now() + 120_000 }] })
+    await seedIntent(registry, registrations[0]!, source('transient-outcome', { expiresAt: Date.now() + 120_000 }))
+    await delivery.start()
+    // Startup saw only transient unverifiable proof: durable work survives and nothing is sent without proof.
+    expect(store.inspect().pending).toHaveLength(1)
+    expect(send).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(30_000)
+    // Still unverifiable on the periodic sweep and the send guard: deferred again, still no provider call.
+    expect(store.inspect().pending).toHaveLength(1)
+    expect(send).not.toHaveBeenCalled()
+    harness.setValues(eligibleOutcomeValues)
+    await vi.advanceTimersByTimeAsync(30_000)
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1), { interval: 1 })
+    expect(store.inspect().pending).toHaveLength(0)
+    expect(store.inspect().receipts).toHaveLength(1)
+  })
+
+  it('retains a durable question with callId through an unverifiable session-change recheck, then delivers', async () => {
+    vi.useFakeTimers()
+    const { registry, store, registrations } = await makeRegistry()
+    const harness = realHostHarness({ values: {} })
+    const host = createPushHost(harness.ctx)
+    const send = vi.fn(async () => ({ kind: 'accepted' as const }))
+    const delivery = new PushDelivery({ host, registry, sender: senderDouble(send) })
+    opened.push(async () => { await delivery.close(); await host.close() })
+    delivery.attachOrigin({ scopeId: 'scope-a', origin: 'https://mobile.example.test', authorizedDevices: async () => [{ id: 'device-a', expiresAt: Date.now() + 120_000 }] })
+    await delivery.start()
+    await seedIntent(registry, registrations[0]!, source('durable-question', { category: 'question', callId: 'durable-question-call', turn: 2 }))
+    harness.emitSessionEvent({ type: 'turn/start', data: { turn: 9 } })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(store.inspect().pending).toHaveLength(1)
+    expect(send).not.toHaveBeenCalled()
+    harness.setValues(eligibleQuestionValues)
+    harness.emitSessionEvent({ type: 'turn/start', data: { turn: 10 } })
+    // The unverifiable sweep's 30-second defer bounds recheck cadence; the next wake delivers once proof exists.
+    await vi.advanceTimersByTimeAsync(30_000)
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1), { interval: 1 })
+    expect(store.inspect().pending).toHaveLength(0)
+  })
+
+  it('drops non-reconstructible plan, approval and callId-less question intents instead of deferring them', async () => {
+    vi.useFakeTimers()
+    const { registry, store, registrations } = await makeRegistry()
+    const harness = realHostHarness({ values: {} })
+    const host = createPushHost(harness.ctx)
+    const send = vi.fn(async () => ({ kind: 'accepted' as const }))
+    const delivery = new PushDelivery({ host, registry, sender: senderDouble(send) })
+    opened.push(async () => { await delivery.close(); await host.close() })
+    await seedIntent(registry, registrations[0]!, source('cold-plan', { category: 'plan', callId: 'cold-plan-call' }))
+    await seedIntent(registry, registrations[0]!, source('cold-approval', { category: 'approval', callId: 'cold-approval-call' }))
+    await seedIntent(registry, registrations[0]!, source('legacy-question', { category: 'question' }))
+    await delivery.start()
+    expect(store.inspect().pending).toHaveLength(0)
+    expect(send).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(store.inspect().pending).toHaveLength(0)
+    expect(send).not.toHaveBeenCalled()
+  })
+
+  it('drops stale, missing-session and expired intents without provider calls', async () => {
+    vi.useFakeTimers()
+    const { registry, store, registrations } = await makeRegistry()
+    const harness = realHostHarness({ values: staleOutcomeValues })
+    const host = createPushHost(harness.ctx)
+    const send = vi.fn(async () => ({ kind: 'accepted' as const }))
+    const delivery = new PushDelivery({ host, registry, sender: senderDouble(send) })
+    opened.push(async () => { await delivery.close(); await host.close() })
+    await seedIntent(registry, registrations[0]!, source('newer-turn-stale'))
+    await seedIntent(registry, registrations[0]!, source('already-expired', { expiresAt: Date.now() - 1_000 }))
+    await delivery.start()
+    expect(store.inspect().pending).toHaveLength(0)
+    expect(send).not.toHaveBeenCalled()
+    const notFound = Object.assign(new Error('session missing'), { code: 'SESSION_QUERY_SESSION_NOT_FOUND' })
+    harness.setError(notFound)
+    await seedIntent(registry, registrations[0]!, source('missing-session'))
+    harness.emitSessionEvent({ type: 'turn/start', data: { turn: 11 } })
+    await vi.waitFor(() => expect(store.inspect().pending).toHaveLength(0))
+    expect(send).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(store.inspect().pending).toHaveLength(0)
+    expect(send).not.toHaveBeenCalled()
+  })
+
+  it('never sends when a held verification outlives recipient consent', async () => {
+    vi.useFakeTimers()
+    const { registry, store, registrations } = await makeRegistry()
+    const harness = realHostHarness({ values: eligibleOutcomeValues })
+    const host = createPushHost(harness.ctx)
+    const send = vi.fn(async () => ({ kind: 'accepted' as const }))
+    const delivery = new PushDelivery({ host, registry, sender: senderDouble(send) })
+    opened.push(async () => { await delivery.close(); await host.close() })
+    await seedIntent(registry, registrations[0]!, source('held-verification'))
+    const hold = harness.holdObservation()
+    const starting = delivery.start()
+    await registry.disable(registrations[0]!)
+    hold.resolve(undefined)
+    await starting
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(store.inspect().pending).toHaveLength(0)
+    expect(store.inspect().receipts).toHaveLength(0)
+    expect(send).not.toHaveBeenCalled()
+  })
+
+  it('defers an allowed-eligibility send when authorization reads fail, and delivers once they recover', async () => {
+    vi.useFakeTimers()
+    const { registry, store, registrations } = await makeRegistry()
+    const harness = realHostHarness({ values: eligibleOutcomeValues })
+    const host = createPushHost(harness.ctx)
+    const send = vi.fn(async () => ({ kind: 'accepted' as const }))
+    const delivery = new PushDelivery({ host, registry, sender: senderDouble(send) })
+    opened.push(async () => { await delivery.close(); await host.close() })
+    let authWorks = false
+    delivery.attachOrigin({
+      scopeId: 'scope-a', origin: 'https://mobile.example.test',
+      authorizedDevices: async () => {
+        if (!authWorks) throw new Error('authorization reader unavailable')
+        return [{ id: 'device-a', expiresAt: Date.now() + 60_000 }]
+      },
+    })
+    await delivery.start()
+    await seedIntent(registry, registrations[0]!, source('auth-outage', { expiresAt: Date.now() + 120_000 }))
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(store.inspect().pending).toHaveLength(1)
+    expect(send).not.toHaveBeenCalled()
+    authWorks = true
+    await vi.advanceTimersByTimeAsync(30_000)
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1), { interval: 1 })
+    expect(store.inspect().pending).toHaveLength(0)
   })
 })
 
