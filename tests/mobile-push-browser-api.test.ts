@@ -77,4 +77,12 @@ describe('authenticated mobile push browser HTTP adapter', () => {
     expect(http.request).toHaveBeenCalledTimes(1)
     expect(network.request).toHaveBeenCalledTimes(1)
   })
+
+  it('maps a 429 Test response to the whitelisted rate_limited code only', async () => {
+    const throttled = adapter(vi.fn(async () => response({ detail: 'provider secret' }, 429)))
+    await expect(throttled.api.sendTest({ installationId: 'install-id', ownerGeneration: 1, registrationGeneration: 2 })).rejects.toMatchObject({ code: 'rate_limited' })
+    expect(throttled.request).toHaveBeenCalledTimes(1)
+    const otherMutation = adapter(vi.fn(async () => response({}, 429)))
+    await expect(otherMutation.api.disable({ installationId: 'install-id' })).rejects.toMatchObject({ code: 'request_failed' })
+  })
 })

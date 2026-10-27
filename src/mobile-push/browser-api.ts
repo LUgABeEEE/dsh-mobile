@@ -55,6 +55,8 @@ export function createMobilePushBrowserApi(request: MobilePushRequest): MobilePu
     },
     async sendTest(value) {
       const response = await postJson(request, '/mobile-access/push/test', { installationId: value.installationId })
+      // Only the Test adapter surfaces the whitelisted rate-limit code; every other error stays generic.
+      if (response.status === 429) throw apiError('rate_limited')
       await check(response)
     },
     async resolve(reference) {

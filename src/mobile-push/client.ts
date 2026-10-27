@@ -1,4 +1,5 @@
 import type { PushConfig, PushEnrollment, PushEnrollmentResult, PushLocale, PushPreferences, PushSubscriptionData } from './contracts.js'
+import { isPushInstallationId } from './installation-id.js'
 
 export type MobilePushState = 'unsupported' | 'install' | 'denied' | 'ready' | 'pending' | 'failed' | 'enabled' | 'suspended' | 'disabled'
 export interface MobilePushSnapshot { readonly state: MobilePushState; readonly error?: string; readonly preferences?: PushPreferences }
@@ -76,7 +77,6 @@ export function createMobilePushController(api: MobilePushApiAdapter, environmen
   let currentHostSubscription: BrowserPushSubscription | undefined
   const consentedSubscriptions = new WeakSet<BrowserPushSubscription>()
   const pendingEnrollments = new WeakMap<BrowserPushSubscription, Set<number>>()
-  let nextTestAt = 0
   const trackPendingEnrollment = (subscription: BrowserPushSubscription, operation: number): void => {
     let pending = pendingEnrollments.get(subscription)
     if (!pending) { pending = new Set(); pendingEnrollments.set(subscription, pending) }
@@ -98,10 +98,11 @@ export function createMobilePushController(api: MobilePushApiAdapter, environmen
     if (memoryInstallId) return memoryInstallId
     try {
       const saved = environment.storage?.getItem(ID_KEY)
-      if (saved && /^[0-9a-f-]{36}$/iu.test(saved)) return memoryInstallId = saved
+      // Only a Gateway-valid UUID survives; a malformed saved value regenerates one fresh id.
+      if (isPushInstallationId(saved)) return memoryInstallId = saved
     } catch { /* Storage is optional; retain an in-memory installation id. */ }
     const fresh = environment.randomUUID?.() ?? globalThis.crypto?.randomUUID?.()
-    if (!fresh) throw new Error('uuid unavailable')
+    if (!isPushInstallationId(fresh)) throw new Error('uuid unavailable')
     memoryInstallId = fresh
     try { environment.storage?.setItem(ID_KEY, fresh) } catch { /* Private browsing may deny writes. */ }
     return fresh
@@ -248,9 +249,20 @@ export function createMobilePushController(api: MobilePushApiAdapter, environmen
     },
     async sendTest() {
       if (!active || !config || config.status !== 'enabled' || mutationBusy) return
-      const token = generation, base = config
-      try { await api.sendTest({ installationId: preparedInstallId || base.installationId, ownerGeneration: base.ownerGeneration, registrationGeneration: base.registrationGeneration }); if (current(token)) publish({ state: 'enabled', error: 'push.test.accepted', preferences: base.preferences }) }
-      catch (error) { if (current(token)) publish({ state: 'failed', error: safeError(error), preferences: base.preferences }) }
+      const token = generation, operation = attempt, base = config
+      try {
+        await api.sendTest({ installationId: preparedInstallId || base.installationId, ownerGeneration: base.ownerGeneration, registrationGeneration: base.registrationGeneration })
+        if (current(token) && operation === attempt) publish({ state: 'enabled', error: 'push.test.accepted', preferences: base.preferences })
+      } catch (error) {
+        // Test feedback stays separate from consent truth: a failed or throttled Test never disables controls.
+        if (!current(token) || operation !== attempt) return
+        const message = (error as { readonly code?: unknown })?.code === 'rate_limited' ? 'push.test.rateLimited' : 'push.test.failed'
+        // One read-only read-back reflects provider health settled by the Test; never a send or mutation retry.
+        const refreshed = await refresh(token)
+        if (!current(token) || operation !== attempt) return
+        if (refreshed && config?.status === 'enabled') publish({ state: 'enabled', error: message, preferences: config.preferences })
+        // Otherwise the read-back already published the truthful newer state (suspended, ready, …).
+      }
     },
     getSnapshot: () => snapshot,
     subscribe(listener) { listeners.add(listener); return () => { listeners.delete(listener) } },

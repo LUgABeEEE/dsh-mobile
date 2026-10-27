@@ -100,7 +100,7 @@ import {
 } from './auth-pages.js'
 import { resolveBrowserUiLocale } from './browser-ui-locale.js'
 import { mobilePushAsset } from './mobile-push/assets.js'
-import { validatePushSubscription } from './mobile-push/endpoint.js'
+import { isPushInstallationId } from './mobile-push/installation-id.js'
 import type { PushConfig, PushEnrollment, PushMutationGuard, PushOwner, PushPreferences, PushRegistration, PushTarget } from './mobile-push/contracts.js'
 import type { PushGatewayService } from './mobile-push/gateway.js'
 
@@ -138,7 +138,6 @@ const MOBILE_PUSH_PREFERENCES_PATH = `${AUTH_PREFIX}/push/preferences`
 const MOBILE_PUSH_DISABLE_PATH = `${AUTH_PREFIX}/push/disable`
 const MOBILE_PUSH_TEST_PATH = `${AUTH_PREFIX}/push/test`
 const MOBILE_PUSH_RESOLVE_PATH = `${AUTH_PREFIX}/push/resolve`
-const MOBILE_PUSH_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu
 const MOBILE_PUSH_PREFERENCE_KEYS = ['question', 'plan', 'approval', 'response', 'goal', 'failure'] as const
 const DEFAULT_PUSH_PREFERENCES: PushPreferences = Object.freeze({ question: true, plan: true, approval: true, response: true, goal: true, failure: true })
 
@@ -155,7 +154,7 @@ function exactKeys(value: Record<string, unknown>, keys: readonly string[]): boo
 }
 
 function parseInstallationId(value: unknown): string {
-  if (typeof value !== 'string' || !MOBILE_PUSH_UUID.test(value)) throw new HttpError(400, 'bad_request')
+  if (!isPushInstallationId(value)) throw new HttpError(400, 'bad_request')
   return value
 }
 

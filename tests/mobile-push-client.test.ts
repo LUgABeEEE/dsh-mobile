@@ -48,7 +48,7 @@ function setup(overrides: Partial<MobilePushEnvironment> = {}, apiOverrides: Par
   const environment: MobilePushEnvironment = {
     secureContext: true, isTopLevel: true, standalone: true, permission: 'default',
     pushManager, storage: { getItem: vi.fn(() => null), setItem: vi.fn() },
-    origin: 'https://example.test', randomUUID: () => 'fresh-install-id',
+    origin: 'https://example.test', randomUUID: () => 'f12a9c10-7b4e-4d8a-9c21-5e6f0a1b2c3d',
     ...overrides,
   }
   return { controller: createMobilePushController(api, environment), api, environment, pushManager, subscription }
@@ -202,7 +202,7 @@ describe('mobile push browser controller', () => {
     const { controller, api } = setup()
     controller.start()
     await flush()
-    expect(api.getConfig).toHaveBeenCalledWith('fresh-install-id')
+    expect(api.getConfig).toHaveBeenCalledWith('f12a9c10-7b4e-4d8a-9c21-5e6f0a1b2c3d')
     controller.stop()
   })
 
@@ -212,7 +212,7 @@ describe('mobile push browser controller', () => {
     const page = { documentElement: { lang: 'en' } }
     const view = {
       isSecureContext: true, location: { origin: 'https://example.test' }, navigator: { standalone: true },
-      matchMedia: () => ({ matches: true }), crypto: { randomUUID: () => 'fresh-install-id' },
+      matchMedia: () => ({ matches: true }), crypto: { randomUUID: () => 'f12a9c10-7b4e-4d8a-9c21-5e6f0a1b2c3d' },
       pushManager, document: page, top: null as unknown, self: null as unknown,
     }
     view.top = view
@@ -255,7 +255,7 @@ describe('mobile push browser controller', () => {
     controller.start()
     await flush()
     expect(controller.getSnapshot().state).toBe('ready')
-    expect(api.getConfig).toHaveBeenCalledWith('fresh-install-id')
+    expect(api.getConfig).toHaveBeenCalledWith('f12a9c10-7b4e-4d8a-9c21-5e6f0a1b2c3d')
     controller.stop()
   })
 
@@ -364,7 +364,7 @@ describe('mobile push browser controller', () => {
     await flush()
     await controller.sendTest()
     expect(sendTest).toHaveBeenCalledTimes(1)
-    expect(controller.getSnapshot()).toMatchObject({ state: 'failed', error: 'push.error.generic' })
+    expect(controller.getSnapshot()).toMatchObject({ state: 'enabled', error: 'push.test.rateLimited' })
     expect(controller.getSnapshot().error).not.toContain('private upstream detail')
     controller.stop()
   })
@@ -593,5 +593,134 @@ describe('mobile push browser controller', () => {
     await controller.enableFromGesture()
     expect(api.disable).not.toHaveBeenCalled()
     controller.stop()
+  })
+
+  const validStoredId = '3f2a9c10-7b4e-4d8a-9c21-5e6f0a1b2c3d'
+  const storageKey = 'dsh-mobile-push-installation'
+
+  it('keeps a valid stored installation id byte-for-byte stable', async () => {
+    const stored: Record<string, string> = { [storageKey]: validStoredId }
+    const getConfig = vi.fn(async (id: string) => ({ ...config, installationId: id }))
+    const { controller, api } = setup({ storage: { getItem: (k: string) => stored[k] ?? null, setItem: (k: string, v: string) => { stored[k] = v } } }, { getConfig })
+    controller.start()
+    await flush()
+    expect(api.getConfig).toHaveBeenCalledWith(validStoredId)
+    expect(stored[storageKey]).toBe(validStoredId)
+  })
+
+  it.each([
+    ['all-zero pseudo-UUID', '00000000-0000-0000-0000-000000000000'],
+    ['wrong version nibble', '3f2a9c10-7b4e-9d8a-9c21-5e6f0a1b2c3d'],
+    ['wrong variant nibble', '3f2a9c10-7b4e-4d8a-cc21-5e6f0a1b2c3d'],
+  ])('generates and saves one valid new installation id when the saved value is an %s', async (_name, saved) => {
+    const stored: Record<string, string> = { [storageKey]: saved }
+    const setItem = vi.fn((k: string, v: string) => { stored[k] = v })
+    const getConfig = vi.fn(async (id: string) => ({ ...config, installationId: id }))
+    const { controller, api } = setup({ storage: { getItem: (k: string) => stored[k] ?? null, setItem }, randomUUID: () => validStoredId }, { getConfig })
+    controller.start()
+    await flush()
+    expect(api.getConfig).toHaveBeenCalledWith(validStoredId)
+    expect(stored[storageKey]).toBe(validStoredId)
+  })
+
+  it('keeps one stable in-memory installation id when storage access is blocked', async () => {
+    let generated = 0
+    const requested: string[] = []
+    const getConfig = vi.fn(async (id: string) => { requested.push(id); return { ...config, installationId: id } })
+    const { controller } = setup({
+      storage: { getItem: () => { throw new Error('blocked') }, setItem: () => { throw new Error('blocked') } },
+      randomUUID: () => { generated += 1; return validStoredId },
+    }, { getConfig })
+    controller.start()
+    await flush()
+    controller.refresh()
+    await flush()
+    expect(generated).toBe(1)
+    expect(requested.length).toBeGreaterThanOrEqual(2)
+    expect(requested.every(id => id === validStoredId)).toBe(true)
+  })
+
+  async function reachEnabled(overrides: Partial<MobilePushApiAdapter> = {}, environmentOverrides: Partial<MobilePushEnvironment> = {}) {
+    const getConfig = overrides.getConfig ?? vi.fn(async () => ({ ...config, status: 'enabled' as const }))
+    const harness = setup(environmentOverrides, { ...overrides, getConfig })
+    harness.controller.start()
+    await flush()
+    await harness.controller.enableFromGesture()
+    await flush()
+    expect(harness.controller.getSnapshot().state).toBe('enabled')
+    return harness
+  }
+
+  it('keeps enabled controls and category state with a test-specific message when the Test fails', async () => {
+    const { controller } = await reachEnabled({ sendTest: vi.fn(async () => { throw Object.assign(new Error('provider detail'), { code: 'request_failed' }) }) })
+    await controller.sendTest()
+    const snapshot = controller.getSnapshot()
+    expect(snapshot.state).toBe('enabled')
+    expect(snapshot.error).toBe('push.test.failed')
+    expect(snapshot.preferences).toEqual(preferences)
+  })
+
+  it('reports a rate-limited Test without disabling controls', async () => {
+    const { controller } = await reachEnabled({ sendTest: vi.fn(async () => { throw Object.assign(new Error('throttled'), { code: 'rate_limited' }) }) })
+    await controller.sendTest()
+    const snapshot = controller.getSnapshot()
+    expect(snapshot.state).toBe('enabled')
+    expect(snapshot.error).toBe('push.test.rateLimited')
+    expect(snapshot.preferences).toEqual(preferences)
+  })
+
+  it('reads config back once after a failed Test so provider health is reflected', async () => {
+    let getConfigCalls = 0
+    let status: PushConfig['status'] = 'enabled'
+    const { controller } = await reachEnabled({
+      getConfig: vi.fn(async () => { getConfigCalls += 1; return { ...config, status, installationId: validStoredId } }),
+      sendTest: vi.fn(async () => { status = 'suspended'; throw Object.assign(new Error('gone'), { code: 'request_failed' }) }),
+    })
+    expect(getConfigCalls).toBe(1)
+    await controller.sendTest()
+    expect(getConfigCalls).toBe(2)
+    expect(controller.getSnapshot().state).toBe('suspended')
+    expect(controller.getSnapshot().error).toBeUndefined()
+  })
+
+  it('never lets a late Test result overwrite newer Disable state', async () => {
+    const gate = deferred<void>()
+    let status: PushConfig['status'] = 'enabled'
+    const disableApi = vi.fn(async () => { status = 'disabled' })
+    const { controller, api } = await reachEnabled({
+      getConfig: vi.fn(async () => ({ ...config, status, installationId: validStoredId })),
+      sendTest: vi.fn(async () => { await gate.promise }),
+      disable: disableApi,
+    })
+    const testPromise = controller.sendTest()
+    await flush()
+    await controller.disable()
+    expect(controller.getSnapshot().state).toBe('disabled')
+    expect(api.disable).toHaveBeenCalled()
+    gate.resolve()
+    await testPromise
+    await flush()
+    expect(controller.getSnapshot().state).toBe('disabled')
+  })
+
+  it.each(['en', 'zh', 'it'] as const)('renders the distinct %s conflict and Test-failure messages', locale => {
+    const copy = MOBILE_PUSH_SETTINGS_COPY[locale]
+    const visit = (value: unknown): Array<{ type: unknown; props?: Record<string, unknown> }> => {
+      if (Array.isArray(value)) return value.flatMap(visit)
+      if (typeof value !== 'object' || value === null || !('type' in value)) return []
+      const element = value as { type: unknown; props?: Record<string, unknown> }
+      return [element, ...visit(element.props?.children)]
+    }
+    const cases = [
+      [{ state: 'failed' as const, error: 'push.error.subscriptionConflict', preferences }, copy.conflict],
+      [{ state: 'enabled' as const, error: 'push.test.failed', preferences }, copy.testFailed],
+      [{ state: 'enabled' as const, error: 'push.test.rateLimited', preferences }, copy.testRateLimited],
+    ] as const
+    for (const [snapshot, expected] of cases) {
+      const controller = { subscribe: vi.fn(() => () => undefined), getSnapshot: () => snapshot, enableFromGesture: vi.fn(), disable: vi.fn(), updatePreferences: vi.fn(), sendTest: vi.fn(), start: vi.fn(), stop: vi.fn(), refresh: vi.fn() }
+      const row = MobilePushSettings({ controller, locale, switchComponent: publicSwitchProbe }) as unknown as { props: { children: unknown } }
+      const live = visit(row).find(element => element.props?.['aria-live'] === 'polite')
+      expect(live?.props?.children).toBe(expected)
+    }
   })
 })

@@ -292,7 +292,7 @@ describe('dedicated browser push client entry', () => {
     Object.defineProperty(test.view, 'isSecureContext', { value: true })
     Object.defineProperty(test.view, 'self', { value: test.view })
     Object.defineProperty(test.view, 'top', { value: test.view })
-    Object.defineProperty(test.view, 'crypto', { value: { randomUUID: () => 'fresh-install-id' } })
+    Object.defineProperty(test.view, 'crypto', { value: { randomUUID: () => 'f12a9c10-7b4e-4d8a-9c21-5e6f0a1b2c3d' } })
     Object.defineProperty(test.view, 'pushManager', { value: test.manager })
     Object.defineProperty(test.view, 'Notification', { value: { permission: 'default' } })
     Object.defineProperty(test.view, 'matchMedia', { value: () => ({ matches: true }) })
@@ -300,7 +300,7 @@ describe('dedicated browser push client entry', () => {
     const configFetch = vi.fn()
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       if (String(input).includes('/mobile-access/push/config')) configFetch()
-      return new Response(JSON.stringify({ available: true, publicKey: 'AQID', installationId: 'fresh-install-id', ownerGeneration: 1, registrationGeneration: 0, status: 'disabled' }), { status: 200, headers: { 'content-type': 'application/json' } })
+      return new Response(JSON.stringify({ available: true, publicKey: 'AQID', installationId: 'f12a9c10-7b4e-4d8a-9c21-5e6f0a1b2c3d', ownerGeneration: 1, registrationGeneration: 0, status: 'disabled' }), { status: 200, headers: { 'content-type': 'application/json' } })
     }))
     apply(application as Parameters<typeof apply>[0])
     const pushEffect = effects.filter(effect => effect.label === 'dsh-mobile: authenticated browser push lifecycle')
