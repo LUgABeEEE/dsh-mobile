@@ -517,8 +517,12 @@ class ThemePresenter {
 }
 
 export const MOBILE_LAYOUT_STYLES = `html,body,#root{width:100%;height:100%;overflow:hidden}
-/* The definite root height bounds the transcript on engines without dvh. */
-.dshm-shell{position:relative;display:grid;grid-template-rows:minmax(0,1fr);width:100%;height:100%;height:100dvh;min-width:0;overflow:hidden;background:var(--dsw-alias-bg-base,#fff)}
+/* The definite root height bounds the transcript on engines without dvh.
+   Isolation confines every shell surface to this stacking context, so a menu a
+   third-party plugin portals into document.body paints above the whole shell
+   without having to outguess a number — issue #288. Inside the shell the bands
+   from mobile-layers.ts still order the shell's own surfaces. */
+.dshm-shell{position:relative;isolation:isolate;display:grid;grid-template-rows:minmax(0,1fr);width:100%;height:100%;height:100dvh;min-width:0;overflow:hidden;background:var(--dsw-alias-bg-base,#fff)}
 /* The mobile root owns its Grid geometry. Layered important rules keep broad
    unlayered skin rules from collapsing virtualized views to the header height. */
 @layer dsh-mobile-layout{

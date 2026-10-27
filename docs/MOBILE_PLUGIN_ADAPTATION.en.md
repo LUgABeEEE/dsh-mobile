@@ -118,29 +118,34 @@ Add `env(safe-area-inset-*)` only where content really reaches a screen edge and
 
 ### Which layer a plugin-drawn overlay belongs on
 
-A plugin that portals a menu, popover or panel into `document.body` competes with the mobile navigation drawer in the same root stacking context. Mobile fixes each surface to a published band, so a plugin that stays inside the recommended range neither covers the host nor gets covered by it.
+Decide whether an overlay is visible by where it renders — inside the shell or under `document.body` — not by comparing numbers.
 
-| Layer | Value | Owner |
+Mobile makes `.dshm-shell` an isolated stacking context (`isolation:isolate`). Therefore:
+
+- **A menu or dialog appended to `document.body`** (a React portal, `createPortal`, an `append` to body) paints above the entire mobile shell and cannot be covered by the narrow drawer. An ordinary positive value — `60`, the value in the [#288](https://github.com/saya-ch/dsh-mobile/issues/288) report, or even `0` — is enough. There is no "safe" large number to guess.
+- **A `position:fixed` element left inside `.dshm-shell`** is only ordered against the shell's own surfaces. An overlay that should follow a panel belongs in that panel's own root and closes with it.
+
+The shell's internal values are below. This table explains the shell's own order; **it is not an API a plugin must satisfy**, and changing these numbers does not affect a body portal:
+
+| Shell-internal layer | Current value | Purpose |
 |---|---:|---|
-| Scrim `.dshm-scrim` | 40 | Mobile |
-| Navigation drawer `.dshm-drawer` | 50 | Mobile |
-| Drawer positioning root | 51 | Mobile |
-| Collapsed-rail toggle | 54 | Mobile |
-| **Recommended plugin overlay band** | **60–69** | **Plugin** |
-| Right detail panel `.dshm-details` | 80 | Mobile |
-| Overlay container `.dshm-overlay` | 90 | Mobile |
-| Host dropdowns and popovers | 100 | DSH |
-| Toast notices | 330 | Mobile |
-| Host settings layers | 900 / 1000 | DSH |
-| Host dialogs and menus | 1100 | DSH |
+| `.dshm-scrim` | 40 | Dimming behind the drawer and the right panel |
+| `.dshm-drawer` | 50 | Narrow drawer / wide persistent column |
+| Drawer positioning root | 51 | Orders nodes inside the drawer only |
+| Collapsed-rail toggle | 54 | Escapes the zero-width drawer |
+| `.dshm-details` | 80 | Right detail panel |
+| `.dshm-overlay` | 90 | Host-provided plugin overlay slot |
+| Toast notices | 330 | Transient notices |
 
-**The navigation drawer is not a modal layer.** It is persistent navigation — page structure, not a surface that interrupts the user. A plugin menu opened from the drawer must therefore paint above it, which is why the 60–69 band exists and what [#288](https://github.com/saya-ch/dsh-mobile/issues/288) fixed.
+DSH's own dropdowns (100), settings layers (900/1000) and dialog menus (1100) render inside the shell and keep their own order.
 
-**Do not push a plugin overlay to 70 or above.** At that point it collides with the right detail panel (80), host dropdowns (100) and host settings (900/1000), so the plugin menu covers the host's own dialog and the user cannot reach its close or save control. Do not reach for `9999` as a safety margin either.
+**The navigation drawer is not a modal layer.** It is persistent navigation — page structure, not a surface that interrupts the user. A plugin menu opened from the drawer must paint above it, and `isolation:isolate` guarantees that without the plugin doing anything.
 
-**Wide viewports behave the same way.** Past 900px the drawer becomes a real in-flow grid column, but `z-index` still applies to a grid item, so a wide drawer can still cover a lower body portal. "It looks fine on a wide screen" usually only means the drawer occupies a real column, not that its stacking stopped applying.
+**Do not use `z-index: 99999` as an adaptation technique.** It only reorders within one stacking context: under `document.body` it cannot change the result of the shell's isolation, and inside the shell it only pushes your panel above the host's own dialog so the user cannot reach its close or save control.
 
-Confirm the result by hit-testing in a real browser rather than reading the `z-index` number: `document.elementFromPoint()` should return your menu item, not the drawer.
+**Wide viewports behave the same way.** Past 900px the drawer becomes a real in-flow grid column, but `z-index` still applies to a grid item, so the internal order still has to hold.
+
+Confirm the result by hit-testing in a real browser rather than reading the `z-index` number: `document.elementFromPoint()` should return your menu item, not the drawer. `npm run smoke:plugin-portal-layers` does exactly that at four levels: `10`, `45`, `60` and `2000`.
 
 ## Verification: what code checks, browsers and devices establish
 

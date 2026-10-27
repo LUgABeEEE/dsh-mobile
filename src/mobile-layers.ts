@@ -6,22 +6,23 @@
  * decorates the stock DOM. A narrow phone can hit both, so publishing one set of
  * numbers keeps the order identical instead of letting the two systems disagree.
  *
- * `.dshm-shell` is `position:relative` with `z-index:auto`, so it creates no
- * stacking context and every shell surface competes with community plugins'
- * `document.body` portals in the root context. That competition is the point of
- * this module: a plugin menu opened from the drawer must paint above the drawer.
+ * The shell is an isolated stacking context (`isolation:isolate`). That is what
+ * actually decides issue #288: a menu a third-party plugin portals into
+ * `document.body` paints above the *entire* shell regardless of its z-index,
+ * because the shell no longer competes with it in the root context. Measuring
+ * both candidate fixes showed the difference — lowering the drawer only helped a
+ * portal that happened to pick a value above it, and still failed for a portal at
+ * 10 or 45, while isolation held for every non-negative value.
  *
- * The navigation drawer is persistent chrome, not a modal, so it sits below the
- * plugin band. The detail panel and the overlay container are modal shell
- * surfaces and sit above it. DSH's own stacked layers stay above everything the
- * shell owns: settings overlays at 900/1000 and menus at 1100. Those values come
- * from the installed `@deepseek-ai/dsh-client-ui-*` bundles, so the shell must
- * stay below 900 and plugins must stay below 1000.
+ * Inside the isolated shell these numbers still order the shell's own surfaces,
+ * so they must stay internally consistent. They are not a contract plugins need
+ * to read: a plugin's portal is either in `document.body` (above the shell) or
+ * inside a panel (ordered by that panel). That is the guidance the adaptation
+ * guide gives, and it is why this table is not exported as a plugin band.
  *
- * A wide viewport does not change this. `.dshm-drawer` becomes `position:static`
- * in the wide grid, but z-index still applies to a Grid item, so a wide drawer
- * can occlude a lower body portal too. It only *looks* harmless because it
- * occupies a real column instead of floating over the content.
+ * A wide viewport does not change the isolation. `.dshm-drawer` becomes
+ * `position:static` in the wide grid, but z-index still applies to a Grid item,
+ * so the internal order has to hold there too.
  */
 
 /** Bands reserved for the mobile shell itself. Values are z-index numbers. */
@@ -38,33 +39,17 @@ export const MOBILE_SHELL_LAYERS = Object.freeze({
   details: 80,
   /** Shell overlay container: transparent and click-through. */
   overlay: 90,
-  /** Transient, non-interactive toast notices; above shell panels, below DSH settings. */
+  /** Transient, non-interactive toast notices; above shell panels. */
   toast: 330,
 })
-
-/**
- * Range a plugin-drawn overlay should use. The floor clears the persistent
- * navigation chrome (drawer, drawer root, collapsed-rail toggle) so a menu
- * opened from inside the drawer is never covered; the ceiling stays below the
- * shell's modal surfaces and below every DSH-owned layer, so a plugin overlay
- * cannot trap a settings dialog or a shell panel.
- *
- * The floor sits just above the drawer and matches the `z-index:60`
- * body-portal menu reported in issue 288.
- */
-export const MOBILE_PLUGIN_OVERLAY_BAND = Object.freeze({ min: 60, max: 69 })
-
-/** Lowest value that clears the drawer, for plugin guidance and tests. */
-export const MOBILE_PLUGIN_OVERLAY_FLOOR = MOBILE_PLUGIN_OVERLAY_BAND.min
 
 /** Lowest DSH-owned layer the shell must stay under; settings overlays use 900. */
 export const DSH_SETTINGS_LAYER_FLOOR = 900
 
 /**
- * The drawer is the only shell surface that must lose to third-party portals,
- * so keep its band below the plugin floor and assert the relation in code
- * rather than in a comment. A later band change that inverted this order would
- * silently reintroduce the occlusion this module exists to prevent.
+ * The shell's own surfaces must stay ordered among themselves, and below the
+ * DSH layers that render inside the shell. Asserting it at module load means a
+ * later band edit cannot silently reorder the drawer over a modal panel.
  */
 const ordered = [
   ['scrim', MOBILE_SHELL_LAYERS.scrim],
@@ -81,18 +66,7 @@ for (const [name, value] of ordered) {
     throw new Error(`The mobile ${name} band must stay below DSH's settings layers`)
   }
 }
-// Only the surfaces that are not modal chrome must lose to a plugin portal.
-for (const [name, value] of ordered.slice(0, 4)) {
-  if (!(value < MOBILE_PLUGIN_OVERLAY_FLOOR)) {
-    throw new Error(`The mobile ${name} band must stay below the plugin overlay band`)
-  }
-}
-// The modal shell surfaces must beat a plugin portal opened from inside them.
-for (const [name, value] of ordered.slice(4, 6)) {
-  if (!(value > MOBILE_PLUGIN_OVERLAY_BAND.max)) {
-    throw new Error(`The mobile ${name} band must stay above the plugin overlay band`)
-  }
-}if (!(MOBILE_SHELL_LAYERS.scrim < MOBILE_SHELL_LAYERS.drawer)) {
+if (!(MOBILE_SHELL_LAYERS.scrim < MOBILE_SHELL_LAYERS.drawer)) {
   throw new Error('The scrim must paint behind the drawer')
 }
 if (!(MOBILE_SHELL_LAYERS.drawer < MOBILE_SHELL_LAYERS.drawerRoot)) {
@@ -101,11 +75,11 @@ if (!(MOBILE_SHELL_LAYERS.drawer < MOBILE_SHELL_LAYERS.drawerRoot)) {
 if (!(MOBILE_SHELL_LAYERS.drawerToggle > MOBILE_SHELL_LAYERS.drawer)) {
   throw new Error('The collapsed-rail toggle must clear the drawer it escapes')
 }
+if (!(MOBILE_SHELL_LAYERS.drawer < MOBILE_SHELL_LAYERS.details)) {
+  throw new Error('The detail panel must paint above the navigation drawer')
+}
 if (!(MOBILE_SHELL_LAYERS.details < MOBILE_SHELL_LAYERS.overlay)) {
   throw new Error('The detail panel must paint behind the shell overlay container')
-}
-if (!(MOBILE_PLUGIN_OVERLAY_BAND.max < DSH_SETTINGS_LAYER_FLOOR)) {
-  throw new Error('The plugin overlay band must stay below DSH settings')
 }
 
 /**
