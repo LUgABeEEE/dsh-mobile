@@ -1,14 +1,14 @@
 /**
  * Verify the published mobile shell against a real browser: a third-party plugin
  * that portals a menu into `document.body` must stay reachable while the
- * navigation drawer is open, and the shell's modal surfaces must stay above it.
+ * navigation drawer is open. Browser top-layer dialogs retain focus and hits.
  *
  * This is the regression for issue #288. It drives the built stylesheet from
  * `lib/mobile-layout.js` and a real Chromium layout engine, so it fails on the
  * reported defect instead of on a source string.
  *
  * The decisive property is that `.dshm-shell` is an isolated stacking context.
- * A portal therefore outranks the whole shell regardless of its z-index, which
+ * A positioned positive-z-index portal outranks the whole shell, which
  * is why this smoke sweeps several portal levels instead of checking one
  * documented band. Lowering the drawer instead only helps a portal that happens
  * to pick a bigger number: measured, that approach still failed at 10 and 45.
@@ -68,6 +68,7 @@ function fixture({ drawerOpen, detailsOpen, portalZ }) {
 <div id="stock-settings" role="dialog" aria-modal="true" style="z-index:900;position:fixed;right:20px;bottom:20px;width:120px;height:60px;background:#fff">
   <button id="stock-settings-action" type="button" style="width:100%;height:100%">Owned settings action</button>
 </div>
+<dialog id="top-dialog"><button id="top-action" type="button">Close modal</button></dialog>
 </body></html>`
 }
 
@@ -141,10 +142,8 @@ try {
             // The plugin's own portal must be reachable whenever the shell has no
             // modal surface over it. A body-portal menu is how community plugins
             // draw menus, so covering it makes their controls dead (#288).
-            if (!detailsOpen) {
-              assert.equal(probe.portalHit, 'self', `${at}: the plugin portal is covered by ${probe.portalHit}`)
-              assert.equal(probe.itemHit, 'self', `${at}: the plugin menu item is covered by ${probe.itemHit}`)
-            }
+            assert.equal(probe.portalHit, 'self', `${at}: the plugin portal is covered by ${probe.portalHit}`)
+            assert.equal(probe.itemHit, 'self', `${at}: the plugin menu item is covered by ${probe.itemHit}`)
             // The drawer must still own its own area; isolation must not turn the
             // shell into a surface a portal always wins over everywhere. Skip it
             // when the detail panel is open: on a narrow viewport that panel is
@@ -158,12 +157,21 @@ try {
             assert.ok(probe.drawerZ < probe.detailsZ, `${at}: drawer ${probe.drawerZ} must stay below details ${probe.detailsZ}`)
             assert.ok(probe.detailsZ < probe.overlayZ, `${at}: details ${probe.detailsZ} must stay below overlay ${probe.overlayZ}`)
             assert.ok(probe.overlayZ < probe.settingsZ, `${at}: overlay ${probe.overlayZ} must stay below DSH settings ${probe.settingsZ}`)
-            // DSH's own settings dialog outranks every shell surface. The narrow
-            // detail panel is full-width, so it legitimately covers the probe point;
-            // the numeric order below still covers the stacked case.
-            if (!detailsOpen) {
-              assert.equal(probe.settingsActionHit, 'self', `${at}: DSH settings action covered by ${probe.settingsActionHit}`)
-            }
+            assert.equal(probe.settingsActionHit, 'self', `${at}: settings stand-in covered by ${probe.settingsActionHit}`)
+            await page.evaluate(() => {
+              const button = document.querySelector('#plugin-menu-item')
+              button.addEventListener('click', () => { button.dataset.clicked = 'true' })
+            })
+            await page.locator('#plugin-menu-item').click()
+            assert.equal(await page.locator('#plugin-menu-item').getAttribute('data-clicked'), 'true')
+            await page.evaluate(() => document.querySelector('#top-dialog').showModal())
+            const modal = await page.evaluate(() => {
+              const button = document.querySelector('#top-action')
+              const rect = button.getBoundingClientRect()
+              return { focused: document.activeElement === button, hit: document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2) === button }
+            })
+            assert.deepEqual(modal, { focused: true, hit: true }, `${at}: top-layer modal lost focus or hit target`)
+            await page.evaluate(() => document.querySelector('#top-dialog').close())
             // The wide grid must keep ordering the drawer; a static grid item still
             // honours z-index, which is why the internal order has to hold there.
             if (label === 'landscape') assert.equal(probe.drawerPosition, 'static', `${at}: expected the wide grid drawer`)
@@ -184,4 +192,4 @@ if (failures.length > 0) {
   console.error(`Plugin portal layering failed after ${cases} owned browser cases.`)
   process.exit(1)
 }
-console.log(`Plugin portal layering passed ${cases} owned browser cases: a body portal menu stays clickable under the open navigation drawer at every swept z-index (${PORTAL_LEVELS.join(', ')}) in portrait and landscape, the drawer keeps its own hit area, the shell's internal order holds, and DSH settings stay above the shell. This is not a full DSH runtime or physical-device acceptance.`)
+console.log(`Plugin portal layering passed ${cases} owned browser cases: positive-z-index body menus receive clicks, internal shell order holds, and a top-layer modal retains focus and hit testing. This is not a full DSH runtime, real settings or physical-device acceptance.`)

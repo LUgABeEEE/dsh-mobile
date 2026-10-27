@@ -110,20 +110,11 @@ Restart DSH and reopen the phone page after a change. Developer tools can show w
 
 ### When it is worth enabling
 
-Measured on the real gateway with a real `ws` client, changing only the compression switch:
+Compression is most useful when large, compressible live messages cross a bandwidth-limited link. In an isolated Gateway/`ws` test with synthetic repetitive text, an 8 KiB message used 8,196 bytes without compression and 249 bytes with it; a 64 KiB sample used 65,546 and 692 bytes. These are WebSocket frame bytes, not TLS/TCP overhead or measurements of a real Session. Savings depend strongly on the content.
 
-| Frame size | Wire bytes (off → on) | Saving |
-| ---: | --- | ---: |
-| 128–1023 B | 132 → 132, 1027 → 1027 | 0% |
-| 1024 B | 1028 → 182 | 82% |
-| 8 KiB | 8196 → 249 | 97% |
-| 64 KiB | 65546 → 692 | 99% |
+With the default 1 KiB threshold and no-context-takeover negotiation, the tested 1,023-byte message stayed uncompressed. Incompressible 64 KiB data grew by 22 bytes and added about 1.1 ms to the local round trip. A local bandwidth-shaped test showed lower delivery latency for repetitive messages, but does not predict any particular cellular, relay or LAN result; sustained-load memory and physical-device behavior were not measured.
 
-The `thresholdBytes` boundary is exact: a 1023-byte frame is not compressed and a 1024-byte frame is. **Frames below 1 KiB gain nothing at all**, and most control frames on a live channel are small.
-
-The gain only matters on constrained bandwidth. Shaped to 1 Mbps, a 128 KiB frame went from about 1022 ms to about 16 ms; at 256 kbps a 64 KiB frame went from about 2054 ms to about 23 ms. On a link with no bandwidth bottleneck compression only adds cost: on loopback each frame costs 0.04–0.14 ms extra, incompressible 64 KiB random data costs up to about 1.1 ms more and actually grows by 22 bytes of frame header.
-
-So it is worth enabling over a relay, cellular or metered link, and close to pointless on a fast direct LAN connection. The default remains off in this round.
+Compare the same workload with and without compression before drawing a conclusion. HTTP history responses and `/api/remote.mux` frames are separate paths: a faster Session switch after several simultaneous upgrades cannot be attributed to WebSocket compression alone. Compression remains opt-in.
 
 ## Static-resource caching and repeated downloads
 

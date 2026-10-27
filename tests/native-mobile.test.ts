@@ -1,6 +1,5 @@
 import { readFileSync } from 'node:fs'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { DSH_SETTINGS_LAYER_FLOOR, layerCustomProperties, MOBILE_SHELL_LAYERS } from '../src/mobile-layers.js'
 import { activeSessionForSoftEnter, applyNativeMobileLanguageMarker, BROWSER_COMPOSER_EDITOR_QUERY, bindBrowserComposerSoftEnter, bindComposerSoftEnter, bindHistoryAutoLoadGate, composerIsLandingHero, createDocumentCompositionGuard, createHeaderStripPanController, createHistoryAutoLoadGate, createSwitchComputerHold, dispatchComposerImageDrop, drawerScrimVisible, HISTORY_INTENT_LISTENER_OPTIONS, HISTORY_SCROLL_QUIET_MS, installNativeMobileSurface, installStockMobileBack, isBrowserTouchEnterLineBreak, isComposerMediaOriginCurrent, isSoftKeyboardEnterLineBreak, markNativeMobileSettings, measureHeaderStripOverflow, nativeAppOwnsComposerEnter, NATIVE_MOBILE_OVERLAY_QUERY, NATIVE_MOBILE_STYLES, NATIVE_MOBILE_TOGGLE_QUERY, preflightComposerImageDrop, resolveBrowserComposerEditor, resolveComposerSessionOrigin, resolveHistoryGateIdentity, resolveNativeMobileFrame, resolveNativeMobileLanguage, shouldAutoLoadEarlier, stockMainPanelOpen, syncHistoryLoaderLabel, SWITCH_COMPUTER_CLICK_SUPPRESSION_MS, SWITCH_COMPUTER_LONG_PRESS_MS, SWITCH_COMPUTER_MOVE_TOLERANCE_PX, SWITCH_COMPUTER_NATIVE_ACTION } from '../src/native-mobile.js'
 
 interface FakeElementOptions {
@@ -44,27 +43,8 @@ describe('native mobile presentation', () => {
 
   it('raises public floating surfaces above narrow drawers without intercepting empty space', () => {
     const [, overlay] = NATIVE_MOBILE_STYLES.split(`@media ${NATIVE_MOBILE_OVERLAY_QUERY}`)
-    // The slot layer and the right panel are modal shell surfaces and must stay
-    // above the navigation drawer. What keeps a third-party body portal above the
-    // whole shell is the shell's isolation, asserted in the layout test; inside
-    // the shell only these relative bands matter. The stylesheet reads them as
-    // custom properties, so assert the variable name here and the order below.
-    expect(overlay).toContain('html.dsh-native-mobile-active [data-shell-overlay] { z-index:var(--dshm-layer-overlay) !important; pointer-events:none !important; }')
-    expect(overlay).toContain('[data-dsh-mobile-sidebar] { position:fixed !important; z-index:var(--dshm-layer-drawer) !important;')
-    expect(MOBILE_SHELL_LAYERS.scrim).toBeLessThan(MOBILE_SHELL_LAYERS.drawer)
-    expect(MOBILE_SHELL_LAYERS.drawer).toBeLessThan(MOBILE_SHELL_LAYERS.details)
-    expect(MOBILE_SHELL_LAYERS.details).toBeLessThan(MOBILE_SHELL_LAYERS.overlay)
-    expect(MOBILE_SHELL_LAYERS.overlay).toBeLessThan(DSH_SETTINGS_LAYER_FLOOR)
+    expect(overlay).toContain('html.dsh-native-mobile-active [data-shell-overlay] { z-index:300 !important; pointer-events:none !important; }')
     expect(overlay).not.toContain('[data-shell-overlay] > * { pointer-events:auto')
-    // The emitted variables must match the band table they document.
-    const declarations = layerCustomProperties()
-    expect(declarations).toContain(`--dshm-layer-drawer:${MOBILE_SHELL_LAYERS.drawer}`)
-    expect(declarations).toContain(`--dshm-layer-details:${MOBILE_SHELL_LAYERS.details}`)
-    expect(declarations).toContain(`--dshm-layer-overlay:${MOBILE_SHELL_LAYERS.overlay}`)
-    expect(declarations).toContain(`--dshm-layer-scrim:${MOBILE_SHELL_LAYERS.scrim}`)
-    expect(declarations).toContain(`--dshm-layer-drawer-root:${MOBILE_SHELL_LAYERS.drawerRoot}`)
-    expect(declarations).toContain(`--dshm-layer-drawer-toggle:${MOBILE_SHELL_LAYERS.drawerToggle}`)
-    expect(declarations).toContain(`--dshm-layer-toast:${MOBILE_SHELL_LAYERS.toast}`)
   })
 
   it('reserves the full settings close target inside its padded header', () => {
@@ -138,10 +118,9 @@ describe('native mobile presentation', () => {
     // collapsed the sidebar.
     const [neutral] = NATIVE_MOBILE_STYLES.split(`@media ${NATIVE_MOBILE_OVERLAY_QUERY}`)
     expect(neutral).toContain('.dsh-native-mobile-backdrop,.dsh-mobile-branch-toast,.dsh-mobile-media-toast { display:none; }')
-    expect(NATIVE_MOBILE_STYLES).toContain('.dsh-native-mobile-backdrop { display:block; position:fixed; z-index:var(--dshm-layer-scrim);')
-    expect(NATIVE_MOBILE_STYLES).toContain('.dsh-mobile-branch-toast,.dsh-mobile-media-toast { display:block; position:fixed; z-index:var(--dshm-layer-toast);')
+    expect(NATIVE_MOBILE_STYLES).toContain('.dsh-native-mobile-backdrop { display:block; position:fixed; z-index:235;')
+    expect(NATIVE_MOBILE_STYLES).toContain('.dsh-mobile-branch-toast,.dsh-mobile-media-toast { display:block; position:fixed;')
     expect(NATIVE_MOBILE_STYLES).toContain('.dsh-native-mobile-backdrop[hidden] { display:none; }')
-    expect(MOBILE_SHELL_LAYERS.scrim).toBeLessThan(MOBILE_SHELL_LAYERS.drawer)
   })
 
   it('shows the drawer scrim only while the overlay drawer is open', () => {

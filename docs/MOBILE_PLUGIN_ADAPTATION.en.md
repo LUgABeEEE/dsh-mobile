@@ -118,57 +118,11 @@ Add `env(safe-area-inset-*)` only where content really reaches a screen edge and
 
 ### Overlay layering and portals
 
-The narrow drawer is a `position:fixed` overlay. The mobile layout confines it to
-`.dshm-shell`'s own stacking context (`isolation:isolate`), so decide whether an
-overlay is visible by **where it renders — inside the shell or under
-`document.body`** — not by comparing numbers:
+The dedicated mobile shell uses `isolation:isolate` so its drawer and panels share a local stacking context. A positioned menu portalled directly to `document.body` with a positive `z-index` can paint above that shell; its value does not have to exceed the drawer's internal value. The stock-layout adapter retains its existing layer values.
 
-- A menu or dialog rendered into `document.body` (a React portal,
-  `createPortal`, an `append` to body) paints above the entire mobile shell and
-  cannot be covered by the narrow drawer. An ordinary positive value — `60`, the
-  value in the [#288](https://github.com/saya-ch/dsh-mobile/issues/288) report —
-  is enough, and `0` works too; there is no "safe" large number to guess.
-  Measured at `10`, `45`, `60` and `2000`.
-- A `position:fixed` element left inside `.dshm-shell` is only ordered against the
-  shell's own surfaces. An overlay that should follow a panel belongs in that
-  panel's own root, closes with it, and should be hit-tested with
-  `elementFromPoint()` at its edges.
+This is not a guarantee that every body child outranks every dialog. Negative values, zero/auto paint order, ancestor stacking contexts, and the browser's top layer affect the result. Menus inside the shell remain constrained by their ancestors. Prefer the host's overlay facilities where available, and dismiss a menu when its owning panel closes or a modal takes focus. Do not globally raise third-party widgets or change DSH's dialog layers.
 
-The shell's internal values are below. This table explains the shell's own order;
-**it is not an API a plugin must satisfy**, and changing these numbers does not
-affect a body portal:
-
-| Shell-internal layer | Current value | Purpose |
-|---|---:|---|
-| `.dshm-scrim` | 65 | Dimming behind the drawer and the right panel |
-| `.dshm-drawer` | 70 | Narrow drawer / wide persistent column |
-| Drawer positioning root | 71 | Orders nodes inside the drawer only |
-| Collapsed-rail toggle | 74 | Escapes the zero-width drawer |
-| `.dshm-details` | 80 | Right detail panel |
-| `.dshm-overlay` | 90 | Host-provided plugin overlay slot |
-| Toast notices | 330 | Transient notices |
-
-DSH's own dropdowns (100), settings layers (900/1000) and dialog menus (1100)
-render inside the shell and keep their own order.
-
-**The navigation drawer is not a modal layer.** It is persistent navigation —
-page structure, not a surface that interrupts the user. A plugin menu opened from
-the drawer must paint above it, and `isolation:isolate` guarantees that without
-the plugin doing anything.
-
-**Do not use `z-index: 99999` as an adaptation technique.** It only reorders
-within one stacking context: under `document.body` it cannot change the result of
-the shell's isolation, and inside the shell it only pushes your panel above the
-host's own dialog so the user cannot reach its close or save control.
-
-**Wide viewports behave the same way.** Past 900px the drawer becomes a real
-in-flow grid column, but `z-index` still applies to a grid item, so the internal
-order still has to hold.
-
-Confirm the result by hit-testing in a real browser rather than reading the
-`z-index` number: `document.elementFromPoint()` should return your menu item, not
-the drawer. `npm run smoke:plugin-portal-layers` does exactly that at four
-levels: `10`, `45`, `60` and `2000`.
+Verify actual visibility, focus and `document.elementFromPoint()` while the drawer, detail panel and settings are open, in narrow and wide layouts. The owned `smoke:plugin-portal-layers` fixture checks positive-z-index body menus and a top-layer dialog; it is not acceptance of every community plugin.
 
 ## Verification: what code checks, browsers and devices establish
 

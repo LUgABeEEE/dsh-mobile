@@ -1,7 +1,6 @@
 import { createElement, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
 import type { ReactNode } from 'react'
 import { MOBILE_LAYOUT_MESSAGES, type MobileLayoutLanguage } from './mobile-layout-messages.js'
-import { layerCustomProperties } from './mobile-layers.js'
 
 export { MOBILE_LAYOUT_MESSAGES } from './mobile-layout-messages.js'
 export type { MobileLayoutLanguage } from './mobile-layout-messages.js'
@@ -518,13 +517,8 @@ class ThemePresenter {
 
 export const MOBILE_LAYOUT_STYLES = `
 html,body,#root{width:100%;height:100%;overflow:hidden}
-/* The definite root height bounds the transcript on engines without dvh.
-   Isolation confines the shell-owned layers (scrim 40 / drawer 50 / details 80 /
-   overlay 90) to this stacking context so a menu a third-party plugin portals to
-   document.body paints above the open drawer at any z-index; without it the
-   drawer's own z-index covers such menus and the tap appears to do nothing
-   (issue #288). Inside the shell the bands from mobile-layers.ts still order the
-   shell's own surfaces. */
+/* Definite height bounds the transcript on engines without dvh. Isolation keeps
+   shell descendants below positive-z-index portals attached to document.body. */
 .dshm-shell{position:relative;isolation:isolate;display:grid;grid-template-rows:minmax(0,1fr);width:100%;height:100%;height:100dvh;min-width:0;overflow:hidden;background:var(--dsw-alias-bg-base,#fff)}
 /* The mobile root owns its Grid geometry. Layered important rules keep broad
    unlayered skin rules from collapsing virtualized views to the header height. */
@@ -532,11 +526,7 @@ html,body,#root{width:100%;height:100%;overflow:hidden}
 .dshm-shell{display:grid!important;grid-template-rows:minmax(0,1fr)!important;grid-template-columns:minmax(0,1fr)!important}
 @media(min-width:900px){.dshm-shell{grid-template-columns:auto minmax(0,1fr)!important}}
 }
-/* The shell is now an isolated stacking context, so these surfaces compete with
-   each other and with DSH's own in-shell layers, but not with a plugin's
-   document.body portal — that portal paints above the whole shell regardless of
-   its z-index. Bands come from mobile-layers.ts: the navigation drawer is not a
-   modal, so the detail panel and the overlay container stay above it. */.dshm-main{grid-area:1/1;position:relative;display:flex;flex-direction:column;min-width:0;min-height:0;margin-right:0;overflow:hidden;transition:margin-right var(--ds-transition-duration-slow,190ms) var(--ds-ease-in-out,ease)}
+.dshm-main{grid-area:1/1;position:relative;display:flex;flex-direction:column;min-width:0;min-height:0;margin-right:0;overflow:hidden;transition:margin-right var(--ds-transition-duration-slow,190ms) var(--ds-ease-in-out,ease)}
 .dshm-mainContent{position:relative;flex:1;min-width:0;min-height:0;overflow:hidden}
 .dshm-shell[data-rightbar-docked=true] .dshm-main{margin-right:var(--dshm-rightbar-width)}
 .dshm-shell[data-rightbar-docked=true] .dshm-details{position:absolute;width:var(--dshm-rightbar-width);box-shadow:none;padding-top:0}
@@ -544,7 +534,7 @@ html,body,#root{width:100%;height:100%;overflow:hidden}
    intercepting controls; only docked mode needs this column separator. */
 .dshm-shell[data-rightbar-docked=true] .dshm-details::after{content:"";position:absolute;inset:0 auto 0 0;width:.5px;background:var(--dsw-alias-border-l4);z-index:11;pointer-events:none}
 .dshm-main>*,.dshm-main>*>*{min-width:0}
-.dshm-drawer{position:fixed;z-index:var(--dshm-layer-drawer);inset:0 auto 0 0;box-sizing:border-box;width:56px;max-width:100%;padding-top:env(safe-area-inset-top);overflow:hidden;background-color:Canvas;background-image:linear-gradient(var(--dsw-alias-bg-layer-1,#f8fafc),var(--dsw-alias-bg-layer-1,#f8fafc));box-shadow:none;will-change:width;transition:width 240ms cubic-bezier(.22,1,.36,1),box-shadow 240ms ease}
+.dshm-drawer{position:fixed;z-index:70;inset:0 auto 0 0;box-sizing:border-box;width:56px;max-width:100%;padding-top:env(safe-area-inset-top);overflow:hidden;background-color:Canvas;background-image:linear-gradient(var(--dsw-alias-bg-layer-1,#f8fafc),var(--dsw-alias-bg-layer-1,#f8fafc));box-shadow:none;will-change:width;transition:width 240ms cubic-bezier(.22,1,.36,1),box-shadow 240ms ease}
 .dshm-drawer[data-open=true]{width:min(88vw,340px);box-shadow:18px 0 46px rgb(15 23 42 / 18%)}
 .dshm-drawer[data-open=false]{pointer-events:auto;visibility:visible}
 .dshm-drawer>*{width:100%!important;height:100%!important;transform:translateX(-6px);opacity:.94;transition:transform 220ms cubic-bezier(.22,1,.36,1),opacity 160ms ease-out}
@@ -552,13 +542,13 @@ html,body,#root{width:100%;height:100%;overflow:hidden}
 .dshm-drawer[data-open=false]>*{width:56px!important}
 /* display:none also suppresses fixed descendants installed by the phone adapter. */
 .dshm-drawer[data-right-modal=true]{display:none!important}
-.dshm-details{position:fixed;z-index:var(--dshm-layer-details);inset:0 0 0 auto;box-sizing:border-box;width:min(94vw,460px);max-width:100%;padding-top:env(safe-area-inset-top);overflow:hidden;background-color:Canvas;background-image:linear-gradient(var(--dsw-alias-bg-layer-1,#fff),var(--dsw-alias-bg-layer-1,#fff));box-shadow:-18px 0 46px rgb(15 23 42 / 18%);transform:translateX(104%);transition:transform 190ms cubic-bezier(.22,1,.36,1)}
+.dshm-details{position:fixed;z-index:80;inset:0 0 0 auto;box-sizing:border-box;width:min(94vw,460px);max-width:100%;padding-top:env(safe-area-inset-top);overflow:hidden;background-color:Canvas;background-image:linear-gradient(var(--dsw-alias-bg-layer-1,#fff),var(--dsw-alias-bg-layer-1,#fff));box-shadow:-18px 0 46px rgb(15 23 42 / 18%);transform:translateX(104%);transition:transform 190ms cubic-bezier(.22,1,.36,1)}
 .dshm-details[data-open=true]{transform:translateX(0)}
 .dshm-details[data-open=false]{pointer-events:none;visibility:hidden;transition:transform 190ms cubic-bezier(.22,1,.36,1),visibility 0s linear 190ms}
 @media(max-width:899px){.dshm-details{width:100%;max-width:100%;box-shadow:none}.dshm-details [data-sidebar-right-toggle],.dshm-details [data-sidebar-right-mode]{min-width:48px;min-height:48px}}
-.dshm-scrim{position:fixed;z-index:var(--dshm-layer-scrim);inset:0;border:0;background:rgb(15 23 42 / 40%);opacity:0;pointer-events:none;transition:opacity 180ms ease-out}
+.dshm-scrim{position:fixed;z-index:65;inset:0;border:0;background:rgb(15 23 42 / 40%);opacity:0;pointer-events:none;transition:opacity 180ms ease-out}
 .dshm-scrim[data-open=true]{opacity:1;pointer-events:auto}
-.dshm-overlay{position:fixed;z-index:var(--dshm-layer-overlay);inset:0;pointer-events:none}.dshm-overlay>*{pointer-events:auto}
+.dshm-overlay{position:fixed;z-index:90;inset:0;pointer-events:none}.dshm-overlay>*{pointer-events:auto}
 /* Reserve navigation space instead of covering a panel's own save controls. */
 .dshm-panelNav{display:flex;align-items:center;flex-shrink:0;min-height:56px;box-sizing:border-box;padding:max(4px,env(safe-area-inset-top)) max(12px,env(safe-area-inset-right)) 4px max(68px,env(safe-area-inset-left));border-bottom:.5px solid var(--dsw-alias-border-l4);background-color:Canvas;background-image:linear-gradient(var(--dsw-alias-bg-base,#fff),var(--dsw-alias-bg-base,#fff))}
 .dshm-panelBack{display:inline-flex;align-items:center;gap:8px;min-width:48px;min-height:48px;padding:8px 12px;border:0;border-radius:8px;background:transparent;color:var(--dsw-alias-label-primary,#171a21);font:inherit;font-size:14px;line-height:1.4;text-align:left;cursor:pointer}
@@ -894,10 +884,7 @@ export function apply(ctx: MobileClientContext): void {
   ctx.effect(() => {
     const style = document.createElement('style')
     style.dataset.plugin = 'dsh-mobile-layout'
-    // The band values travel as custom properties: the stylesheet is one long
-    // literal, so resolving them here keeps the numbers in one place without
-    // depending on template interpolation surviving the bundler.
-    style.textContent = `:root{${layerCustomProperties()}}\n${MOBILE_LAYOUT_STYLES}`
+    style.textContent = MOBILE_LAYOUT_STYLES
     document.head.append(style)
     const disposeMainPanelRegistry = controller.bindMainPanelRegistry(id =>
       ctx.slots.entries('main').some(entry => entry.options.key === id))
