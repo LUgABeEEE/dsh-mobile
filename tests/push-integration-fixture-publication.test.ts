@@ -192,7 +192,9 @@ describe('push contract fixture JSON publication', () => {
   let contractBuild: Promise<{ packageRoot: string, entry: string, packageName: string, root: string }> | undefined
   const buildContract = (): typeof contractBuild => contractBuild ??= (async () => {
     const root = await mkdtemp(join(tmpdir(), 'dsh-mobile-contract-publication-'))
-    const built = await contract.createPushContractFixture({ root, repository: repositoryRoot, tsdown: join(repositoryRoot, 'node_modules/.bin/tsdown') })
+    // Windows launches npm bin shims through their .CMD launcher; run() enables a shell there.
+    const tsdownBin = join(repositoryRoot, 'node_modules', '.bin', process.platform === 'win32' ? 'tsdown.CMD' : 'tsdown')
+    const built = await contract.createPushContractFixture({ root, repository: repositoryRoot, tsdown: tsdownBin })
     return { ...built, root }
   })()
 

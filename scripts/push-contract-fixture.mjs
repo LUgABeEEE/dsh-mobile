@@ -7,7 +7,8 @@ import { atomicJsonPublisher } from './push-fixture-publication.mjs'
 
 /** Run an owned fixture build command and retain bounded diagnostics. */
 async function run(command, args, cwd, env = process.env) {
-  const child = spawn(command, args, { cwd, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
+  // Windows resolves npm bin shims through their .CMD launcher, which requires a shell.
+  const child = spawn(command, args, { cwd, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], shell: process.platform === 'win32' })
   let stdout = ''
   let stderr = ''
   child.stdout.setEncoding('utf8').on('data', chunk => { stdout = `${stdout}${chunk}`.slice(-12_000) })
