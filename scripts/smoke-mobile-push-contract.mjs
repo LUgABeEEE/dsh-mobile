@@ -15,7 +15,9 @@ const binary = resolve(dshBin)
 const metadata = await lstat(binary)
 if (!metadata.isFile() || metadata.isSymbolicLink()) throw new Error('DSH_BOOT_SMOKE_BIN must resolve to a regular explicit DSH CLI file')
 const expectedVersion = createRequire(binary)('@deepseek-ai/dsh/package.json').version
-assert.equal(expectedVersion, '0.2.1-rc.2', 'The Task 1 public contract evidence is currently pinned to DSH 0.2.1-rc.2')
+// Allowed DSH runtimes for the packed push lanes (kept identical to scripts/smoke-mobile-push.mjs).
+const RUNTIME_VERSIONS = ['0.2.1-rc.2', '0.2.1-rc.3']
+assert(RUNTIME_VERSIONS.includes(expectedVersion), `The push contract evidence requires an allowed DSH runtime (got ${expectedVersion}, allowed ${RUNTIME_VERSIONS.join('/')})`)
 
 const root = await mkdtemp(join(tmpdir(), 'dsh-mobile-push-contract-'))
 let server
@@ -56,7 +58,7 @@ try {
   process.env.NPM_CONFIG_USERCONFIG = userConfig
   process.env.NPM_CONFIG_GLOBALCONFIG = globalConfig
 
-  const fixture = await createPushContractFixture({ root, repository, tsdown: join(repository, 'node_modules/.bin/tsdown') })
+  const fixture = await createPushContractFixture({ root, repository, tsdown: process.platform === 'win32' ? join(repository, 'node_modules/.bin/tsdown.CMD') : join(repository, 'node_modules/.bin/tsdown') })
   const npm = await npmCli()
   const packedOutput = await runPackagingCommand(process.execPath, [
     npm, 'pack', '--ignore-scripts', '--json', '--pack-destination', root,

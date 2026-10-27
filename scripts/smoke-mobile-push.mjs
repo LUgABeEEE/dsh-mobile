@@ -21,7 +21,8 @@ import { completeSmoke } from './negative-control.mjs'
 
 const repository = fileURLToPath(new URL('../', import.meta.url))
 const TRANSPORT_MARKER = 'dsh.mobile.push.integration.transport'
-const RUNTIME_VERSION = '0.2.1-rc.2'
+// Allowed DSH runtimes for the packed push lanes (kept identical to scripts/smoke-mobile-push-contract.mjs).
+const RUNTIME_VERSIONS = ['0.2.1-rc.2', '0.2.1-rc.3']
 const OWNER_NEGATIVE_MARKER = 'Push ownership negative control detected'
 const PAIR_DIAGNOSTIC_LOG_ENV = 'DSH_PUSH_PAIR_DIAGNOSTIC_LOG'
 const args = process.argv.slice(2)
@@ -1056,7 +1057,7 @@ async function runFullSmoke({ negativeControl = false, pairDiagnostic = false } 
     if (!metadata.isFile() || metadata.isSymbolicLink()) throw new Error('Runtime and tarball inputs must be explicit regular files')
   }
   const dshVersion = createRequire(binary)('@deepseek-ai/dsh/package.json').version
-  assert.equal(dshVersion, RUNTIME_VERSION, 'Push public-contract fixture is pinned to the validated DSH contract runtime')
+  assert(RUNTIME_VERSIONS.includes(dshVersion), `Push public-contract fixture requires an allowed DSH contract runtime (got ${dshVersion}, allowed ${RUNTIME_VERSIONS.join('/')})`)
   const tarballSha256 = createHash('sha256').update(await readFile(tarball)).digest('hex')
   const pairDiagnosticRunId = randomUUID()
   // All diagnostics live inside the OWNED per-run temporary root (unique run identity; no committed
