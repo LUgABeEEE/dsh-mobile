@@ -31,6 +31,7 @@ Browser checks consume built client files. Run `npm run build` and `npx playwrig
 | Layout, drawers and panels | `npm run smoke:native-layout` |
 | Mobile root geometry under broad skin rules | `npm run smoke:layout-ownership` |
 | Opaque drawer, details panel and return bar under translucent skin tokens | `npm run smoke:opaque-chrome` |
+| Fullscreen right panel owns the viewport instead of the docked track | `npm run smoke:rightbar-fullscreen` |
 | Conversation scrollport and older viewport units | `node scripts/smoke-conversation-scroll.mjs` |
 | History auto-load stability (Playwright Chromium required) | `npm run smoke:history-scroll` |
 | Composer focus and keyboard | `npm run smoke:composer-keyboard` |
