@@ -1,7 +1,7 @@
 import { ATTENTION_TTL_MS, REQUEST_SETTLE_MS } from './contracts.js'
 import type { ContextLike, PublicAgentLike, PushCategory, PushReconcileResult, PushSource } from './contracts.js'
 
-type RequestRecord = { source: PushSource; settled: boolean; queuedReply: boolean; timed: boolean; timer?: ReturnType<typeof setTimeout> | undefined; live: boolean }
+type RequestRecord = { source: PushSource; settled: boolean; queuedReply: boolean; timed: boolean; timer?: ReturnType<typeof setTimeout> | undefined; live: boolean; disposeAbort?: (() => void) | undefined }
 type Emit = (source: PushSource) => void
 
 export class RequestLifetimes {
@@ -87,9 +87,21 @@ export class RequestLifetimes {
 
   eligible(source: PushSource): boolean { return this.reconcileLive(source) === 'eligible' }
 
+  /** Retires expired records at their original TTL; returns how many were removed. */
+  sweep(now: number = this.#clock()): number {
+    let removed = 0
+    for (const [sourceId, rec] of this.#records) {
+      if (rec.source.expiresAt > now) continue
+      this.#retire(rec)
+      this.#records.delete(sourceId)
+      removed += 1
+    }
+    return removed
+  }
+
   close(): void {
     this.#closed = true
-    for (const rec of this.#records.values()) if (rec.timer) clearTimeout(rec.timer)
+    for (const rec of this.#records.values()) this.#retire(rec)
     this.#records.clear()
     this.#byCall.clear()
   }
@@ -97,6 +109,16 @@ export class RequestLifetimes {
   #projection(sessionId: string): any {
     const session = this.#ctx.agents?.get?.(sessionId)?.session ?? { id: sessionId }
     return this.#ctx.sessionProjections?.stateOf?.(session, 'userQuestions')
+  }
+  #retire(rec: RequestRecord): void {
+    if (rec.timer) { clearTimeout(rec.timer); rec.timer = undefined }
+    rec.disposeAbort?.()
+    rec.disposeAbort = undefined
+    if (typeof rec.source.callId === 'string') {
+      const key = `${rec.source.sessionId}\u0000${rec.source.callId}`
+      // A newer same-call record may own the index now; only delete what still points at this record.
+      if (this.#byCall.get(key) === rec) this.#byCall.delete(key)
+    }
   }
   #invalidate(rec: RequestRecord, queuedReply: boolean): void {
     rec.settled = true
@@ -110,6 +132,9 @@ export class RequestLifetimes {
     const createdAt = this.#clock()
     const opaque = typeof callId === 'string' && callId ? callId : `dispatch-${crypto.randomUUID()}`
     const sourceId = `request:${sessionId}:${category}:${opaque}`
+    // A repeated observation of one call dedupes onto its existing record; the original expiry never moves forward.
+    const existing = this.#records.get(sourceId)
+    if (existing && existing.source.expiresAt > createdAt) return existing
     let turn: number | undefined
     try {
       const boundary = this.#ctx.sessionProjections?.stateOf?.(agent.session ?? agent, 'turnBoundary') as any
@@ -122,11 +147,13 @@ export class RequestLifetimes {
     const rec: RequestRecord = { source, settled: false, queuedReply: false, timed, live: true }
     this.#records.set(sourceId, rec)
     if (typeof callId === 'string') this.#byCall.set(`${sessionId}\u0000${callId}`, rec)
-    signal?.addEventListener('abort', () => {
-      if (rec.timed && (signal.reason as any)?.code === 'ASK_TIMED_OUT') return
+    const onAbort = () => {
+      if (rec.timed && (signal?.reason as any)?.code === 'ASK_TIMED_OUT') return
       rec.settled = true
       rec.live = false
-    }, { once: true })
+    }
+    signal?.addEventListener('abort', onAbort, { once: true })
+    rec.disposeAbort = () => { try { signal?.removeEventListener('abort', onAbort) } catch { /* Detached signals need no listener cleanup. */ } }
     return rec
   }
   #root(agent: PublicAgentLike): PublicAgentLike {
@@ -141,6 +168,7 @@ export class RequestLifetimes {
     return current
   }
   #arm(rec: RequestRecord): void {
+    if (rec.timer) return
     rec.timer = setTimeout(() => {
       rec.timer = undefined
       if (this.#closed || rec.settled || rec.queuedReply) return

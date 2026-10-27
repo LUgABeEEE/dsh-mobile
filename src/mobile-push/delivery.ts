@@ -17,6 +17,7 @@ import {
 } from './contracts.js'
 import { buildDeclarativePayload } from './payload.js'
 import type { PushRegistry } from './registry.js'
+import { pruneOrphanedDeferrals } from './retention.js'
 import { PushSender, type PushSendResult } from './sender.js'
 import type { PushHost } from './contracts.js'
 
@@ -197,6 +198,7 @@ export class PushDelivery {
     await Promise.allSettled([...this.#tasks])
     await this.#writeQueue
     await Promise.allSettled([...new Set(this.#purgeTasks.values())])
+    this.#deferredUntil.clear()
     for (const origin of this.#origins.values()) origin.active = false
     this.#origins.clear()
   }
@@ -310,6 +312,7 @@ export class PushDelivery {
 
   async #periodicReconcile(): Promise<void> {
     if (this.#closed) return
+    this.#pruneDeferred()
     await this.#reconcileKnownScopes()
     await this.#reconcilePending()
     this.#kick()
@@ -580,6 +583,13 @@ export class PushDelivery {
     this.#deferredUntil.set(intent.id, this.#now() + UNVERIFIABLE_RECHECK_MS)
   }
 
+  /** Defer keys live only as long as their owning pending intent survives every removal path. */
+  #pruneDeferred(): void {
+    let pending: readonly PushIntent[]
+    try { pending = this.#registry.snapshot().pending } catch { return }
+    pruneOrphanedDeferrals(this.#deferredUntil, pending)
+  }
+
   async #readAuthorized(origin: Origin): Promise<Map<string, AuthorizedDevice> | undefined> {
     try {
       const rows = await origin.authorizedDevices()
@@ -613,6 +623,7 @@ export class PushDelivery {
     if (this.#closed) return
     if (this.#wakeTimer) clearTimeout(this.#wakeTimer)
     this.#wakeTimer = undefined
+    this.#pruneDeferred()
     let nextAt = Number.POSITIVE_INFINITY
     try {
       for (const intent of this.#registry.snapshot().pending) {

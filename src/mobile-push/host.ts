@@ -14,7 +14,9 @@ function hasContract(ctx: ContextLike): boolean {
     && typeof ctx.agents.roots === 'function'
     && typeof ctx.agents.isOwnedBy === 'function'
     && ctx.userQuestions !== undefined && ctx.approval !== undefined
-}
+  }
+
+const MAINTENANCE_INTERVAL_MS = 30_000
 
 export function createPushHost(ctx: ContextLike): PushHost {
   let available = hasContract(ctx)
@@ -34,6 +36,12 @@ export function createPushHost(ctx: ContextLike): PushHost {
   const requests = new RequestLifetimes(ctx, add)
   const outcomes = new OutcomeLifetimes(ctx, add)
   let closed = false
+  // Lifetime reclamation is bounded by each record's original TTL plus at most one maintenance interval.
+  const maintenanceTimer: ReturnType<typeof setInterval> | undefined = available
+    ? setInterval(() => {
+      try { requests.sweep(); outcomes.sweep() } catch { /* Maintenance never propagates into host work. */ }
+    }, MAINTENANCE_INTERVAL_MS)
+    : undefined
   if (available) {
     try { lifecycleProjectionDisposer = reconciler.registerProjection() } catch { available = false }
   }
@@ -173,6 +181,7 @@ export function createPushHost(ctx: ContextLike): PushHost {
     async close() {
       if (closed) return
       closed = true
+      if (maintenanceTimer) clearInterval(maintenanceTimer)
       subscribers.clear()
       changeSubscribers.clear()
       requests.close()

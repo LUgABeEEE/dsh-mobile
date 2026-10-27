@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createPushHost } from '../src/mobile-push/host.js'
+import { REQUEST_SETTLE_MS } from '../src/mobile-push/contracts.js'
 import type { ContextLike, PushHost, PushSource } from '../src/mobile-push/contracts.js'
 
 const cleanups: Array<() => Promise<void>> = []
@@ -423,5 +424,20 @@ describe('public host lifecycle', () => {
     h.emit('session/event', agent('s6'), { type: 'turn/end', data: { turn: 3, reason: { kind: 'error', error: { message: 'x', code: 'X' } } } })
     await vi.waitFor(() => expect(h.emitted).toHaveLength(1), { timeout: 3_000 })
     expect(h.emitted[0]?.category).toBe('failure')
+  })
+})
+
+describe('push host maintenance', () => {
+  afterEach(() => { vi.useRealTimers() })
+
+  it('owns a recurring maintenance sweep timer disposed on close', async () => {
+    vi.useFakeTimers()
+    const h = context()
+    const host = h.start()
+    await h.emit('user-questions/request', questionRequest('s1'), vi.fn(async () => ({ answers: [] })))
+    await vi.advanceTimersByTimeAsync(REQUEST_SETTLE_MS)
+    expect(vi.getTimerCount()).toBeGreaterThan(0)
+    await host.close()
+    expect(vi.getTimerCount()).toBe(0)
   })
 })

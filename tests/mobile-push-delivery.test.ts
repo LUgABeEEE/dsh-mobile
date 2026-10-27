@@ -10,6 +10,16 @@ import { PushSender, type PushSendResult } from '../src/mobile-push/sender.js'
 import { MemoryDeviceStore } from '../src/storage.js'
 import type { AccessControllerOptions } from '../src/access.js'
 
+// Wiring observation only: the real pure helper is unit-tested in tests/mobile-push-retention.test.ts.
+// The factory tolerates the module not existing yet so the rest of this file keeps running.
+vi.mock('../src/mobile-push/retention.js', async importOriginal => {
+  const actual = await importOriginal<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>)
+  const fallback = (deferred: Map<string, number>): number => { void deferred; return 0 }
+  const real = (actual.pruneOrphanedDeferrals ?? fallback) as (deferred: Map<string, number>, pending: readonly { readonly id: string }[]) => number
+  return { ...actual, pruneOrphanedDeferrals: vi.fn(real) }
+})
+import { pruneOrphanedDeferrals } from '../src/mobile-push/retention.js'
+
 const preferences = { question: true, plan: true, approval: true, response: true, goal: true, failure: true }
 const owner = (deviceId: string) => ({ scopeId: 'scope-a', deviceId, origin: 'https://mobile.example.test' })
 const source = (sourceId: string, overrides: Partial<PushSource> = {}): PushSource => ({
@@ -871,6 +881,40 @@ describe('push delivery coordination', () => {
     expect(alertNavigate?.endsWith(store.inspect().references[0]!.reference)).toBe(true)
     await expect(delivery.resolve(owner(registrations[0]!.deviceId), store.inspect().references[0]!.reference))
       .resolves.toEqual({ sessionId: 'session-a', interaction: 'current' })
+  })
+  it('prunes orphaned defer entries against the pending set on maintenance and clears them on close', async () => {
+    vi.useFakeTimers()
+    const { store, registry, registrations } = await makeRegistry()
+    let eligibleCalls = 0
+    const host = hostDouble({
+      eligible: async () => {
+        eligibleCalls += 1
+        if (eligibleCalls === 1) return true
+        throw new Error('transient eligibility failure')
+      },
+    })
+    const send = vi.fn(async () => ({ kind: 'accepted' as const }))
+    const delivery = new PushDelivery({ host, registry, sender: senderDouble(send) })
+    opened.push(() => delivery.close())
+    delivery.attachOrigin({ scopeId: 'scope-a', origin: 'https://mobile.example.test', authorizedDevices: async () => [{ id: 'device-a', expiresAt: Date.now() + 60_000 }] })
+    await delivery.start()
+    delivery.observe(source('defer-orphan-control'))
+    await vi.waitFor(() => expect(store.inspect().pending).toHaveLength(1))
+    await vi.advanceTimersByTimeAsync(0)
+    const intentId = store.inspect().pending[0]!.id
+    expect(send).not.toHaveBeenCalled()
+    expect(store.inspect().pending).toHaveLength(1)
+    // Registry disable removes the pending row independently of delivery's own removal paths.
+    await registry.disable(registrations[0]!)
+    expect(store.inspect().pending).toHaveLength(0)
+    await vi.advanceTimersByTimeAsync(30_000)
+    const pruneCalls = vi.mocked(pruneOrphanedDeferrals).mock.calls
+    expect(pruneCalls.length).toBeGreaterThanOrEqual(1)
+    const deferredMap = pruneCalls[0]![0]
+    expect(deferredMap.has(intentId)).toBe(false)
+    await delivery.close()
+    expect(deferredMap.size).toBe(0)
+    expect(vi.getTimerCount()).toBe(0)
   })
 })
 

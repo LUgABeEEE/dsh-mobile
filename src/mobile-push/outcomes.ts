@@ -11,7 +11,7 @@ export class OutcomeLifetimes {
   readonly #pending = new Map<string, Candidate>()
   readonly #goals = new Map<string, { id: string; revision: number; phase: string }>()
   readonly #blockedTurns = new Map<string, { id: string; revision: number; turn: number }>()
-  readonly #sent = new Set<string>()
+  readonly #sent = new Map<string, number>()
   #closed = false
 
   constructor(ctx: ContextLike, emit: Emit) { this.#ctx = ctx; this.#emit = emit }
@@ -91,11 +91,30 @@ export class OutcomeLifetimes {
 
   eligible(source: PushSource): boolean { return this.reconcileLive(source) === 'eligible' }
 
+  /** Retires expired candidates and sent-dedupe records at their original TTL; returns how many were removed. */
+  sweep(now: number = Date.now()): number {
+    let removed = 0
+    for (const [id, candidate] of this.#pending) {
+      if (candidate.source.expiresAt > now) continue
+      if (candidate.timer) { clearTimeout(candidate.timer); candidate.timer = undefined }
+      this.#pending.delete(id)
+      removed += 1
+    }
+    for (const [id, expiresAt] of this.#sent) {
+      if (expiresAt > now) continue
+      this.#sent.delete(id)
+      removed += 1
+    }
+    return removed
+  }
+
   close(): void {
     this.#closed = true
     for (const item of this.#pending.values()) if (item.timer) clearTimeout(item.timer)
     this.#pending.clear()
     this.#blockedTurns.clear()
+    this.#goals.clear()
+    this.#sent.clear()
   }
 
   #schedule(agent: PublicAgentLike, category: PushSource['category'], turn?: number, goal?: { id: string; revision: number }): void {
@@ -113,9 +132,9 @@ export class OutcomeLifetimes {
     candidate.timer = setTimeout(() => {
       candidate.timer = undefined
       if (this.#closed || !candidate.active) return
-      this.#sent.add(sourceId)
+      // Sent records keep their original expiry; the maintenance sweep reclaims them, not a per-record timer.
+      this.#sent.set(sourceId, source.expiresAt)
       this.#emit(source)
-      candidate.timer = setTimeout(() => { this.#pending.delete(sourceId) }, Math.max(0, source.expiresAt - Date.now()))
     }, OUTCOME_COALESCE_MS)
     this.#pending.set(sourceId, candidate)
   }
