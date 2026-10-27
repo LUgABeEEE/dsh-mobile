@@ -704,13 +704,24 @@ describe('dedicated mobile layout boot', () => {
     expect(MOBILE_LAYOUT_STYLES).toContain('.dshm-details [data-sidebar-right-toggle],.dshm-details [data-sidebar-right-mode]{min-width:48px;min-height:48px}')
     expect(MOBILE_LAYOUT_STYLES).toContain('.dshm-shell[data-rightbar-docked=true] .dshm-details{position:absolute;width:var(--dshm-rightbar-width)')
     const source = readFileSync(new URL('../src/mobile-layout.ts', import.meta.url), 'utf8')
-    expect(source).toContain('const rightbarFullWidth = state.detailsOpen && !rightbarDocked && !wideViewport')
     expect(source).toContain('const scrimOpen = !rightbarFullWidth && isMobileScrimOpen(')
     expect(source).toContain("rightbarFullWidth ? { inert: '', 'aria-hidden': true } : {}")
   })
 
   it('draws a theme-aware docked separator without changing geometry or hit targets', () => {
     expect(MOBILE_LAYOUT_STYLES).toContain('.dshm-shell[data-rightbar-docked=true] .dshm-details::after{content:"";position:absolute;inset:0 auto 0 0;width:.5px;background:var(--dsw-alias-border-l4);z-index:11;pointer-events:none}')
+  })
+
+  it('lets a fullscreen right panel own the whole viewport instead of the docked track', () => {
+    // The native panel paints itself at 100vw; clipped to the 94vw/460px
+    // overlay, a tablet only saw the right strip of its header and body.
+    expect(MOBILE_LAYOUT_STYLES).toContain('.dshm-shell[data-rightbar-fullscreen=true] .dshm-details{inset:0;width:100vw;max-width:100vw;box-shadow:none}')
+    const source = readFileSync(new URL('../src/mobile-layout.ts', import.meta.url), 'utf8')
+    expect(source).toContain('const rightbarFullscreen = state.detailsOpen && state.rightbarFullscreen')
+    expect(source).toContain("'data-rightbar-fullscreen': rightbarFullscreen")
+    // A fullscreen panel covers the conversation: it must not stay tabbable or
+    // need a scrim behind it, exactly like the phone overlay already behaves.
+    expect(source).toContain('const rightbarFullWidth = state.detailsOpen && !rightbarDocked && (!wideViewport || rightbarFullscreen)')
   })
 
   it('suppresses the fixed whale toggle only while the right modal is open', () => {

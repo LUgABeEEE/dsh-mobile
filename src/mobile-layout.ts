@@ -532,6 +532,11 @@ html,body,#root{width:100%;height:100%;overflow:hidden}
 /* Draw above the native absolute panel without consuming its width or
    intercepting controls; only docked mode needs this column separator. */
 .dshm-shell[data-rightbar-docked=true] .dshm-details::after{content:"";position:absolute;inset:0 auto 0 0;width:.5px;background:var(--dsw-alias-border-l4);z-index:11;pointer-events:none}
+/* The native panel paints itself at 100vw in fullscreen mode. Inside the
+   docked overlay (94vw/460px, overflow:hidden) that layout was clipped to the
+   right edge of the track, so the header slid out of view and the body showed
+   only clipped line tails. A fullscreen panel owns the whole viewport. */
+.dshm-shell[data-rightbar-fullscreen=true] .dshm-details{inset:0;width:100vw;max-width:100vw;box-shadow:none}
 .dshm-main>*,.dshm-main>*>*{min-width:0}
 .dshm-drawer{position:fixed;z-index:70;inset:0 auto 0 0;box-sizing:border-box;width:56px;max-width:100%;padding-top:env(safe-area-inset-top);overflow:hidden;background:var(--dsw-alias-bg-layer-1,#f8fafc);box-shadow:none;will-change:width;transition:width 240ms cubic-bezier(.22,1,.36,1),box-shadow 240ms ease}
 .dshm-drawer[data-open=true]{width:min(88vw,340px);box-shadow:18px 0 46px rgb(15 23 42 / 18%)}
@@ -647,7 +652,14 @@ function MobileAppFrame(props: MobileRootProps & {
     state.rightbarFullscreen,
   )
   const rightbarDocked = state.detailsOpen && rightbar.docked
-  const rightbarFullWidth = state.detailsOpen && !rightbarDocked && !wideViewport
+  // DSH reports a fullscreen panel through the layout service; the overlay has
+  // to hand over the whole viewport instead of its docked track (see the
+  // `data-rightbar-fullscreen` rule). Phones derive fullscreen from their
+  // width, so the flag is already set there.
+  const rightbarFullscreen = state.detailsOpen && state.rightbarFullscreen
+  // The panel owns the viewport on phones (no column fits) and in fullscreen on
+  // a wider screen, so the conversation behind it is inert and needs no scrim.
+  const rightbarFullWidth = state.detailsOpen && !rightbarDocked && (!wideViewport || rightbarFullscreen)
   const [documentLanguage, setDocumentLanguage] = useState(document.documentElement.lang)
   const browserLanguages = navigator.languages.length > 0 ? navigator.languages : [navigator.language]
   const language = resolveMobileLayoutLanguage(documentLanguage, browserLanguages)
@@ -787,6 +799,7 @@ function MobileAppFrame(props: MobileRootProps & {
   return createElement('div', {
     className: 'dshm-shell', lang: language,
     'data-rightbar-docked': rightbarDocked,
+    'data-rightbar-fullscreen': rightbarFullscreen,
     style: { '--dshm-rightbar-width': `${rightbar.width}px` },
   },
     createElement('main', {
