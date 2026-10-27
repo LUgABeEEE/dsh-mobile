@@ -1,15 +1,15 @@
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { Context, Service } from '@deepseek-ai/cordis'
-import { applyEntryPatches, entryListSchema, type PatchOptions } from '@deepseek-ai/cordis-plugin-include'
+import { applyEntryPatches, type PatchOptions } from '@deepseek-ai/cordis-plugin-include'
 import { Loader, type EntryOptions } from '@deepseek-ai/cordis-plugin-loader'
-import * as yaml from 'js-yaml'
 import { describe, expect, it, vi } from 'vitest'
+import { loadEntryList } from './helpers/entry-list-yaml.js'
 
 const auto = '@deepseek-ai/dsh-host-directory-picker-auto'
 const nativeHost = '@deepseek-ai/dsh-host-directory-picker-native'
 const nativeSurface = '@deepseek-ai/dsh-client-ui-directory-picker-native'
-const patches = yaml.load(readFileSync(resolve(import.meta.dirname, '..', 'cordis.patch.yml'), 'utf8'), { schema: entryListSchema }) as PatchOptions[]
+const patches = loadEntryList(readFileSync(resolve(import.meta.dirname, '..', 'cordis.patch.yml'), 'utf8')) as PatchOptions[]
 const legacyNative: PatchOptions[] = [
   { id: 'directory-picker', disabled: true },
   { insert: [{ id: 'user-native-host', name: nativeHost }, { id: 'user-native-surface', name: nativeSurface }] },
