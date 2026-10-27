@@ -1111,6 +1111,137 @@ describe('push delivery coordination', () => {
     await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1), { interval: 1 })
     expect(store.inspect().pending).toHaveLength(0)
   })
+
+  it('accounts an admission-cancelled send as a bounded retry with backoff when the later guard allows', async () => {
+    vi.useFakeTimers()
+    const { registry, store } = await makeRegistry()
+    let sendCalls = 0
+    const sender = senderDouble(async () => {
+      sendCalls += 1
+      return sendCalls >= 4 ? { kind: 'accepted' as const } : { kind: 'cancelled' as const }
+    })
+    const delivery = new PushDelivery({ host: hostDouble(), registry, sender })
+    opened.push(() => delivery.close())
+    delivery.attachOrigin({ scopeId: 'scope-a', origin: 'https://mobile.example.test', authorizedDevices: async () => [{ id: 'device-a', expiresAt: Date.now() + 60_000 }] })
+    await delivery.start()
+
+    delivery.observe(source('cancelled-admission', { expiresAt: Date.now() + 30_000 }))
+    await vi.waitFor(() => expect(store.inspect().pending[0]?.attempts).toBe(1), { interval: 1 })
+    expect(sendCalls).toBe(1)
+    vi.advanceTimersByTime(999)
+    expect(sendCalls).toBe(1)
+    vi.advanceTimersByTime(1)
+    await vi.waitFor(() => expect(store.inspect().pending[0]?.attempts).toBe(2), { interval: 1 })
+    expect(sendCalls).toBe(2)
+    vi.advanceTimersByTime(4_999)
+    expect(sendCalls).toBe(2)
+    vi.advanceTimersByTime(1)
+    // Third cancelled admission reaches MAX_ATTEMPTS and drops the intent without receipts.
+    await vi.waitFor(() => expect(store.inspect().pending).toHaveLength(0), { interval: 1 })
+    expect(sendCalls).toBe(3)
+    expect(store.inspect().receipts).toHaveLength(0)
+    vi.advanceTimersByTimeAsync(30_000)
+    expect(sendCalls).toBe(3)
+  })
+
+  it('drops an intent on denied cancellation and only defers unverifiable cancellation within its TTL', async () => {
+    vi.useFakeTimers()
+    const { registry, store, registrations } = await makeRegistry()
+    let reconcileCalls = 0
+    let denyLater = false
+    const host = hostDouble({
+      eligible: async () => true,
+      reconcile: async () => {
+        reconcileCalls += 1
+        if (reconcileCalls >= 2) {
+          if (denyLater) return 'stale'
+          throw new Error('transient host failure')
+        }
+        return 'eligible'
+      },
+    })
+    const send = vi.fn(async () => ({ kind: 'cancelled' as const }))
+    const delivery = new PushDelivery({ host, registry, sender: senderDouble(send) })
+    opened.push(() => delivery.close())
+    delivery.attachOrigin({ scopeId: 'scope-a', origin: 'https://mobile.example.test', authorizedDevices: async () => [{ id: 'device-a', expiresAt: Date.now() + 120_000 }] })
+    await delivery.start()
+
+    // Denied cancellation removes the intent immediately with exactly one provider call.
+    denyLater = true
+    delivery.observe(source('denied-cancel'))
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1), { interval: 1 })
+    await vi.waitFor(() => expect(store.inspect().pending).toHaveLength(0), { interval: 1 })
+
+    // Unverifiable cancellation keeps the intent for the bounded recheck and never resends without proof.
+    denyLater = false
+    reconcileCalls = 0
+    send.mockClear()
+    delivery.observe(source('unverifiable-cancel'))
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1), { interval: 1 })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(store.inspect().pending).toHaveLength(1)
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(send).toHaveBeenCalledTimes(1)
+    expect(store.inspect().pending).toHaveLength(1)
+    // Past original expiry the next 30-second maintenance removes the deferred intent; nothing ever resends.
+    await vi.advanceTimersByTimeAsync(65_000)
+    expect(send).toHaveBeenCalledTimes(1)
+    expect(store.inspect().pending).toHaveLength(0)
+    expect(registrations[0]?.deviceId).toBe('device-a')
+  })
+
+  it.each([
+    ['gone' as const],
+    ['suspended' as const],
+  ])('settles a Test %s result against the captured registration before failing', async (outcome) => {
+    const { registry, registrations } = await makeRegistry()
+    const delivery = new PushDelivery({ host: hostDouble(), registry, sender: senderDouble(async () => ({ kind: outcome })) })
+    opened.push(() => delivery.close())
+    delivery.attachOrigin({ scopeId: 'scope-a', origin: 'https://mobile.example.test', authorizedDevices: async () => [{ id: 'device-a', expiresAt: Date.now() + 60_000 }] })
+    await delivery.start()
+    const key = { scopeId: registrations[0]!.scopeId, deviceId: registrations[0]!.deviceId, origin: registrations[0]!.origin, installationId: registrations[0]!.installationId }
+    await expect(delivery.test(key)).rejects.toThrow('push_test_unavailable')
+    if (outcome === 'gone') {
+      expect(registry.snapshot().registrations).toHaveLength(0)
+    } else {
+      expect(registry.snapshot().registrations).toMatchObject([{ health: 'suspended', generation: registrations[0]!.generation + 1 }])
+    }
+  })
+
+  it('never lets a late Test gone result settle a newer registration generation', async () => {
+    const { registry, registrations } = await makeRegistry()
+    const held = deferred<{ kind: 'gone' }>()
+    let testSendEntered = false
+    const delivery = new PushDelivery({
+      host: hostDouble(), registry,
+      sender: senderDouble(async input => {
+        if (JSON.parse(input.payload as string).notification?.navigate === '/') {
+          testSendEntered = true
+          await held.promise
+        }
+        return { kind: 'accepted' as const }
+      }),
+    })
+    opened.push(() => delivery.close())
+    delivery.attachOrigin({ scopeId: 'scope-a', origin: 'https://mobile.example.test', authorizedDevices: async () => [{ id: 'device-a', expiresAt: Date.now() + 60_000 }] })
+    await delivery.start()
+    const key = { scopeId: registrations[0]!.scopeId, deviceId: registrations[0]!.deviceId, origin: registrations[0]!.origin, installationId: registrations[0]!.installationId }
+    const testPromise = delivery.test(key)
+    await vi.waitFor(() => expect(testSendEntered).toBe(true))
+    // Replace the enrollment while the Test result is in flight; the newer generation must stay untouched.
+    const fields = owner('device-a')
+    const config = await registry.config(fields, 'install-device-a')
+    await registry.upsert(fields, {
+      installationId: 'install-device-a',
+      subscription: { endpoint: 'https://web.push.apple.com/topic/device-a-replaced', keys: makeSubscriptionKeys() },
+      locale: 'en', preferences, keyFingerprint: registrations[0]!.keyFingerprint,
+      ownerGeneration: config.ownerGeneration, registrationGeneration: config.registrationGeneration,
+    })
+    held.resolve({ kind: 'gone' })
+    await expect(testPromise).rejects.toThrow('push_test_unavailable')
+    expect(registry.snapshot().registrations).toMatchObject([{ health: 'ready' }])
+    expect(registry.snapshot().registrations).toHaveLength(1)
+  })
 })
 
 // Compile-time anchor: persistent authorization is distinct from an expiring Session.

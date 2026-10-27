@@ -416,6 +416,8 @@ export class PushDelivery {
       const current = await this.#guard(intent, origin)
       if (current === 'denied') await this.#removeIntent(intent)
       else if (current === 'unverifiable') this.#defer(intent)
+      // Still-allowed cancellation is an admission-budget miss, not new permission: bounded retry accounting applies.
+      else await this.#settleIntent(intent, { kind: 'retry' })
       return
     }
     const current = await this.#guard(intent, origin)
@@ -456,6 +458,10 @@ export class PushDelivery {
       result = { kind: 'retry' }
     } finally {
       this.#inFlight.delete(workId)
+    }
+    // A dead or suspended provider subscription settles only the captured generation before failure reporting.
+    if (!this.#closed && (result.kind === 'gone' || result.kind === 'suspended')) {
+      try { await this.#registry.settleRecipient(work.key, registration.generation, result.kind) } catch { /* Settlement failure still rejects the Test. */ }
     }
     const finalGuard = result.kind === 'accepted' && !this.#closed
       ? await this.#guardKey(work.key, fakeSource, origin, false, registration.generation)
