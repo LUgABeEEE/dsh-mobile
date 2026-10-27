@@ -2,6 +2,11 @@
 
 Notable changes are recorded here. GitHub Releases provide the downloadable packages and generated commit notes.
 
+## Unreleased
+
+- Keep the shell chrome opaque under translucent skins. The navigation drawer, the right detail panel and the panel return bar composite their theme token over the CSS `Canvas` system colour, so a skin that makes those tokens translucent — or leaves them unresolvable — no longer lets conversation text show through the sidebar labels. Thanks @LUgABeEEE for [#286](https://github.com/saya-ch/dsh-mobile/pull/286).
+- Publish one stacking-band table and keep the navigation drawer below third-party overlay portals. A community plugin that portals a menu into `document.body` at `z-index:60` was covered by the open drawer at `z-index:70`, so the tap appeared to do nothing. The drawer, its inner root and the collapsed-rail toggle now sit in a band below plugin overlays; the detail panel, the slot overlay and DSH's own settings layers stay above them. The bands live in `src/mobile-layers.ts`, reach both stylesheets as CSS custom properties, and are asserted at module load. The [mobile adaptation guide](docs/MOBILE_PLUGIN_ADAPTATION.en.md#which-layer-a-plugin-drawn-overlay-belongs-on) documents the table for plugin authors. Thanks @eeeggplant for [#288](https://github.com/saya-ch/dsh-mobile/issues/288).
+
 ## 0.6.18 - 2026-10-26
 
 - Preserve DSH's adaptive directory-picker composition. The dedicated Mobile page reuses an available upstream browse picker, including its **New folder** action; a host using the system chooser keeps that chooser on Desktop and gets a separate web directory flow on the remote page. Thanks @OranImp for [#271](https://github.com/saya-ch/dsh-mobile/issues/271).

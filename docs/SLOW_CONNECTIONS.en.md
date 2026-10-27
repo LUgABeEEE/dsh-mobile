@@ -108,6 +108,23 @@ These optional fields sit alongside `paths`; their defaults normally suffice:
 
 Restart DSH and reopen the phone page after a change. Developer tools can show whether the WebSocket handshake negotiated `permessage-deflate`; a client that does not negotiate it can still connect without compression. Compare actual channel transfer volume and CPU use for the same Session, rather than judging savings from the decompressed message lengths shown in developer tools. Set `paths` back to `[]` to disable it. Compression does not raise provider quotas or replace connection troubleshooting.
 
+### When it is worth enabling
+
+Measured on the real gateway with a real `ws` client, changing only the compression switch:
+
+| Frame size | Wire bytes (off → on) | Saving |
+| ---: | --- | ---: |
+| 128–1023 B | 132 → 132, 1027 → 1027 | 0% |
+| 1024 B | 1028 → 182 | 82% |
+| 8 KiB | 8196 → 249 | 97% |
+| 64 KiB | 65546 → 692 | 99% |
+
+The `thresholdBytes` boundary is exact: a 1023-byte frame is not compressed and a 1024-byte frame is. **Frames below 1 KiB gain nothing at all**, and most control frames on a live channel are small.
+
+The gain only matters on constrained bandwidth. Shaped to 1 Mbps, a 128 KiB frame went from about 1022 ms to about 16 ms; at 256 kbps a 64 KiB frame went from about 2054 ms to about 23 ms. On a link with no bandwidth bottleneck compression only adds cost: on loopback each frame costs 0.04–0.14 ms extra, incompressible 64 KiB random data costs up to about 1.1 ms more and actually grows by 22 bytes of frame header.
+
+So it is worth enabling over a relay, cellular or metered link, and close to pointless on a fast direct LAN connection. The default remains off in this round.
+
 ## Static-resource caching and repeated downloads
 
 Owned static resources (`/mobile-access/compat.js`, `mobile-layout.js` and custom CSS/JS) use quoted content ETags and `Cache-Control: private, no-cache`. A browser may store the body but must revalidate before reuse. The gateway checks device authorization and the current resource before processing conditional GET/HEAD requests: unchanged content receives `304`, while a file edit returns the new body. Actual cache reuse still depends on browser behavior.
