@@ -193,7 +193,7 @@ dsh plugin --profile web add dshmarket
 <details>
 <summary>远程通知、服务器运维与安全限制</summary>
 
-> **远程通知说明**：Android 任务提醒保留原有页面／SSE 路径，须在 App 内 DSH **设置 → 通用设置** 中开启，并保持 WebView 存活。尚未发布的 [iPhone/iPad Declarative Web Push 候选](<docs/WEB_PUSH.md>) 是独立的明确启用功能，仅面向受信任 HTTPS 下具备能力的 iOS/iPadOS **Safari** 主屏幕 App，不提供 Service Worker 降级。用户已在一台 iPhone 上确认收到一条测试通知；分类投递、锁定／全部关闭状态、主屏幕升级、私有 Origin／VPN 投递及冷热启动点击验收仍待完成，因此不是保证送达的后台警报。主机端推送密钥重置作用于整个注册表：之后旧的浏览器订阅可能让普通重新启用失败，需明确修复；已独立配置的 dsh-ping 等服务端通道保持不变。
+> **远程通知说明**：Android 任务提醒保留原有页面／SSE 路径，须在 App 内 DSH **设置 → 通用设置** 中开启，并保持 WebView 存活。尚未发布的 [iPhone/iPad Declarative Web Push 候选](<docs/WEB_PUSH.md>) 是独立的明确启用功能，仅面向受信任 HTTPS 下具备能力的 iOS/iPadOS **Safari** 主屏幕 App，不提供 Service Worker 降级。作者在开发期间于 iPhone 17 Pro Max（iOS 27.0.1）上完整执行过验收矩阵（回溯性观察，未保留逐次构建来源）；iPad、其他设备／系统组合与最终提交复查仍待完成，因此不是保证送达的后台警报。主机端推送密钥重置作用于整个注册表：之后旧的浏览器订阅可能让普通重新启用失败，需明确修复；已独立配置的 dsh-ping 等服务端通道保持不变。
 
 Funnel 的运行组件把公开监听生命周期绑定到父进程和受限控制通道；父进程退出、控制通道关闭或显式停止时会结束当前代次并清理资源。中国大陆 VPS 上的未备案域名可能被云厂商拦截，此时可使用公网 IPv4 模式。插件会校验按需下载的固定版本组件；本机托管的配置与程序保存在 `$DSH_HOME/mobile-access/`，可在面板中清理。VPS 侧的文件须按自建连接指南单独清理。
 
