@@ -10,7 +10,7 @@
  * Failed writes/renames preserve the previously published document, remove only the
  * exact owned candidate and propagate the original error.
  */
-export function atomicJsonPublisher({ mkdir, writeFile, rename, rm, dirname, randomUUID }) {
+export function atomicJsonPublisher({ mkdir, writeFile, rename, rm, dirname, randomUUID, delay = ms => new Promise(resolve => setTimeout(resolve, ms)) }) {
   return async function publishJsonFile(target, value, hold) {
     const payload = JSON.stringify(value) + '\n'
     const directory = dirname(target)
@@ -19,7 +19,18 @@ export function atomicJsonPublisher({ mkdir, writeFile, rename, rm, dirname, ran
     try {
       await writeFile(candidate, payload, { mode: 0o600 })
       if (hold !== undefined) await hold(candidate)
-      await rename(candidate, target)
+      // Windows cannot atomically replace a destination another handle holds open (a concurrent
+      // strict reader or scanner): retry the SAME complete candidate briefly. Atomicity and the
+      // strict reader's whole-document guarantee are unchanged; exhaustion re-raises the original error.
+      for (let attempt = 0; ; attempt++) {
+        try {
+          await rename(candidate, target)
+          break
+        } catch (error) {
+          if ((error?.code === 'EPERM' || error?.code === 'EBUSY') && attempt < 8) { await delay(attempt + 1); continue }
+          throw error
+        }
+      }
     } catch (error) {
       await rm(candidate, { force: true }).catch(() => {})
       throw error

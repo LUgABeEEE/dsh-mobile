@@ -14,6 +14,7 @@ type PublisherDeps = {
   rm: typeof rm
   dirname: typeof dirname
   randomUUID: typeof randomUUID
+  delay?: (ms: number) => Promise<void>
 }
 type PublisherHold = (candidate: string) => Promise<void> | void
 type Publisher = (target: string, value: unknown, hold?: PublisherHold) => Promise<void>
@@ -86,8 +87,43 @@ describe('push integration fixture JSON publication', () => {
     }
   })
 
-  it('publishes the first complete document into a directory that does not exist yet', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'dsh-mobile-fixture-first-'))
+  it('retries a Windows open-destination rename (EPERM/EBUSY) briefly, then propagates on exhaustion', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-mobile-fixture-retry-'))
+    try {
+      const target = join(root, 'push-contract-progress.json')
+      await writeFile(target, '{"previous":true}\n', 'utf8')
+      let renameCalls = 0
+      let delays = 0
+      const busyThenRealRename: typeof rename = async (from, to) => {
+        renameCalls += 1
+        if (renameCalls === 1) { const busy = new Error('destination held open by a concurrent reader') as NodeJS.ErrnoException; busy.code = 'EPERM'; throw busy }
+        return rename(from, to)
+      }
+      const publish = fixture.atomicJsonPublisher!({ mkdir, writeFile, rename: busyThenRealRename, rm, dirname, randomUUID, delay: async () => { delays += 1 } })
+      await publish(target, { phase: 'next', ok: true })
+      expect(renameCalls).toBe(2)
+      expect(delays).toBe(1)
+      expect(JSON.parse(await readFile(target, 'utf8'))).toEqual({ phase: 'next', ok: true })
+      // A permanently locked destination still fails loudly after the bounded retries, with no residue.
+      let lockedCalls = 0
+      const alwaysLocked: typeof rename = async () => {
+        lockedCalls += 1
+        const locked = new Error('locked') as NodeJS.ErrnoException
+        locked.code = 'EPERM'
+        throw locked
+      }
+      const failing = fixture.atomicJsonPublisher!({ mkdir, writeFile, rename: alwaysLocked, rm, dirname, randomUUID, delay: async () => undefined })
+      await expect(failing(target, { phase: 'never', ok: false })).rejects.toMatchObject({ code: 'EPERM' })
+      expect(lockedCalls).toBe(9)
+      const leftovers = (await readdir(root)).filter(name => name.endsWith('.candidate'))
+      expect(leftovers).toHaveLength(0)
+      expect(JSON.parse(await readFile(target, 'utf8'))).toEqual({ phase: 'next', ok: true })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('publishes the first complete document into a directory that does not exist yet', async () => {    const root = await mkdtemp(join(tmpdir(), 'dsh-mobile-fixture-first-'))
     try {
       const home = join(root, 'home')
       const target = join(home, 'push-integration-fixture-settlement.json')
