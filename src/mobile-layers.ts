@@ -25,16 +25,24 @@
  * so the internal order has to hold there too.
  */
 
-/** Bands reserved for the mobile shell itself. Values are z-index numbers. */
+/**
+ * Bands reserved for the mobile shell itself. Values are z-index numbers.
+ *
+ * These are the pre-existing values, kept deliberately: the shell's isolation is
+ * what makes a body portal win, not a smaller drawer number. Restoring 70 also
+ * keeps the portal negative control meaningful — with isolation removed, the
+ * drawer must once again cover a `z-index:60` portal, which only happens while
+ * the drawer is above it.
+ */
 export const MOBILE_SHELL_LAYERS = Object.freeze({
   /** Dimming layer behind the narrow overlay drawer and the detail panel. */
-  scrim: 40,
+  scrim: 65,
   /** Persistent navigation drawer, both the narrow overlay and the wide column. */
-  drawer: 50,
+  drawer: 70,
   /** The drawer's inner positioning root; orders nodes inside the drawer only. */
-  drawerRoot: 51,
+  drawerRoot: 71,
   /** Collapsed-rail toggle, which escapes the zero-width drawer. */
-  drawerToggle: 54,
+  drawerToggle: 74,
   /** The right detail panel: a shell-owned modal surface. */
   details: 80,
   /** Shell overlay container: transparent and click-through. */

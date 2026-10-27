@@ -140,10 +140,10 @@ affect a body portal:
 
 | Shell-internal layer | Current value | Purpose |
 |---|---:|---|
-| `.dshm-scrim` | 40 | Dimming behind the drawer and the right panel |
-| `.dshm-drawer` | 50 | Narrow drawer / wide persistent column |
-| Drawer positioning root | 51 | Orders nodes inside the drawer only |
-| Collapsed-rail toggle | 54 | Escapes the zero-width drawer |
+| `.dshm-scrim` | 65 | Dimming behind the drawer and the right panel |
+| `.dshm-drawer` | 70 | Narrow drawer / wide persistent column |
+| Drawer positioning root | 71 | Orders nodes inside the drawer only |
+| Collapsed-rail toggle | 74 | Escapes the zero-width drawer |
 | `.dshm-details` | 80 | Right detail panel |
 | `.dshm-overlay` | 90 | Host-provided plugin overlay slot |
 | Toast notices | 330 | Transient notices |
