@@ -197,6 +197,9 @@ describe('mobile push browser controller', () => {
     expect(MOBILE_PUSH_SETTINGS_COPY.en.test).toBe('Send test')
     expect(MOBILE_PUSH_SETTINGS_COPY.zh.test).toBe('发送测试')
     expect(MOBILE_PUSH_SETTINGS_COPY.it.test).toBe('Invia test')
+    expect(MOBILE_PUSH_SETTINGS_COPY.en.testBusy).toBe('Sending…')
+    expect(MOBILE_PUSH_SETTINGS_COPY.zh.testBusy).toBe('发送中…')
+    expect(MOBILE_PUSH_SETTINGS_COPY.it.testBusy).toBe('Invio…')
   })
   it('passes its generated installation id to the public config adapter', async () => {
     const { controller, api } = setup()
@@ -701,6 +704,79 @@ describe('mobile push browser controller', () => {
     await testPromise
     await flush()
     expect(controller.getSnapshot().state).toBe('disabled')
+  })
+
+  it('guards duplicate Send-test taps with a visible in-flight state', async () => {
+    const gate = deferred<void>()
+    const { controller, api } = await reachEnabled({ sendTest: vi.fn(async () => { await gate.promise }) })
+    const first = controller.sendTest()
+    await flush()
+    expect(api.sendTest).toHaveBeenCalledTimes(1)
+    expect(controller.getSnapshot().testInFlight).toBe(true)
+    // An unrelated mid-flight publish (a config refresh) still reports the live flag.
+    await controller.refresh()
+    await flush()
+    expect(controller.getSnapshot().testInFlight).toBe(true)
+    void controller.sendTest()
+    await flush()
+    expect(api.sendTest).toHaveBeenCalledTimes(1)
+    gate.resolve()
+    await first
+    await flush()
+    expect(controller.getSnapshot().testInFlight).toBe(false)
+  })
+
+  it('clears the in-flight Test flag when Disable supersedes it, without overwriting Disable state', async () => {
+    const gate = deferred<void>()
+    let status: PushConfig['status'] = 'enabled'
+    const { controller } = await reachEnabled({
+      getConfig: vi.fn(async () => ({ ...config, status, installationId: validStoredId })),
+      sendTest: vi.fn(async () => { await gate.promise }),
+      disable: vi.fn(async () => { status = 'disabled' }),
+    })
+    const testPromise = controller.sendTest()
+    await flush()
+    expect(controller.getSnapshot().testInFlight).toBe(true)
+    await controller.disable()
+    gate.resolve()
+    await testPromise
+    await flush()
+    expect(controller.getSnapshot().state).toBe('disabled')
+    expect(controller.getSnapshot().testInFlight).toBe(false)
+  })
+
+  it('clears the in-flight Test flag on stop()', async () => {
+    const gate = deferred<void>()
+    const { controller } = await reachEnabled({ sendTest: vi.fn(async () => { await gate.promise }) })
+    const testPromise = controller.sendTest()
+    await flush()
+    expect(controller.getSnapshot().testInFlight).toBe(true)
+    controller.stop()
+    gate.resolve()
+    await testPromise
+    await flush()
+    expect(controller.getSnapshot().testInFlight).toBe(false)
+  })
+
+  it('disables only the Send-test button while a Test is in flight', () => {
+    const copy = MOBILE_PUSH_SETTINGS_COPY.en
+    const snapshot = { state: 'enabled' as const, preferences, testInFlight: true }
+    const controller = { subscribe: () => () => undefined, getSnapshot: () => snapshot, enableFromGesture: vi.fn(), disable: vi.fn(), updatePreferences: vi.fn(), sendTest: vi.fn(), start: vi.fn(), stop: vi.fn(), refresh: vi.fn() }
+    const row = MobilePushSettings({ controller, locale: 'en' }) as unknown as { props: { children: unknown } }
+    const visit = (value: unknown): Array<{ type: unknown; props?: Record<string, unknown> }> => {
+      if (Array.isArray(value)) return value.flatMap(visit)
+      if (typeof value !== 'object' || value === null || !('type' in value)) return []
+      const element = value as { type: unknown; props?: Record<string, unknown> }
+      return [element, ...visit(element.props?.children)]
+    }
+    const buttons = visit(row).filter(element => element.type === 'button')
+    const testButton = buttons.find(element => element.props?.children === copy.testBusy)
+    const disableButton = buttons.find(element => element.props?.children === copy.disable)
+    expect(testButton).toBeDefined()
+    expect(testButton?.props?.disabled).toBe(true)
+    expect(testButton?.props?.['aria-busy']).toBe('true')
+    expect(disableButton).toBeDefined()
+    expect(disableButton?.props?.disabled).not.toBe(true)
   })
 
   it.each(['en', 'zh', 'it'] as const)('renders the distinct %s conflict and Test-failure messages', locale => {
