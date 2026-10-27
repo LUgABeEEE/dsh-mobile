@@ -1,14 +1,8 @@
 /** Managed view of the iroh transport host sidecar.
  *
- * Unlike the tunnel components, the sidecar started life inside the
- * independent `dsh-mobile-iroh` companion: this plugin first only located and
- * checksum-verified that companion copy. The companion repository is
- * experimental and will be removed, so this manager now owns distribution
- * itself: on explicit install it downloads a pinned sidecar release, verifies
- * size and SHA-256, and promotes it into the plugin private directory,
- * mirroring the Caddy component. An installed companion with a verified copy
- * is still reused without downloading, so existing alpha setups keep working
- * through the transition.
+ * Explicit installation verifies and promotes a pinned sidecar release into
+ * private storage. A verified independent companion copy can be reused without
+ * downloading. Enabling the channel alone never downloads a component.
  */
 import { createHash } from 'node:crypto'
 import { chmod, lstat, mkdtemp, readFile, rename, writeFile } from 'node:fs/promises'

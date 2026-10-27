@@ -92,6 +92,57 @@ async function fixtureDir(): Promise<string> {
 }
 
 describe('iroh controller', () => {
+  it('keeps concurrent close calls pending during an admitted startup', async () => {
+    let releaseIdentity!: (id: string) => void
+    let enteredIdentity!: () => void
+    const entered = new Promise<void>(resolve => { enteredIdentity = resolve })
+    const identity = new Promise<string>(resolve => { releaseIdentity = resolve })
+    const createGateway = vi.fn(async () => fakeGateway() as never)
+    const controller = new IrohController({
+      store: fakeStore(true), component: fakeComponent(), dataDirectory: await fixtureDir(),
+      createGateway, resolveIdentity: () => { enteredIdentity(); return identity },
+    })
+    const initializing = controller.initialize()
+    await entered
+    let closed = 0
+    const first = controller.close().then(() => { closed++ })
+    const second = controller.close().then(() => { closed++ })
+    await Promise.resolve()
+    expect(closed).toBe(0)
+    releaseIdentity(ENDPOINT)
+    await Promise.all([initializing, first, second])
+    expect(closed).toBe(2)
+    expect(createGateway).not.toHaveBeenCalled()
+  })
+
+  it('retains a child after failed termination so close can retry', async () => {
+    const child = new FakeChild()
+    let refuseStop = true
+    const ordinaryKill = child.kill.bind(child)
+    child.kill = () => {
+      if (refuseStop) throw new Error('controlled stop failure')
+      return ordinaryKill()
+    }
+    const gateway = fakeGateway()
+    const controller = new IrohController({
+      store: fakeStore(false), component: fakeComponent(), dataDirectory: await fixtureDir(),
+      createGateway: async () => gateway as never, resolveIdentity: async () => ENDPOINT,
+      launchSidecar: (() => {
+        queueMicrotask(() => child.stdout.emit('data', Buffer.from(`${JSON.stringify({ version: 1, type: 'ready', endpoint_id: ENDPOINT, direct_addresses: [], local_only: false })}\n`)))
+        return child
+      }) as never,
+    })
+    await controller.initialize()
+    await controller.setEnabled(true)
+    await expect(controller.close()).rejects.toThrow('controlled stop failure')
+    expect(child.exitCode).toBeNull()
+    expect(gateway.close).toHaveBeenCalledTimes(1)
+    refuseStop = false
+    await controller.close()
+    expect(child.exitCode).toBe(0)
+    expect(gateway.close).toHaveBeenCalledTimes(1)
+  })
+
   it('stays off without spawning anything', async () => {
     const store = fakeStore(false)
     const launched: unknown[] = []

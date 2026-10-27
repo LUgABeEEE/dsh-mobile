@@ -6,7 +6,7 @@
  * between a failure report and the probe's actual exit. A fake EventEmitter
  * can be told to close on cue; only a real process proves the parent waited.
  */
-import { spawn } from 'node:child_process'
+import { ChildProcess, spawn } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import { access, mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -62,6 +62,23 @@ function alive(pid: number): boolean {
 }
 
 describe('iroh identity probe lifecycle', () => {
+  it('reports a failed termination instead of claiming a stopped probe', async () => {
+    const root = await ownedRoot()
+    const child = new ChildProcess()
+    const stdout = new EventEmitter()
+    Object.defineProperty(child, 'stdout', { value: stdout })
+    child.kill = () => { throw new Error('controlled termination failure') }
+    const outcome = defaultResolveIdentity('sidecar', root, {
+      launch: () => child as never,
+      timeoutMs: 5_000,
+    }).catch((error: unknown) => error)
+    stdout.emit('data', Buffer.alloc(129))
+    const failure = await outcome
+    child.emit('close', 0, null)
+    expect(failure).toBeInstanceOf(AggregateError)
+    expect((failure as AggregateError).message).toBe('iroh_identity_cleanup_failed')
+  })
+
   it('returns the verified endpoint id of a successful probe', async () => {
     const root = await ownedRoot()
     const marker = join(root, 'pid')

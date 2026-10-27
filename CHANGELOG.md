@@ -2,11 +2,16 @@
 
 Notable changes are recorded here. GitHub Releases provide the downloadable packages and generated commit notes.
 
-## 0.6.18 - 2026-10-26
+## Unreleased
 
 - Distribute the iroh sidecar from this plugin. **Install official component** downloads the pinned `dsh-mobile-iroh 0.1.0-alpha.1` release per platform, verifies byte length and SHA-256, and promotes it into the plugin private directory with backup and rollback; a verified companion copy is reused without downloading during the transition, and switching the channel on alone never downloads. The panel names the download size, reports verification progress, and identifies the exact missing/invalid/offline failure instead of a generic not-ready message.
 - Add the experimental iroh remote provider with its own endpoint-pinned gateway TLS identity (stable CA, 90-day DNS leaf with 30-day renewal headroom, no silent regeneration) and a five-minute one-time pairing window that binds the sidecar code to a one-time gateway token, redeemable through the ordinary pair endpoint over the iroh transport. Drain buffered sidecar startup events before minting, so a stale code is never offered.
 - Vendor the iroh transport host Rust source (`native/iroh-host`, shared core `native/iroh-core`, MIT with preserved dsh-tether attribution) with per-platform build lanes for the host and both Android ABIs.
+- Add iroh to the Android development candidate through a JNI-backed HTTPS CONNECT transport, pairing parsing, connection/status controllers and optional pairing-record fields. Native-enabled builds currently include arm64-v8a and x86_64 only; the existing published APK is unchanged. Thanks @qzyqmzn for [#284](https://github.com/saya-ch/dsh-mobile/pull/284), based on the independent dsh-mobile-iroh experiment.
+
+- Retain iroh probe and sidecar ownership until cleanup succeeds; concurrent shutdown waits for admitted startup, and failed termination remains visible and retryable.
+
+## 0.6.18 - 2026-10-26
 
 - Preserve DSH's adaptive directory-picker composition. The dedicated Mobile page reuses an available upstream browse picker, including its **New folder** action; a host using the system chooser keeps that chooser on Desktop and gets a separate web directory flow on the remote page. Thanks @OranImp for [#271](https://github.com/saya-ch/dsh-mobile/issues/271).
 - Add **New folder** to the Mobile-owned directory flow. Create one child under a confirmed existing directory, report duplicate names and permission errors, and enter the new directory on success. Reject drive-relative and invalid names, fence cancelled results, prevent duplicate submissions and retain cancellation while admitted work settles. Escape and Back first close the creation step; writes are never automatically replayed.
@@ -17,8 +22,6 @@ Notable changes are recorded here. GitHub Releases provide the downloadable pack
 - Add a bilingual [mobile adaptation guide for plugin authors](docs/MOBILE_PLUGIN_ADAPTATION.en.md), covering container layout, touch targets, keyboard/focus, safe areas and measured browser acceptance. Thanks @LUgABeEEE for [#280](https://github.com/saya-ch/dsh-mobile/pull/280).
 
 ## Android 0.6.8 - 2026-10-26
-
-- Ship the iroh transport in every build instead of behind an opt-in `-PirohNative=true` flag, so one App covers local network, remote and iroh. Adds the JNI-backed HTTPS CONNECT transport, pairing descriptor parsing, connection controller, status monitor and versioned optional pairing records. The toolchain-free CI lane opts out explicitly and the release lane builds and verifies both ABIs.
 
 - Let the existing overall connection deadline govern the first page download, instead of interrupting it with the shorter page timer and automatically restarting the download after renewal. A real first-load failure retains explicit manual retry; already running pages retain their recovery behavior. Existing TLS verification, cancellation and renderer-crash handling remain. Thanks @LUgABeEEE for [#275](https://github.com/saya-ch/dsh-mobile/issues/275).
 - App 0.6.8/build 84 is released independently of plugin 0.6.18, retaining the established package identity and signer. Existing pairings remain in place when upgrading the officially signed App.

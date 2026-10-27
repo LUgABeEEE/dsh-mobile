@@ -10,7 +10,7 @@
  * `ready` therefore means the sidecar is connected and the gateway serves
  * its loopback socket.
  */
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { mkdir, readFile } from 'node:fs/promises'
 import { restrictPrivateDirectory } from './private-file.js'
 import type { MobileAccessControlState, MobileAccessControlStore } from './control.js'
@@ -70,36 +70,34 @@ function publicStatus(status: IrohStatus): IrohStatus {
 /**
  * Resolve the persistent endpoint identity from the sidecar.
  *
- * The probe owns a real child process, so every failure path must settle only
- * after that process is gone: reporting a timeout while the probe is still
- * running lets a later start observe a half-owned data directory, and two
- * overlapping probes can race on the same identity files. Each rejection is
- * therefore sequenced behind an actual close (or a proven termination).
+ * Failed termination is reported separately; the controller retains the child
+ * until close so shutdown/reconnect can retry cleanup before starting a successor.
  * @param executable - verified sidecar path.
  * @param dataDir - private directory owning the endpoint identity.
- * @param options - test seams for the launcher and deadline; production callers omit both.
+ * @param options - child ownership callback and optional launcher/deadline overrides.
+ * @returns the validated endpoint identity after the probe closes.
  */
 export async function defaultResolveIdentity(executable: string, dataDir: string, options: {
   readonly launch?: (executable: string, args: readonly string[]) => ChildProcessWithoutNullStreams
   readonly timeoutMs?: number
+  readonly onSpawn?: (child: ChildProcess) => void
 } = {}): Promise<string> {
   const args = ['--lang', 'en', 'id', '--data-dir', dataDir]
   const child = options.launch === undefined
     ? spawn(executable, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
     : options.launch(executable, args)
+  options.onSpawn?.(child)
   let output = Buffer.alloc(0)
   let settled = false
-  // Resolve only once the probe process is gone. terminateRemoteProcess waits
-  // for the real close event (SIGTERM, then SIGKILL) instead of assuming that
-  // kill() returned means the child exited.
-  const stopProbe = async (): Promise<void> => { await terminateRemoteProcess(child).catch(() => {}) }
   const result = await new Promise<string>((resolve, reject) => {
     const fail = (code: string): void => {
       if (settled) return
       settled = true
       clearTimeout(deadline)
-      // Keep the failure reason, but publish it only after the process exits.
-      void stopProbe().then(() => { reject(new Error(code)) })
+      void terminateRemoteProcess(child).then(
+        () => { reject(new Error(code)) },
+        () => { reject(new AggregateError([new Error(code), new Error('iroh_probe_stop_failed')], 'iroh_identity_cleanup_failed')) },
+      )
     }
     const deadline = setTimeout(() => { fail('iroh_identity_timeout') }, options.timeoutMs ?? IDENTITY_TIMEOUT_MS)
     deadline.unref?.()
@@ -112,11 +110,7 @@ export async function defaultResolveIdentity(executable: string, dataDir: string
     // a full pipe cannot block the child's exit.
     child.stderr?.resume()
     child.once('error', () => {
-      if (settled) return
-      settled = true
-      clearTimeout(deadline)
-      // A spawn failure means no process was created, so there is nothing to await.
-      reject(new Error('iroh_identity_failed'))
+      fail('iroh_identity_failed')
     })
     child.once('close', code => {
       clearTimeout(deadline)
@@ -140,6 +134,8 @@ export class IrohController implements RemoteProviderController {
   private latest: IrohStatus = publicStatus({ enabled: false, state: 'off' })
   private gatewayValue: MobileAccessGateway | undefined
   private child: ChildProcessWithoutNullStreams | undefined
+  private identityChild: ChildProcess | undefined
+  private closeTask: Promise<void> | undefined
   private endpointId: string | undefined
 
   constructor(private readonly options: IrohControllerOptions) {
@@ -148,11 +144,14 @@ export class IrohController implements RemoteProviderController {
   }
 
   async initialize(initialState?: MobileAccessControlState): Promise<void> {
-    const state = initialState ?? await this.options.store.load()
-    this.enabled = state.enabled
-    this.initialized = true
-    if (this.enabled) await this.start()
-    else this.publish({ enabled: false, state: 'off' })
+    await this.enqueue(async () => {
+      const state = initialState ?? await this.options.store.load()
+      if (this.disposed) return
+      this.enabled = state.enabled
+      this.initialized = true
+      if (this.enabled) await this.start()
+      else this.publish({ enabled: false, state: 'off' })
+    })
   }
 
   /** Return the active iroh-backed DSH gateway. */
@@ -168,7 +167,9 @@ export class IrohController implements RemoteProviderController {
   async setEnabled(enabled: boolean): Promise<IrohStatus> {
     if (!this.initialized || this.disposed) throw new Error('iroh controller is unavailable')
     await this.enqueue(async () => {
-      if (this.enabled === enabled && (enabled === false || this.child !== undefined)) return
+      if (this.enabled === enabled && (enabled
+        ? this.latest.state === 'ready'
+        : this.child === undefined && this.identityChild === undefined && this.gatewayValue === undefined)) return
       await this.options.store.save({ version: 1, enabled })
       this.enabled = enabled
       if (!enabled) await this.stop()
@@ -270,13 +271,22 @@ export class IrohController implements RemoteProviderController {
 
   /** Stop all iroh resources without changing the remembered switch. */
   async close(): Promise<void> {
-    if (this.disposed) return
+    if (this.closeTask !== undefined) return this.closeTask
     this.disposed = true
-    await this.enqueue(() => this.stop())
+    this.generation += 1
+    const close = this.queue.then(() => this.stop(), () => this.stop())
+    this.closeTask = close
+    try { await close } catch (error) {
+      this.closeTask = undefined
+      throw error
+    }
   }
 
   private enqueue<T>(operation: () => Promise<T>): Promise<T> {
-    const task = this.queue.then(operation, operation)
+    const run = (): Promise<T> => this.disposed
+      ? Promise.reject(new Error('iroh controller is unavailable'))
+      : operation()
+    const task = this.queue.then(run, run)
     this.queue = task.then(() => undefined, () => undefined)
     return task
   }
@@ -288,9 +298,9 @@ export class IrohController implements RemoteProviderController {
 
   private async failGeneration(generation: number, errorCode: string, origin?: string): Promise<void> {
     if (generation !== this.generation) return
-    await this.stopResources()
-    if (generation !== this.generation) return
+    this.generation += 1
     this.publish({ enabled: this.enabled, state: 'error', ...(origin === undefined ? {} : { origin }), errorCode })
+    await this.stopResources()
   }
 
   private async stop(): Promise<void> {
@@ -300,21 +310,31 @@ export class IrohController implements RemoteProviderController {
 
   private async stopResources(): Promise<void> {
     const child = this.child
+    const identityChild = this.identityChild
     const gateway = this.gatewayValue
-    this.child = undefined
-    this.gatewayValue = undefined
     this.endpointId = undefined
     await settleRemoteResources([
       async () => {
-        if (child === undefined || child.exitCode !== null || child.signalCode !== null) return
+        if (child === undefined) return
         try { child.stdin.write(encodeIrohCommand({ version: 1, type: 'shutdown' })) } catch { /* fall through to terminate */ }
         await terminateRemoteProcess(child)
+        if (this.child === child) this.child = undefined
       },
-      async () => { await gateway?.close() },
+      async () => {
+        if (identityChild === undefined) return
+        await terminateRemoteProcess(identityChild)
+        if (this.identityChild === identityChild) this.identityChild = undefined
+      },
+      async () => {
+        await gateway?.close()
+        if (this.gatewayValue === gateway) this.gatewayValue = undefined
+      },
     ], 'iroh resource cleanup failed')
   }
 
   private async start(): Promise<void> {
+    await this.stopResources()
+    if (this.disposed || !this.enabled) return
     const generation = ++this.generation
     let executable: string | undefined
     try {
@@ -340,9 +360,14 @@ export class IrohController implements RemoteProviderController {
     if (generation !== this.generation || !this.enabled) return
     let endpointId: string
     try {
-      endpointId = await (this.options.resolveIdentity ?? defaultResolveIdentity)(executable, this.options.dataDirectory)
-    } catch {
-      await this.failGeneration(generation, 'iroh_identity_failed')
+      endpointId = this.options.resolveIdentity === undefined
+        ? await defaultResolveIdentity(executable, this.options.dataDirectory, { onSpawn: child => {
+          this.identityChild = child
+          child.once('close', () => { if (this.identityChild === child) this.identityChild = undefined })
+        } })
+        : await this.options.resolveIdentity(executable, this.options.dataDirectory)
+    } catch (error) {
+      await this.failGeneration(generation, error instanceof AggregateError ? 'iroh_identity_cleanup_failed' : 'iroh_identity_failed')
       return
     }
     if (generation !== this.generation || !this.enabled) return
@@ -381,9 +406,15 @@ export class IrohController implements RemoteProviderController {
     // An unexpected exit must surface instead of stranding a stale ready
     // state: every path below re-checks the generation, so orderly stops
     // (which advance it first) stay silent.
-    child.once('error', () => { void this.enqueue(() => this.failGeneration(generation, 'iroh_exited', origin)) })
-    child.once('close', () => { void this.enqueue(() => this.failGeneration(generation, 'iroh_exited', origin)) })
-    child.stdin.on('error', () => { void this.enqueue(() => this.failGeneration(generation, 'iroh_exited', origin)) })
+    const onFailure = (): void => {
+      if (this.disposed || generation !== this.generation) return
+      void this.enqueue(() => this.failGeneration(generation, 'iroh_exited', origin)).catch(() => {
+        if (!this.disposed && this.generation === generation + 1) this.publish({ enabled: this.enabled, state: 'error', origin, errorCode: 'iroh_cleanup_failed' })
+      })
+    }
+    child.once('error', onFailure)
+    child.once('close', onFailure)
+    child.stdin.on('error', onFailure)
     this.publish({ enabled: true, state: 'connecting', origin })
     try {
       const ready = await this.waitForReady(child, endpointId, this.options.readyTimeoutMs ?? READY_TIMEOUT_MS)

@@ -77,7 +77,10 @@
     "LICENSE",
     "FUNNEL_THIRD_PARTY_LICENSES.txt",
     "SECURITY.md",
-    "THIRD_PARTY_NOTICES.md"
+    "THIRD_PARTY_NOTICES.md",
+    "native/iroh-host/NOTICE.dsh-mobile-iroh",
+    "native/iroh-host/LICENSE.dsh-mobile-iroh",
+    "native/iroh-host/LICENSE.dsh-tether"
   ],
   "dsh": {
     "bundle": {

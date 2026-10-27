@@ -756,20 +756,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dsh-mobile-iroh-transport-sim"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "dsh-mobile-iroh-android-transport",
- "dsh-mobile-iroh-core",
- "iroh",
- "n0-future",
- "serde_json",
- "tokio",
-]
-
-[[package]]
 name = "ed25519"
 version = "3.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
