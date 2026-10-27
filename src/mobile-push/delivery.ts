@@ -134,6 +134,9 @@ export class PushDelivery {
     }
     const origin: Origin = { ...input, active: true, generation: (previous?.generation ?? 0) + 1 }
     this.#origins.set(id, origin)
+    // Re-attachment is a state change: intents deferred while this origin was detached may deliver now.
+    this.#clearOriginDeferrals(origin)
+    this.#kick()
     return () => {
       if (!origin.active || this.#origins.get(id) !== origin) return
       origin.active = false
@@ -386,10 +389,9 @@ export class PushDelivery {
   async #sendIntent(intent: PushIntent): Promise<void> {
     if (this.#closed) return
     const origin = this.#originFor(intent.key)
-    if (!origin) { this.#defer(intent); return }
-    if (!origin.active || this.#origins.get(this.#originId(origin)) !== origin) { await this.#removeIntent(intent); return }
+    if (!origin || this.#originDetached(origin)) { this.#defer(intent); return }
     const initial = await this.#guard(intent, origin)
-    if (initial === 'denied') { await this.#removeIntent(intent); return }
+    if (initial === 'denied') { await this.#denyOrDefer(intent, origin); return }
     if (initial === 'unverifiable') { this.#defer(intent); return }
     const setup = await this.#ensureReference(intent)
     if (!setup) return
@@ -412,14 +414,14 @@ export class PushDelivery {
     if (this.#closed) return
     if (result.kind === 'cancelled') {
       const current = await this.#guard(intent, origin)
-      if (current === 'denied') await this.#removeIntent(intent)
+      if (current === 'denied') await this.#denyOrDefer(intent, origin)
       else if (current === 'unverifiable') this.#defer(intent)
       // Still-allowed cancellation is an admission-budget miss, not new permission: bounded retry accounting applies.
       else await this.#settleIntent(intent, { kind: 'retry' })
       return
     }
     const current = await this.#guard(intent, origin)
-    if (current === 'denied') { await this.#removeIntent(intent); return }
+    if (current === 'denied') { await this.#denyOrDefer(intent, origin); return }
     if (current === 'unverifiable') { this.#defer(intent); return }
     await this.#settleIntent(intent, result)
   }
@@ -631,6 +633,21 @@ export class PushDelivery {
 
   #originFor(key: PushOwner): Origin | undefined { return this.#origins.get(JSON.stringify([key.scopeId, key.origin])) }
   #originId(origin: Pick<OriginInput, 'scopeId' | 'origin'>): string { return JSON.stringify([origin.scopeId, origin.origin]) }
+  /** True when the origin object is inactive or has been replaced — a transient state, never authorization evidence. */
+  #originDetached(origin: Origin): boolean { return !origin.active || this.#origins.get(this.#originId(origin)) !== origin }
+  /** Defers rather than removes when the denial could stem from origin state; removal stays reserved for authorization-backed denial. */
+  async #denyOrDefer(intent: PushIntent, origin: Origin): Promise<void> {
+    if (this.#originDetached(origin)) this.#defer(intent)
+    else await this.#removeIntent(intent)
+  }
+  #clearOriginDeferrals(origin: Origin): void {
+    if (this.#deferredUntil.size === 0) return
+    let pending: readonly PushIntent[]
+    try { pending = this.#registry.snapshot().pending } catch { return }
+    for (const intent of pending) {
+      if (intent.key.scopeId === origin.scopeId && intent.key.origin === origin.origin) this.#deferredUntil.delete(intent.id)
+    }
+  }
 
   #write(update: (snapshot: PushSnapshot) => PushSnapshot): Promise<void> {
     const operation = this.#writeQueue.then(() => this.#registry.transact(snapshot => update(boundedSnapshot(snapshot, this.#now()))))

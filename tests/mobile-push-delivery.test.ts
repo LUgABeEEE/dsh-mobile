@@ -72,6 +72,19 @@ async function makeRegistry(deviceIds: readonly string[] = ['device-a']) {
   return { keys, store, registry, registrations }
 }
 
+/** A second registration on a different scope+origin, for scoped origin-lifecycle assertions. */
+async function registerSecondOrigin(registry: PushRegistry, keys: VapidKeys): Promise<PushRegistration> {
+  const fields = { scopeId: 'scope-b', deviceId: 'device-b', origin: 'https://other.example.test' }
+  const config = await registry.config(fields, 'install-device-b')
+  const result = await registry.upsert(fields, {
+    installationId: 'install-device-b',
+    subscription: { endpoint: 'https://web.push.apple.com/topic/device-b', keys: makeSubscriptionKeys() },
+    locale: 'en', preferences, keyFingerprint: fingerprint(keys),
+    ownerGeneration: config.ownerGeneration, registrationGeneration: config.registrationGeneration,
+  })
+  return result.registration
+}
+
 function hostDouble(overrides: Partial<PushHost> = {}): PushHost {
   return {
     available: true,
@@ -335,7 +348,10 @@ describe('push delivery coordination', () => {
     await expect(settled.promise).resolves.toBe('cancelled')
     await delivery.close()
     expect(store.inspect().receipts).toHaveLength(0)
-    if (change === 'persistent authorization' || change === 'expiry' || change === 'origin replacement') expect(store.inspect().pending).toHaveLength(0)
+    if (change === 'persistent authorization' || change === 'expiry') expect(store.inspect().pending).toHaveLength(0)
+    // An origin replacement is transient origin state, not authorization evidence: the intent defers
+    // inside its original TTL and survives to deliver through the replacement origin (G1 re-pin).
+    if (change === 'origin replacement') expect(store.inspect().pending).toHaveLength(1)
   })
 
   it('uses at most four concurrent provider requests and bounds retained scope intents at 256', async () => {
@@ -1020,6 +1036,143 @@ describe('push delivery coordination', () => {
     await vi.advanceTimersByTimeAsync(30_000)
     await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1), { interval: 1 })
     expect(store.inspect().pending).toHaveLength(0)
+  })
+
+  it('defers a due intent while its origin is detached and delivers promptly on re-attach', async () => {
+    vi.useFakeTimers()
+    const { keys, registry, store, registrations } = await makeRegistry()
+    const deviceB = await registerSecondOrigin(registry, keys)
+    const send = vi.fn(async () => ({ kind: 'accepted' as const }))
+    const delivery = new PushDelivery({ host: hostDouble(), registry, sender: senderDouble(send) })
+    opened.push(() => delivery.close())
+    const originA = () => ({ scopeId: 'scope-a', origin: 'https://mobile.example.test', authorizedDevices: async () => [{ id: 'device-a', expiresAt: Date.now() + 120_000 }] })
+    const detachA = delivery.attachOrigin(originA())
+    const detachB = delivery.attachOrigin({ scopeId: 'scope-b', origin: 'https://other.example.test', authorizedDevices: async () => [{ id: 'device-b', expiresAt: Date.now() + 120_000 }] })
+    await seedIntent(registry, registrations[0]!, source('detach-survival', { expiresAt: Date.now() + 120_000 }))
+    await seedIntent(registry, deviceB, source('other-origin-intent', { sessionId: 'session-b', targetSessionId: 'session-b', expiresAt: Date.now() + 120_000 }))
+    detachA()
+    detachB()
+    await delivery.start()
+    await vi.advanceTimersByTimeAsync(0)
+    // Both due intents survive their detached origins instead of being dropped, and nothing sends.
+    expect(store.inspect().pending.map(row => row.source.sourceId).sort()).toEqual(['detach-survival', 'other-origin-intent'])
+    expect(send).not.toHaveBeenCalled()
+    // Re-attaching origin A clears only A-bound deferrals and delivers promptly, without advancing the 30 s recheck.
+    delivery.attachOrigin(originA())
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1), { interval: 1 })
+    expect(store.inspect().receipts.some(row => row.sourceId === 'detach-survival')).toBe(true)
+    expect(store.inspect().pending.map(row => row.source.sourceId)).toEqual(['other-origin-intent'])
+    expect(send).toHaveBeenCalledTimes(1)
+  })
+
+  it('sweeps a never-re-attached deferred intent at its original TTL without delivering', async () => {
+    vi.useFakeTimers()
+    const { registry, store, registrations } = await makeRegistry()
+    const send = vi.fn(async () => ({ kind: 'accepted' as const }))
+    const delivery = new PushDelivery({ host: hostDouble(), registry, sender: senderDouble(send) })
+    opened.push(() => delivery.close())
+    const detach = delivery.attachOrigin({ scopeId: 'scope-a', origin: 'https://mobile.example.test', authorizedDevices: async () => [{ id: 'device-a', expiresAt: Date.now() + 120_000 }] })
+    await seedIntent(registry, registrations[0]!, source('detach-expiry', { expiresAt: Date.now() + 120_000 }))
+    detach()
+    await delivery.start()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(store.inspect().pending).toHaveLength(1)
+    // Past the source TTL plus one maintenance interval the deferral ends in expiry removal, never a send.
+    await vi.advanceTimersByTimeAsync(150_000)
+    expect(store.inspect().pending).toHaveLength(0)
+    expect(store.inspect().receipts).toHaveLength(0)
+    expect(send).not.toHaveBeenCalled()
+  })
+
+  it('removes a detached-then-revoked intent by authorization denial on re-attach, never sending', async () => {
+    vi.useFakeTimers()
+    const { registry, store, registrations } = await makeRegistry()
+    const send = vi.fn(async () => ({ kind: 'accepted' as const }))
+    const delivery = new PushDelivery({ host: hostDouble(), registry, sender: senderDouble(send) })
+    opened.push(() => delivery.close())
+    let authorized = true
+    const authorizedDevices = vi.fn(async () => authorized ? [{ id: 'device-a', expiresAt: Date.now() + 120_000 }] : [])
+    const originInput = { scopeId: 'scope-a', origin: 'https://mobile.example.test', authorizedDevices }
+    const detach = delivery.attachOrigin(originInput)
+    await seedIntent(registry, registrations[0]!, source('detach-revoke', { expiresAt: Date.now() + 120_000 }))
+    detach()
+    await delivery.start()
+    await vi.advanceTimersByTimeAsync(0)
+    // The fixed behavior keeps the due intent pending while the origin is detached.
+    expect(store.inspect().pending).toHaveLength(1)
+    expect(send).not.toHaveBeenCalled()
+    // The device is revoked while detached; re-attachment re-reads authorization and denies — no revival.
+    authorized = false
+    const readsBefore = authorizedDevices.mock.calls.length
+    delivery.attachOrigin(originInput)
+    await vi.waitFor(() => expect(store.inspect().pending).toHaveLength(0))
+    expect(authorizedDevices.mock.calls.length).toBeGreaterThan(readsBefore)
+    expect(send).not.toHaveBeenCalled()
+    expect(store.inspect().receipts).toHaveLength(0)
+  })
+
+  it('delivers through a replaced origin object without deferral', async () => {
+    vi.useFakeTimers()
+    const { registry, store, registrations } = await makeRegistry()
+    const send = vi.fn(async () => ({ kind: 'accepted' as const }))
+    const delivery = new PushDelivery({ host: hostDouble(), registry, sender: senderDouble(send) })
+    opened.push(() => delivery.close())
+    const originInput = () => ({ scopeId: 'scope-a', origin: 'https://mobile.example.test', authorizedDevices: async () => [{ id: 'device-a', expiresAt: Date.now() + 120_000 }] })
+    delivery.attachOrigin(originInput())
+    await seedIntent(registry, registrations[0]!, source('replace-origin', { expiresAt: Date.now() + 120_000 }))
+    // A second attach replaces the origin object; the current origin resolves and delivers.
+    delivery.attachOrigin(originInput())
+    await delivery.start()
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1), { interval: 1 })
+    expect(store.inspect().pending).toHaveLength(0)
+    expect(store.inspect().receipts.some(row => row.sourceId === 'replace-origin')).toBe(true)
+  })
+
+  it('keeps the Test reject and resolver unavailable while the origin is detached', async () => {
+    vi.useFakeTimers()
+    const { registry, store, registrations } = await makeRegistry()
+    const send = vi.fn(async () => ({ kind: 'accepted' as const }))
+    const delivery = new PushDelivery({ host: hostDouble(), registry, sender: senderDouble(send) })
+    opened.push(() => delivery.close())
+    const detach = delivery.attachOrigin({ scopeId: 'scope-a', origin: 'https://mobile.example.test', authorizedDevices: async () => [{ id: 'device-a', expiresAt: Date.now() + 120_000 }] })
+    await seedIntent(registry, registrations[0]!, source('resolve-detach', { expiresAt: Date.now() + 120_000 }))
+    await delivery.start()
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1), { interval: 1 })
+    const reference = store.inspect().references[0]!.reference
+    detach()
+    await expect(delivery.test({ ...owner('device-a'), installationId: registrations[0]!.installationId })).rejects.toThrow('push_test_unavailable')
+    await expect(delivery.resolve(owner('device-a'), reference)).resolves.toBeUndefined()
+  })
+
+  it('defers an in-flight send cancelled by origin detach and redelivers after re-attach', async () => {
+    vi.useFakeTimers()
+    const { registry, store, registrations } = await makeRegistry()
+    const inFlight = deferred<void>()
+    const release = deferred<void>()
+    let calls = 0
+    const send = vi.fn(async () => {
+      calls += 1
+      if (calls === 1) { inFlight.resolve(); await release.promise; return { kind: 'cancelled' as const } }
+      return { kind: 'accepted' as const }
+    })
+    const delivery = new PushDelivery({ host: hostDouble(), registry, sender: senderDouble(send) })
+    opened.push(() => delivery.close())
+    const originInput = () => ({ scopeId: 'scope-a', origin: 'https://mobile.example.test', authorizedDevices: async () => [{ id: 'device-a', expiresAt: Date.now() + 120_000 }] })
+    const detach = delivery.attachOrigin(originInput())
+    await seedIntent(registry, registrations[0]!, source('inflight-detach', { expiresAt: Date.now() + 120_000 }))
+    await delivery.start()
+    await inFlight.promise
+    // The detach aborts the in-flight send; its cancelled result must defer (origin-state), not drop.
+    detach()
+    release.resolve()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(store.inspect().pending).toHaveLength(1)
+    expect(send).toHaveBeenCalledTimes(1)
+    // Re-attach clears the deferral and redelivers once within the original TTL.
+    delivery.attachOrigin(originInput())
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(2), { interval: 1 })
+    expect(store.inspect().pending).toHaveLength(0)
+    expect(store.inspect().receipts.some(row => row.sourceId === 'inflight-detach')).toBe(true)
   })
 
   it('drops non-reconstructible plan, approval and callId-less question intents instead of deferring them', async () => {
