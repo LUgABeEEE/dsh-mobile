@@ -79,6 +79,8 @@ jobs:
         run: npm run smoke:plugin-portal-layers
       - name: Verify the drawer, details panel and return bar stay opaque under skin tokens
         run: npm run smoke:opaque-chrome
+      - name: Verify a fullscreen right panel owns the viewport
+        run: npm run smoke:rightbar-fullscreen
       - name: Detect a populated trace collapsed by a foreign root-layout rule
         if: matrix.dsh == '0.2.1-alpha.2' || matrix.dsh == '0.2.1-alpha.3' || matrix.dsh == '0.2.1-rc.2'
         shell: bash

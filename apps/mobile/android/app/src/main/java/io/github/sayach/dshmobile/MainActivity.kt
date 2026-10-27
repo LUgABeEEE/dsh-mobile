@@ -320,6 +320,10 @@ class MainActivity : Activity() {
         pendingDownload = pendingDownload?.let { it.copy(caCertificate = it.caCertificate?.copyOf()) },
     )
 
+    // minSdk 29 still needs the legacy dispatch: the predictive-back callback is
+    // registered only on API 33+ (see onCreate). AGP 9 lint promotes the override
+    // itself to an error, so the deliberate fallback is suppressed here.
+    @SuppressLint("GestureBackNavigation")
     @Deprecated("Activity back dispatch remains a fallback when the platform callback is not delivered.")
     override fun onBackPressed() {
         handleBack()

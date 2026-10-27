@@ -38,7 +38,18 @@ export function ownsMobileCustomization(gateway: boolean | undefined, frontend: 
   return gateway === true || frontend === 'dedicated'
 }
 
-/** Emit each safe failure once until recovery, and ignore work after cancellation or disposal. */
+/**
+ * Emit each safe failure once until recovery, and ignore work after cancellation
+ * or disposal.
+ *
+ * A failure that only reaches the console is invisible to the user, who sees the
+ * customization disappear and cannot tell it from a third-party plugin bug
+ * (issue #298). The reporter therefore also publishes its current state so the
+ * page can render a visible, localized notice with an explicit recovery action.
+ * @param locale - resolves the active UI locale for the copy.
+ * @param output - console sink for the developer-facing line.
+ * @returns the reporting calls plus a subscribable snapshot.
+ */
 export function createMobileAssetLoadReporter(
   locale: () => MobileControlLocale,
   output: Pick<Console, 'warn' | 'info'> = console,
@@ -46,22 +57,51 @@ export function createMobileAssetLoadReporter(
   fail(reason: MobileAssetLoadFailure, signal?: AbortSignal): void
   recover(signal: AbortSignal): void
   dispose(): void
+  /** Current visible-notice state; `undefined` once everything recovered. */
+  getState(): MobileAssetLoadFailure | undefined
+  /** Observe state changes; returns a disposer. */
+  subscribe(listener: (state: MobileAssetLoadFailure | undefined) => void): () => void
+  /** Copy for one failure, so the page and the console share one dictionary. */
+  message(reason: MobileAssetLoadFailure): string
 } {
   const reported = new Set<MobileAssetLoadFailure>()
+  const listeners = new Set<(state: MobileAssetLoadFailure | undefined) => void>()
   let disposed = false
+  // The notice must name the failure the user can act on, so prefer the
+  // authentication case over the generic resource failure it also produces.
+  const visible = (): MobileAssetLoadFailure | undefined => {
+    if (reported.has('authentication_required')) return 'authentication_required'
+    if (reported.has('gateway_required')) return 'gateway_required'
+    return reported.values().next().done === true ? undefined : reported.values().next().value
+  }
+  const publish = (): void => {
+    const state = visible()
+    for (const listener of listeners) {
+      try { listener(state) } catch (error) { void error }
+    }
+  }
   return {
     fail(reason, signal) {
       if (disposed || signal?.aborted === true || reported.has(reason)) return
       if (reason === 'resource_unavailable' && reported.has('authentication_required')) return
       reported.add(reason)
       output.warn(`[DSH Mobile] ${COPY[locale()][reason]}`)
+      publish()
     },
     recover(signal) {
       if (disposed || signal.aborted || reported.size === 0) return
       reported.clear()
       output.info(`[DSH Mobile] ${COPY[locale()].recovered}`)
+      publish()
     },
-    dispose() { disposed = true; reported.clear() },
+    dispose() { disposed = true; reported.clear(); listeners.clear() },
+    getState() { return disposed ? undefined : visible() },
+    subscribe(listener) {
+      if (disposed) return () => {}
+      listeners.add(listener)
+      return () => { listeners.delete(listener) }
+    },
+    message(reason) { return COPY[locale()][reason] },
   }
 }
 

@@ -1,16 +1,8 @@
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import * as yaml from 'js-yaml'
 import { describe, expect, it } from 'vitest'
+import { loadEntryList } from './helpers/entry-list-yaml.js'
 
-interface JavaScriptExpression { readonly __jsExpr: string }
-
-const jsExpressionType = new yaml.Type('tag:yaml.org,2002:js', {
-  kind: 'scalar',
-  resolve: data => typeof data === 'string',
-  construct: data => ({ __jsExpr: data as string }),
-})
-const schema = yaml.JSON_SCHEMA.extend(jsExpressionType)
 const source = readFileSync(resolve(import.meta.dirname, '..', 'cordis.patch.yml'), 'utf8')
 
 function record(value: unknown): Record<string, unknown> {
@@ -19,7 +11,7 @@ function record(value: unknown): Record<string, unknown> {
 }
 
 function mobileRow(): Record<string, unknown> {
-  const patches = yaml.load(source, { schema }) as unknown[]
+  const patches = loadEntryList(source) as unknown[]
   const rows = patches.flatMap(patch => (record(patch).insert as unknown[] | undefined) ?? [patch]).map(record)
   const matches = rows.filter(row => row.id === 'mobile-access')
   if (matches.length !== 1) throw new Error('expected one mobile-access row')
@@ -27,7 +19,7 @@ function mobileRow(): Record<string, unknown> {
 }
 
 function rows(): Record<string, unknown>[] {
-  const patches = yaml.load(source, { schema }) as unknown[]
+  const patches = loadEntryList(source) as unknown[]
   return patches.flatMap(patch => (record(patch).insert as unknown[] | undefined) ?? [patch]).map(record)
 }
 
