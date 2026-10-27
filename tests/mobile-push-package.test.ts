@@ -9,6 +9,11 @@ import { expect, it } from 'vitest'
 
 const run = promisify(execFile)
 
+it('exposes the provider-free push settings check as a package script alias', async () => {
+  const manifest = JSON.parse(await readFile('package.json', 'utf8')) as { scripts: Record<string, string> }
+  expect(manifest.scripts['smoke:push-settings']).toBe('node ./scripts/smoke-mobile-push-settings.mjs')
+})
+
 it('serves the original icons from an extracted npm package outside its working directory', async () => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-mobile-push-pack-'))
   try {

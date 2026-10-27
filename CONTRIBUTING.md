@@ -35,6 +35,7 @@ Browser checks consume built client files. Run `npm run build` and `npx playwrig
 | Composer focus and keyboard | `npm run smoke:composer-keyboard` |
 | Composer controls, typography and wrapping | `npm run smoke:composer-overflow` |
 | Real InputBar with optional left/right/activity controls | `npm run smoke:composer-toolbar` |
+| Push settings geometry/interaction (provider-free, contract Switch stand-in) | `npm run smoke:push-settings` |
 | Dictation lifecycle and focus | `npm run smoke:voice-session` |
 | Browser authentication Cookies | `npm run smoke:browser-auth-cookies` |
 | Passive public question/approval/goal lifetimes for Web Push | `npm run smoke:push-contract` |

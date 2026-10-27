@@ -41,7 +41,7 @@
 
 | 功能 | 中文 | English | 验证边界 |
 | --- | --- | --- | --- |
-| iOS/iPadOS 18.4+ 主屏幕 Declarative Web Push | [网页推送](<WEB_PUSH.md>) | [Web Push](<WEB_PUSH.en.md>) | 尚未发布；真实 Apple、既有安装升级及私有 Origin／VPN 投递待真机验收，无 Service Worker 降级 |
+| iOS/iPadOS 18.4+ 主屏幕 Declarative Web Push | [网页推送](<WEB_PUSH.md>) | [Web Push](<WEB_PUSH.en.md>) | 尚未发布；用户已在一台 iPhone 确认一条测试通知，分类投递、锁定状态、主屏幕升级、私有 Origin／VPN 及冷热点击验收待真机完成；仅限 iOS/iPadOS Safari 主屏幕明确启用，无 Service Worker 降级 |
 
 ## 开发与安全 / Development and security
 

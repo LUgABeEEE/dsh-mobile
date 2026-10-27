@@ -2,7 +2,7 @@
 
 [简体中文](<WEB_PUSH.md>) · [Documentation](<README.md>)
 
-> **Development candidate, not a released feature.** The target is iOS/iPadOS 18.4+ Home Screen web apps using Declarative Web Push. Real Apple delivery, existing Home Screen upgrades and private-origin/VPN delivery have not been accepted on a physical device. A source test, Chromium fixture or provider acceptance is not that evidence.
+> **Development candidate, not a released feature.** The target is iOS/iPadOS 18.4+ Home Screen web apps using Declarative Web Push; availability is an explicit opt-in/configuration for capable iOS/iPadOS **Safari** Home Screen apps only. One Test notification on a physical iPhone has been confirmed by the user; full per-category delivery, locked/all-closed states, existing Home Screen upgrades, private-origin/VPN delivery and warm/cold tap acceptance remain open, and a source test, Chromium fixture or provider acceptance is not that evidence. A host push-key reset is registry-wide, no validated destructive repair exists for an old browser subscription, and a repair-required registration may hide the settings row instead of showing a repair label. Push opt-out still persists before logout completes, and the deleted-target/short-cookie-expiry evidence limits below still apply.
 
 ## Requirements
 
@@ -80,11 +80,11 @@ Push is best effort, not an alarm service. Host sleep/shutdown, disabled origin,
 | Install guidance | Launch the Home Screen icon rather than an ordinary browser tab. |
 | Permission denied | Change the site's notification permission in system/browser settings, return to the app and make a new explicit Enable action. No prompt is forced. |
 | Registration failed / stale settings | Refresh/reopen to read current state, then explicitly retry. Do not repeatedly resubmit an old request. |
-| Existing subscription uses another application key | Do not automatically unsubscribe it. Identify its owner and arrange deliberate browser-side repair. |
+| Existing subscription uses another application key | Do not automatically unsubscribe it. After a host key reset, retrying Enable alone will not fix this conflict; identify its owner and arrange deliberate browser-side repair. |
 | Suspended / repair-required | Check host key/configuration and private-file access. Do not delete paired-device state or silently replace VAPID keys. |
 | Test accepted but no alert | Check phone permission/Focus/network and original freshness; provider acceptance is not a delivery receipt. |
 
-Lost/corrupt VAPID material with existing registrations fails closed. A host administrator may deliberately reset **notification state only** with `POST /api/mobile-access/push/reset` and JSON `{ "confirm": "reset-web-push" }` through the existing trusted local desktop-admin API. This is a destructive notification reset, not a phone endpoint or an automatic repair button: all browser push consents require explicit re-enrollment afterwards, while pairings remain intact. Keep the normal desktop Host/Origin/source protections; never expose this administration path publicly or manually remove paired-device files.
+Lost/corrupt VAPID material with existing registrations fails closed. A host administrator may deliberately reset **notification state only** with `POST /api/mobile-access/push/reset` and JSON `{ "confirm": "reset-web-push" }` through the existing trusted local desktop-admin API. This is a destructive notification reset, not a phone endpoint or an automatic repair button: all browser push consents require explicit re-enrollment afterwards, while pairings remain intact. The reset is **host-registry-wide** — it clears registrations across attached devices and origins, not only the browser that later meets the conflict — so an existing subscription can keep ordinary re-enable failing; no validated destructive repair recipe is promised here. Keep the normal desktop Host/Origin/source protections; never expose this administration path publicly or manually remove paired-device files.
 
 ## Independent channels and acceptance
 

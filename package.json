@@ -122,6 +122,7 @@
     "smoke:question-fixes": "node ./scripts/smoke-question-fixes.mjs",
     "smoke:native-layout": "node ./scripts/smoke-native-mobile-layout.mjs",
     "smoke:layout-ownership": "node ./scripts/smoke-mobile-layout-ownership.mjs",
+    "smoke:push-settings": "node ./scripts/smoke-mobile-push-settings.mjs",
     "smoke:voice-session": "node ./scripts/smoke-voice-session.mjs",
     "smoke:composer-keyboard": "node ./scripts/smoke-composer-keyboard.mjs",
     "smoke:mobile-compat": "node ./scripts/smoke-mobile-compat.mjs",

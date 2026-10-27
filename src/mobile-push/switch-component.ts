@@ -37,8 +37,11 @@ export function requirePublicMobilePushSwitch(): MobilePushSwitchComponent | und
   try {
     // The literal specifier is deliberate: the browser bundle keeps it an external
     // `require("@deepseek-ai/dsh-client-ui-primitives")` inside the module-loader
-    // factory (declared in tsdown.config.ts), keeping the public peer boundary
-    // auditable by scripts/check-client-bundle.mjs instead of a dynamic lookup.
+    // factory (declared in tsdown.config.ts). The browser import gate
+    // (scripts/check-client-bundle.mjs) rejects builtins and runtime dependencies in
+    // this bundle; it does not by itself prove this specific shell primitive stays
+    // external — the explicit external declaration and the packed rendering smoke
+    // are that support — but a literal specifier keeps the boundary inspectable.
     return (require('@deepseek-ai/dsh-client-ui-primitives') as { readonly Switch?: MobilePushSwitchComponent }).Switch
   } catch {
     return undefined

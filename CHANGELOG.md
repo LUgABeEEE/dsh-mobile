@@ -2,6 +2,10 @@
 
 Notable changes are recorded here. GitHub Releases provide the downloadable packages and generated commit notes.
 
+## Unreleased
+
+- Add the iPhone/iPad Declarative Web Push candidate: an explicit opt-in for capable iOS/iPadOS Safari Home Screen apps on trusted HTTPS using the page-level `window.pushManager` API, with paired bilingual guides, no service-worker fallback and a provider-free settings check (`npm run smoke:push-settings`). One Test notification was user-confirmed on an iPhone; per-category delivery, locked/all-closed states, Home Screen upgrades, private-origin/VPN delivery and warm/cold tap acceptance remain open. Reliability behavior in this pass: in-memory notification bookkeeping is TTL-bounded through a 30-second maintenance sweep, transient verification failures keep durable pending work for a bounded recheck instead of dropping it, cancelled admission attempts reuse the bounded retry accounting, provider `gone`/`suspended` Test results settle only the captured registration generation, browser settings keep truthful state through failed or rate-limited Tests, malformed saved installation ids regenerate one valid id, subscription conflicts show a distinct retry-will-not-fix limitation, and dedicated pages without a literal `<head>` no longer break the optional push metadata rewrite.
+
 ## 0.6.18 - 2026-10-26
 
 - Preserve DSH's adaptive directory-picker composition. The dedicated Mobile page reuses an available upstream browse picker, including its **New folder** action; a host using the system chooser keeps that chooser on Desktop and gets a separate web directory flow on the remote page. Thanks @OranImp for [#271](https://github.com/saya-ch/dsh-mobile/issues/271).
