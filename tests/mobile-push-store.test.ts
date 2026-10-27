@@ -1,7 +1,8 @@
-import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, win32 } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
+import { execFileText } from '../src/exec-file.js'
 import { JsonPushStore, MemoryPushStore } from '../src/mobile-push/store.js'
 import type { PushSnapshot } from '../src/mobile-push/contracts.js'
 
@@ -48,8 +49,12 @@ describe('private push snapshot stores', () => {
     const first = new JsonPushStore(file)
     const withKeys: PushSnapshot = { ...empty, keys: { publicKey: 'public-A', privateKey: 'private-A', fingerprint: 'fingerprint-A' } }
     await first.save(withKeys)
-    const mode = (await import('node:fs/promises')).stat(file).then(s => s.mode & 0o777)
-    expect(await mode).toBe(0o600)
+    if (process.platform === 'win32') {
+      const systemRoot = process.env.SystemRoot ?? process.env.WINDIR
+      if (systemRoot === undefined || !win32.isAbsolute(systemRoot)) throw new Error('Windows fixture system directory is unavailable')
+      const { stdout } = await execFileText(win32.join(systemRoot, 'System32', 'icacls.exe'), [file], { timeout: 10_000 })
+      expect(/\(I\)|Everyone|Authenticated Users|BUILTIN\\Users|CodexSandboxUsers/iu.test(stdout)).toBe(false)
+    } else expect((await stat(file)).mode & 0o777).toBe(0o600)
     const raw = await readFile(file, 'utf8')
     expect(JSON.parse(raw)).toEqual(withKeys)
     expect(await new JsonPushStore(file).load()).toEqual(withKeys)
@@ -63,7 +68,9 @@ describe('private push snapshot stores', () => {
     await writeFile(target, JSON.stringify(empty))
     await symlink(target, link)
     await expect(new JsonPushStore(link).load()).rejects.toThrow(/regular file/u)
-    await expect(new JsonPushStore(dir).load()).rejects.toThrow(/regular file/u)
+    const directory = join(dir, 'directory')
+    await mkdir(directory)
+    await expect(new JsonPushStore(directory).load()).rejects.toThrow(/regular file/u)
     const huge = join(dir, 'huge.json')
     await writeFile(huge, ' '.repeat(4 * 1024 * 1024 + 1))
     await expect(new JsonPushStore(huge).load()).rejects.toThrow(/4 MiB/u)

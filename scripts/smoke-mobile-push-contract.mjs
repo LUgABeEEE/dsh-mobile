@@ -75,7 +75,7 @@ try {
   assert.ok(profileManifest.dsh.profile.bundles.includes(fixture.packageName), 'Owned profile must select the test-only Host bundle')
   assert.ok(profileManifest.dependencies[fixture.packageName], 'Owned profile must install the bundled Host fixture')
   const dshRoot = dirname(dirname(binary))
-  const appBoot = await import(pathToFileURL(join(dshRoot, 'node_modules/@deepseek-ai/dsh-app-boot/lib/index.js')).href)
+  const appBoot = await import(pathToFileURL(createRequire(binary).resolve('@deepseek-ai/dsh-app-boot')).href)
   const loadedProfile = appBoot.loadProfileDirectory('dsh', profile, join(dshRoot, 'package.json'), home)
   assert.ok(loadedProfile.layers.some(layer => layer.packageName === fixture.packageName), `DSH app-boot did not load the Host fixture layer; skipped=${JSON.stringify(loadedProfile.skippedBundles)}`)
   const composedEntries = appBoot.composeEntries([...loadedProfile.layers.map(layer => layer.patches), loadedProfile.patches])
