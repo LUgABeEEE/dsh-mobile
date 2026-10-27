@@ -73,8 +73,10 @@ export function createMobilePushController(api: MobilePushApiAdapter, environmen
   let memoryInstallId = ''
   let mutationBusy = false
   // Call-scoped: a Test deliberately captures `attempt` without incrementing it (a Test never fences out
-  // Disable), so this flag must never clear behind that fence — it clears when the call settles, or on stop().
+  // Disable), so this flag must never clear behind that fence. It clears when THIS call settles and still
+  // owns the in-flight slot, or on stop() — which invalidates the slot so a stale Test cannot clear a newer one.
   let testInFlight = false
+  let testOwner = 0
   let attempt = 0
   let ownedSubscription: BrowserPushSubscription | undefined
   let currentHostSubscription: BrowserPushSubscription | undefined
@@ -152,7 +154,12 @@ export function createMobilePushController(api: MobilePushApiAdapter, environmen
   const refreshNow = (): void => { if (active) void refresh(generation) }
   return {
     start() { active = true; generation += 1; config = undefined; ownedSubscription = undefined; publish({ state: 'pending' }); refreshNow() },
-    stop() { active = false; generation += 1; attempt += 1; mutationBusy = false; testInFlight = false; config = undefined; preparedKey = undefined; existing = null; ownedSubscription = undefined },
+    stop() {
+      active = false; generation += 1; attempt += 1; mutationBusy = false
+      testOwner += 1
+      if (testInFlight) { testInFlight = false; publish({ ...snapshot }) }
+      config = undefined; preparedKey = undefined; existing = null; ownedSubscription = undefined
+    },
     refresh: refreshNow,
     async enableFromGesture() {
       if (!active || mutationBusy || (snapshot.state !== 'ready' && snapshot.state !== 'failed' && snapshot.state !== 'disabled') || !config || !preparedKey || !environment.pushManager) return
@@ -254,6 +261,7 @@ export function createMobilePushController(api: MobilePushApiAdapter, environmen
     async sendTest() {
       if (!active || !config || config.status !== 'enabled' || mutationBusy || testInFlight) return
       const token = generation, operation = attempt, base = config
+      const owner = ++testOwner
       testInFlight = true
       publish({ state: 'enabled', preferences: base.preferences })
       try {
@@ -269,11 +277,13 @@ export function createMobilePushController(api: MobilePushApiAdapter, environmen
         if (refreshed && config?.status === 'enabled') publish({ state: 'enabled', error: message, preferences: config.preferences })
         // Otherwise the read-back already published the truthful newer state (suspended, ready, …).
       } finally {
-        // Unconditional: the call has settled, so the flag clears even when a Disable/preferences/stop
-        // superseded it; the fence still guards every result publication above. Re-emit so the cleared
-        // flag is visible even when no fenced publish follows (e.g. a superseding Disable or stop()).
-        testInFlight = false
-        publish({ ...snapshot })
+        // Clear and re-emit only while this call still owns the in-flight slot: a superseding
+        // Disable/preferences/stop() keeps the fence from publishing results, and stop() has
+        // invalidated the slot so a stale Test cannot clear a newer Test's flag.
+        if (owner === testOwner) {
+          testInFlight = false
+          publish({ ...snapshot })
+        }
       }
     },
     getSnapshot: () => snapshot,

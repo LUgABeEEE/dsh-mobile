@@ -412,6 +412,9 @@ export class PushDelivery {
       result = { kind: 'retry' }
     }
     if (this.#closed) return
+    // A provider-accepted send is terminal: settle (or drop if the recipient is no longer current)
+    // without a further guard — deferring here could re-send a notification the provider already has.
+    if (result.kind === 'accepted') { await this.#settleIntent(intent, result); return }
     if (result.kind === 'cancelled') {
       const current = await this.#guard(intent, origin)
       if (current === 'denied') await this.#denyOrDefer(intent, origin)

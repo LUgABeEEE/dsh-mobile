@@ -578,7 +578,10 @@ describe('push delivery coordination', () => {
     const host = hostDouble({
       async reconcile() {
         eligibleCalls += 1
-        if (eligibleCalls === 5) { retryGuardEntered.resolve(); await hostGate.promise }
+        // Gate the guard that PRECEDES the retry send (attempt 2's initial guard — the 4th
+        // eligibility-counting call in this harness: admission, attempt-1 initial, attempt-1
+        // post-send, attempt-2 initial). The accepted attempt settles without a post-send guard.
+        if (eligibleCalls === 4) { retryGuardEntered.resolve(); await hostGate.promise }
         return 'eligible'
       },
       async eligible() { eligibleCalls += 1; return true },
@@ -1173,6 +1176,34 @@ describe('push delivery coordination', () => {
     await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(2), { interval: 1 })
     expect(store.inspect().pending).toHaveLength(0)
     expect(store.inspect().receipts.some(row => row.sourceId === 'inflight-detach')).toBe(true)
+  })
+
+  it('never re-sends a provider-accepted notification after origin detach', async () => {
+    vi.useFakeTimers()
+    const { registry, store, registrations } = await makeRegistry()
+    const inFlight = deferred<void>()
+    const release = deferred<void>()
+    const send = vi.fn(async () => { inFlight.resolve(); await release.promise; return { kind: 'accepted' as const } })
+    const delivery = new PushDelivery({ host: hostDouble(), registry, sender: senderDouble(send) })
+    opened.push(() => delivery.close())
+    const originInput = () => ({ scopeId: 'scope-a', origin: 'https://mobile.example.test', authorizedDevices: async () => [{ id: 'device-a', expiresAt: Date.now() + 120_000 }] })
+    const detach = delivery.attachOrigin(originInput())
+    await seedIntent(registry, registrations[0]!, source('accepted-detach', { expiresAt: Date.now() + 120_000 }))
+    await delivery.start()
+    await inFlight.promise
+    // The provider already accepted; the origin detaches while the post-send guard would run.
+    detach()
+    release.resolve()
+    await vi.advanceTimersByTimeAsync(0)
+    // Accepted delivery is terminal: the receipt is written and nothing waits for a re-attach.
+    expect(store.inspect().pending).toHaveLength(0)
+    expect(store.inspect().receipts.some(row => row.sourceId === 'accepted-detach')).toBe(true)
+    expect(send).toHaveBeenCalledTimes(1)
+    // Re-attachment must never produce a second provider send for the accepted source.
+    delivery.attachOrigin(originInput())
+    await vi.advanceTimersByTimeAsync(0)
+    expect(send).toHaveBeenCalledTimes(1)
+    expect(store.inspect().pending).toHaveLength(0)
   })
 
   it('drops non-reconstructible plan, approval and callId-less question intents instead of deferring them', async () => {

@@ -779,6 +779,38 @@ describe('mobile push browser controller', () => {
     expect(disableButton?.props?.disabled).not.toBe(true)
   })
 
+  it('keeps a newer Test in flight when an older Test settles after stop()', async () => {
+    const gateA = deferred<void>()
+    const gateB = deferred<void>()
+    let sendCalls = 0
+    const sendTest = vi.fn(async () => {
+      sendCalls += 1
+      if (sendCalls === 1) await gateA.promise
+      else await gateB.promise
+    })
+    const { controller } = await reachEnabled({ sendTest })
+    const oldTest = controller.sendTest()
+    await flush()
+    expect(controller.getSnapshot().testInFlight).toBe(true)
+    controller.stop()
+    controller.start()
+    await flush()
+    expect(controller.getSnapshot().state).toBe('enabled')
+    const newTest = controller.sendTest()
+    await flush()
+    expect(sendTest).toHaveBeenCalledTimes(2)
+    expect(controller.getSnapshot().testInFlight).toBe(true)
+    // The OLD Test settling after stop()/restart must not clear the NEW Test's in-flight flag.
+    gateA.resolve()
+    await oldTest
+    await flush()
+    expect(controller.getSnapshot().testInFlight).toBe(true)
+    gateB.resolve()
+    await newTest
+    await flush()
+    expect(controller.getSnapshot().testInFlight).toBe(false)
+  })
+
   it.each(['en', 'zh', 'it'] as const)('renders the distinct %s conflict and Test-failure messages', locale => {
     const copy = MOBILE_PUSH_SETTINGS_COPY[locale]
     const visit = (value: unknown): Array<{ type: unknown; props?: Record<string, unknown> }> => {

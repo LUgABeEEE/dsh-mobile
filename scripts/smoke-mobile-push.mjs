@@ -16,6 +16,7 @@ import {
   pairMobilePage, removeTemporaryRoot, sanitized, within,
 } from './mobile-boot-fixture.mjs'
 import { createPushIntegrationFixture, packPushIntegrationFixture } from './push-integration-fixture.mjs'
+import { readTransportEvidence } from './push-evidence-reader.mjs'
 import { installPackedBundle } from './packed-profile.mjs'
 import { completeSmoke } from './negative-control.mjs'
 
@@ -399,13 +400,6 @@ async function decryptCaptured(bodyBase64, keyMaterial, modulePath = httpEcePath
   return JSON.parse(plaintext.toString('utf8'))
 }
 
-async function readTransportEvidence(path) {
-  // Polled while the owned child may still be writing: a missing OR not-yet-complete file is
-  // "not ready" (undefined); the poll predicate and deadline own correctness, not this reader.
-  try { return JSON.parse(await readFile(path, 'utf8')) }
-  catch (error) { if (error.code === 'ENOENT' || error instanceof SyntaxError) return undefined; throw error }
-}
-
 function projectTransportEvidence(value) {
   const counter = key => Number.isSafeInteger(value?.[key]) && value[key] >= 0 ? value[key] : null
   return { evidencePresent: value !== undefined, dnsOwned: counter('dnsOwned'), requestsAccepted: counter('requestsAccepted'),
@@ -785,8 +779,14 @@ function launchDsh(root, home, binary, { nonce, transportEvidence, guardEvidence
 async function waitForJson(path, predicate, label, timeoutMs = 60_000) {
   const deadline = Date.now() + timeoutMs
   let last
+  let lastPartial
   while (Date.now() < deadline) {
-    last = await readTransportEvidence(path)
+    // A live writer may be mid-write: treat an unparsable file as not-ready (like ENOENT) while polling.
+    try { last = await readTransportEvidence(path) }
+    catch (error) {
+      if (error instanceof SyntaxError) lastPartial = error
+      else throw error
+    }
     if (last !== undefined && predicate(last)) return last
     await new Promise(resolvePoll => setTimeout(resolvePoll, 40))
   }
