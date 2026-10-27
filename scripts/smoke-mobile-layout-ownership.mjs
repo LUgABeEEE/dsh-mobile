@@ -1,4 +1,4 @@
-/** Check the built mobile shell's geometry with an owned slot/virtual-trace fixture, not a complete DSH or third-party skin runtime. */
+/** Check the built mobile shell's geometry and drawer layering with an owned slot/virtual-trace fixture, not a complete DSH or third-party skin runtime. */
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
@@ -143,6 +143,30 @@ async function setup(page, styles, open, view, tokens, order) {
   return handle
 }
 
+// A third-party menu portaled to document.body, the shape reported in #288: the
+// open drawer must not swallow the hit.
+async function portalLayering(page) {
+  await page.evaluate(() => {
+    const portal = document.createElement('div')
+    portal.id = 'plugin-portal'
+    portal.style.cssText = 'position:fixed;left:64px;bottom:24px;width:200px;height:140px;z-index:60;background:#fee'
+    const action = document.createElement('button')
+    action.id = 'portal-action'
+    action.type = 'button'
+    action.textContent = 'Plugin menu'
+    action.style.cssText = 'width:100%;height:100%;border:0;background:transparent;font:inherit'
+    portal.append(action)
+    document.body.append(portal)
+  })
+  return page.evaluate(() => {
+    const action = document.querySelector('#portal-action')
+    const rect = action.getBoundingClientRect()
+    const portalHit = document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2)?.closest('#plugin-portal') !== null
+    const drawerHit = document.elementFromPoint(120, 200)?.closest('.dshm-drawer') !== null
+    return { portalHit, drawerHit }
+  })
+}
+
 async function geometry(page) {
   return page.evaluate(() => {
     const result = {}
@@ -202,6 +226,9 @@ try {
               return document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2)?.closest('button')?.id
             })
             assert.notEqual(hit, 'trace-action', `${key}: open modal drawer failed to intercept the conversation`)
+            const layering = await portalLayering(page)
+            assert.equal(layering.portalHit, true, `${key}: a body-level plugin menu was covered by the open drawer`)
+            assert.equal(layering.drawerHit, true, `${key}: the open drawer stopped owning its own hit area`)
           }
         }
         if (open) {
@@ -215,6 +242,27 @@ try {
         cases++
       })
     }
+    // Removing only the shell isolation must reproduce #288, proving the portal
+    // assertion above detects the defect instead of passing for another reason.
+    await withContext({ viewport: views[0], hasTouch: true }, async context => {
+      const page = await context.newPage()
+      const handle = await setup(page, styles, true, views[0], themes.light, 'after')
+      const stripped = await handle.evaluate(style => {
+        let found = false
+        for (const rule of style.sheet.cssRules) {
+          if (rule.selectorText === '.dshm-shell' && rule.style.getPropertyValue('isolation') !== '') {
+            rule.style.removeProperty('isolation')
+            found = true
+          }
+        }
+        return found
+      })
+      assert.equal(stripped, true, 'Shell isolation was not found for the portal negative control')
+      const layering = await portalLayering(page)
+      assert.equal(layering.portalHit, false, 'Portal negative control did not reproduce a covered plugin menu')
+      assert.equal(layering.drawerHit, true, 'Portal negative control changed drawer ownership')
+      cases++
+    })
     for (const view of [views[1], views[4]]) await withContext({ viewport: view }, async context => {
       const page = await context.newPage()
       await page.setContent('<!doctype html><html><head></head><body><div id="root"><div class="Stock_fixture_frame"><aside>Stock sidebar</aside><main class="Stock_fixture_main">Stock desktop</main></div></div></body></html>')
@@ -233,4 +281,4 @@ try {
   try { await browser?.close() } catch (error) { recordSmokeFailure(failures, error) }
 }
 completeSmoke(failures, negative ? marker : undefined, observedNegative)
-console.log(`Built mobile shell geometry passed ${cases} owned browser-fixture cases: populated virtual trace height/scroll/clicks, light/dark, viewport/sidebar states, stylesheet order and stock-desktop isolation. This is not full DSH/skin or physical-device acceptance.`)
+console.log(`Built mobile shell geometry passed ${cases} owned browser-fixture cases: populated virtual trace height/scroll/clicks, light/dark, viewport/sidebar states, stylesheet order, body-portal layering over the open drawer (with its negative control) and stock-desktop isolation. This is not full DSH/skin or physical-device acceptance.`)

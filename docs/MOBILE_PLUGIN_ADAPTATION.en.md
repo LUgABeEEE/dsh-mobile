@@ -116,16 +116,27 @@ Constrain overlays to their actual container and visible area, rather than using
 
 Add `env(safe-area-inset-*)` only where content really reaches a screen edge and the host has not already handled it, avoiding duplicate space. Save, Cancel and errors must remain visible or reachable by scrolling with the keyboard open. An independent scroll area should not move the page underneath.
 
-### Which layer a plugin-drawn overlay belongs on
+### Overlay layering and portals
 
-Decide whether an overlay is visible by where it renders — inside the shell or under `document.body` — not by comparing numbers.
+The narrow drawer is a `position:fixed` overlay. The mobile layout confines it to
+`.dshm-shell`'s own stacking context (`isolation:isolate`), so decide whether an
+overlay is visible by **where it renders — inside the shell or under
+`document.body`** — not by comparing numbers:
 
-Mobile makes `.dshm-shell` an isolated stacking context (`isolation:isolate`). Therefore:
+- A menu or dialog rendered into `document.body` (a React portal,
+  `createPortal`, an `append` to body) paints above the entire mobile shell and
+  cannot be covered by the narrow drawer. An ordinary positive value — `60`, the
+  value in the [#288](https://github.com/saya-ch/dsh-mobile/issues/288) report —
+  is enough, and `0` works too; there is no "safe" large number to guess.
+  Measured at `10`, `45`, `60` and `2000`.
+- A `position:fixed` element left inside `.dshm-shell` is only ordered against the
+  shell's own surfaces. An overlay that should follow a panel belongs in that
+  panel's own root, closes with it, and should be hit-tested with
+  `elementFromPoint()` at its edges.
 
-- **A menu or dialog appended to `document.body`** (a React portal, `createPortal`, an `append` to body) paints above the entire mobile shell and cannot be covered by the narrow drawer. An ordinary positive value — `60`, the value in the [#288](https://github.com/saya-ch/dsh-mobile/issues/288) report, or even `0` — is enough. There is no "safe" large number to guess.
-- **A `position:fixed` element left inside `.dshm-shell`** is only ordered against the shell's own surfaces. An overlay that should follow a panel belongs in that panel's own root and closes with it.
-
-The shell's internal values are below. This table explains the shell's own order; **it is not an API a plugin must satisfy**, and changing these numbers does not affect a body portal:
+The shell's internal values are below. This table explains the shell's own order;
+**it is not an API a plugin must satisfy**, and changing these numbers does not
+affect a body portal:
 
 | Shell-internal layer | Current value | Purpose |
 |---|---:|---|
@@ -137,15 +148,27 @@ The shell's internal values are below. This table explains the shell's own order
 | `.dshm-overlay` | 90 | Host-provided plugin overlay slot |
 | Toast notices | 330 | Transient notices |
 
-DSH's own dropdowns (100), settings layers (900/1000) and dialog menus (1100) render inside the shell and keep their own order.
+DSH's own dropdowns (100), settings layers (900/1000) and dialog menus (1100)
+render inside the shell and keep their own order.
 
-**The navigation drawer is not a modal layer.** It is persistent navigation — page structure, not a surface that interrupts the user. A plugin menu opened from the drawer must paint above it, and `isolation:isolate` guarantees that without the plugin doing anything.
+**The navigation drawer is not a modal layer.** It is persistent navigation —
+page structure, not a surface that interrupts the user. A plugin menu opened from
+the drawer must paint above it, and `isolation:isolate` guarantees that without
+the plugin doing anything.
 
-**Do not use `z-index: 99999` as an adaptation technique.** It only reorders within one stacking context: under `document.body` it cannot change the result of the shell's isolation, and inside the shell it only pushes your panel above the host's own dialog so the user cannot reach its close or save control.
+**Do not use `z-index: 99999` as an adaptation technique.** It only reorders
+within one stacking context: under `document.body` it cannot change the result of
+the shell's isolation, and inside the shell it only pushes your panel above the
+host's own dialog so the user cannot reach its close or save control.
 
-**Wide viewports behave the same way.** Past 900px the drawer becomes a real in-flow grid column, but `z-index` still applies to a grid item, so the internal order still has to hold.
+**Wide viewports behave the same way.** Past 900px the drawer becomes a real
+in-flow grid column, but `z-index` still applies to a grid item, so the internal
+order still has to hold.
 
-Confirm the result by hit-testing in a real browser rather than reading the `z-index` number: `document.elementFromPoint()` should return your menu item, not the drawer. `npm run smoke:plugin-portal-layers` does exactly that at four levels: `10`, `45`, `60` and `2000`.
+Confirm the result by hit-testing in a real browser rather than reading the
+`z-index` number: `document.elementFromPoint()` should return your menu item, not
+the drawer. `npm run smoke:plugin-portal-layers` does exactly that at four
+levels: `10`, `45`, `60` and `2000`.
 
 ## Verification: what code checks, browsers and devices establish
 

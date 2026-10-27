@@ -516,12 +516,15 @@ class ThemePresenter {
   }
 }
 
-export const MOBILE_LAYOUT_STYLES = `html,body,#root{width:100%;height:100%;overflow:hidden}
+export const MOBILE_LAYOUT_STYLES = `
+html,body,#root{width:100%;height:100%;overflow:hidden}
 /* The definite root height bounds the transcript on engines without dvh.
-   Isolation confines every shell surface to this stacking context, so a menu a
-   third-party plugin portals into document.body paints above the whole shell
-   without having to outguess a number — issue #288. Inside the shell the bands
-   from mobile-layers.ts still order the shell's own surfaces. */
+   Isolation confines the shell-owned layers (scrim 40 / drawer 50 / details 80 /
+   overlay 90) to this stacking context so a menu a third-party plugin portals to
+   document.body paints above the open drawer at any z-index; without it the
+   drawer's own z-index covers such menus and the tap appears to do nothing
+   (issue #288). Inside the shell the bands from mobile-layers.ts still order the
+   shell's own surfaces. */
 .dshm-shell{position:relative;isolation:isolate;display:grid;grid-template-rows:minmax(0,1fr);width:100%;height:100%;height:100dvh;min-width:0;overflow:hidden;background:var(--dsw-alias-bg-base,#fff)}
 /* The mobile root owns its Grid geometry. Layered important rules keep broad
    unlayered skin rules from collapsing virtualized views to the header height. */
@@ -529,11 +532,11 @@ export const MOBILE_LAYOUT_STYLES = `html,body,#root{width:100%;height:100%;over
 .dshm-shell{display:grid!important;grid-template-rows:minmax(0,1fr)!important;grid-template-columns:minmax(0,1fr)!important}
 @media(min-width:900px){.dshm-shell{grid-template-columns:auto minmax(0,1fr)!important}}
 }
-/* This shell deliberately creates no stacking context (position:relative with
-   z-index:auto), so the surfaces below compete directly with community plugins'
-   document.body portals. Bands come from mobile-layers.ts: the navigation
-   drawer is not a modal and stays below the plugin band; the detail panel and
-   the overlay container are modal shell surfaces and stay above it. */.dshm-main{grid-area:1/1;position:relative;display:flex;flex-direction:column;min-width:0;min-height:0;margin-right:0;overflow:hidden;transition:margin-right var(--ds-transition-duration-slow,190ms) var(--ds-ease-in-out,ease)}
+/* The shell is now an isolated stacking context, so these surfaces compete with
+   each other and with DSH's own in-shell layers, but not with a plugin's
+   document.body portal — that portal paints above the whole shell regardless of
+   its z-index. Bands come from mobile-layers.ts: the navigation drawer is not a
+   modal, so the detail panel and the overlay container stay above it. */.dshm-main{grid-area:1/1;position:relative;display:flex;flex-direction:column;min-width:0;min-height:0;margin-right:0;overflow:hidden;transition:margin-right var(--ds-transition-duration-slow,190ms) var(--ds-ease-in-out,ease)}
 .dshm-mainContent{position:relative;flex:1;min-width:0;min-height:0;overflow:hidden}
 .dshm-shell[data-rightbar-docked=true] .dshm-main{margin-right:var(--dshm-rightbar-width)}
 .dshm-shell[data-rightbar-docked=true] .dshm-details{position:absolute;width:var(--dshm-rightbar-width);box-shadow:none;padding-top:0}
