@@ -117,6 +117,7 @@
     "smoke:cpolar-config": "node ./scripts/smoke-cpolar-config.mjs",
     "smoke:mobile-sidebar": "node ./scripts/smoke-mobile-sidebar.mjs",
     "smoke:custom-assets": "node ./scripts/smoke-mobile-custom-assets.mjs",
+    "smoke:session-restart": "node ./scripts/smoke-session-restart.mjs",
     "smoke:blob-media": "node ./scripts/smoke-blob-media.mjs",
     "smoke:question-fixes": "node ./scripts/smoke-question-fixes.mjs",
     "smoke:native-layout": "node ./scripts/smoke-native-mobile-layout.mjs",

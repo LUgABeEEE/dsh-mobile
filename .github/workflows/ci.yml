@@ -108,6 +108,9 @@ jobs:
       - name: Verify paired customization ownership and retained-page recovery
         if: matrix.dsh == '0.2.0-rc.2' || matrix.dsh == '0.2.1-alpha.2' || matrix.dsh == '0.2.1-alpha.3' || matrix.dsh == '0.2.1-rc.2'
         run: npm run smoke:custom-assets
+      - name: Verify authentication and customization across a real Host restart
+        if: matrix.dsh == '0.2.1-rc.2'
+        run: npm run smoke:session-restart
       - name: Verify packed Worker execution and explicit recovery
         if: matrix.dsh == '0.2.0-rc.2' || matrix.dsh == '0.2.1-alpha.2' || matrix.dsh == '0.2.1-alpha.3' || matrix.dsh == '0.2.1-rc.2'
         run: npm run smoke:extension-workers

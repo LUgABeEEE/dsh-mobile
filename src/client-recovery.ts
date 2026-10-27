@@ -27,8 +27,9 @@ export function shouldRenewSession(connection: MobileConnectionState, downForMs:
 }
 
 /**
- * A rejected request is proof that the Session is gone even when the live
- * transport still reports `connected`.
+ * Authentication rejection can warrant one renewal even while transport appears
+ * connected. A 403 can also indicate a permission failure, so it is not proof
+ * that the Session expired.
  *
  * Issue #298: DSH keeps Sessions in memory, so a Host restart kills every phone
  * Session while the device credential survives. The live WebSocket can keep
@@ -64,13 +65,15 @@ interface RecoveryPage extends EventTarget {
  * @param document - The mounted document; page replacement withdraws its work.
  * @param onRejected - receives the rejection signal, so a caller that observes a
  * 401 can ask this same owner for one renewal instead of starting its own.
+ * @param onRenewed - refresh read-only customization after confirmed Cookie installation.
  * @returns An awaited disposer, or nothing when no public connection is present.
  */
 export function installMobileConnectionRecovery(
   getConnection: () => MobileRecoveryConnection | undefined,
   page: RecoveryPage,
   document: Document,
-  onRejected?: (rejected: (status: number) => void) => void,
+  onRejected?: (rejected: (status: number) => void, retry: () => boolean) => void,
+  onRenewed?: () => void,
 ): (() => Promise<void>) | undefined {
   const connection = getConnection()
   const state = connection?.state
@@ -81,6 +84,7 @@ export function installMobileConnectionRecovery(
   let currentState = state.getSnapshot()
   let downSince = isDisconnected(currentState) ? Date.now() : undefined
   let attempted = false
+  let credentialsRejected = false
   // A rejected gateway request is the only signal that arrives when the live
   // transport still reports `connected` but the Session is gone (issue #298).
   let rejectedSince: number | undefined
@@ -123,8 +127,8 @@ export function installMobileConnectionRecovery(
     bridge = next
     attempted = false
   }
-  const renew = (): void => {
-    if (!current()) { void dispose(); return }
+  const renew = (): boolean => {
+    if (!current()) { void dispose(); return false }
     updateState()
     updateBridge()
     const adapter = bridge
@@ -134,14 +138,10 @@ export function installMobileConnectionRecovery(
     // The rejected case covers a Host restart, where the Session dies but the
     // live transport can still report `connected`.
     //
-    // Note: `updateState()` above clears `rejectedSince` whenever the transport
-    // reports `connected`, which is exactly the state a rejected-but-still-
-    // connected page is in. The evidence therefore has to be read before that
-    // refresh, so it is captured by the caller and passed in.
     const downLongEnough = downSince !== undefined && shouldRenewSession(currentState, now - downSince)
     const rejectionPending = rejectedSince !== undefined
-    if (document.visibilityState !== 'visible' || adapter === undefined || pending !== undefined || attempted
-      || (!downLongEnough && !rejectionPending)) return
+    if (document.visibilityState !== 'visible' || adapter === undefined || pending !== undefined || attempted || credentialsRejected
+      || (!downLongEnough && !rejectionPending)) return false
     attempted = true
     const owner = generation
     const abort = new AbortController()
@@ -158,15 +158,28 @@ export function installMobileConnectionRecovery(
       const result = await adapter.invoke('auth.renew', {}, { signal: abort.signal })
       if (!owns() || typeof result !== 'object' || result === null
         || !('renewed' in result) || result.renewed !== true) return
+      rejectedSince = undefined
       connection.reconnect?.()
-    }).catch((_error: unknown) => {
-      // Native recovery reports its own failure; do not restart a stopped attempt.
+      if (current()) onRenewed?.()
+    }).catch((error: unknown) => {
+      if (!owns() || typeof error !== 'object' || error === null || !('code' in error)) return
+      credentialsRejected = error.code === 'device_revoked' || error.code === 'device_expired' || error.code === 'authentication_failed'
     }).finally(() => {
       if (pending !== task) return
       pending = undefined
       pendingAbort = undefined
     })
     pending = task
+    return true
+  }
+  const retry = (): boolean => {
+    if (!current()) return false
+    updateState()
+    updateBridge()
+    if (!current() || pending !== undefined || credentialsRejected || bridge === undefined
+      || (rejectedSince === undefined && downSince === undefined)) return false
+    attempted = false
+    return renew()
   }
   /**
    * Record a rejected authenticated request and try the same single renewal.
@@ -214,6 +227,6 @@ export function installMobileConnectionRecovery(
   page.addEventListener('pagehide', pagehide)
   // Publish the rejection signal so the customization loader can hand a 401 to
   // this owner rather than starting a second renewal implementation.
-  onRejected?.(rejected)
+  onRejected?.(rejected, retry)
   return dispose
 }

@@ -51,6 +51,7 @@ Browser checks consume built client files. Run `npm run build` and `npx playwrig
 | Local extension Worker execution and explicit recovery | `npm run smoke:extension-workers` |
 | Real sidebar rows, short drawers and additive panel/footer/overlay slots | `npm run smoke:mobile-sidebar` |
 | Paired customization, stock ownership and retained-page failure recovery | `npm run smoke:custom-assets` |
+| Host restart, authentication renewal and visible customization failure | `npm run smoke:session-restart` |
 | Upstream picker composition and dedicated Mobile folder selection | `npm run smoke:directory-picker` |
 | Browse-capable host keeps DSH's own picker and its folder creation | `npm run smoke:directory-picker-browse` |
 | Same-origin/Blob media and external-source CSP rejection | `npm run smoke:blob-media` |
