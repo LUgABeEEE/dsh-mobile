@@ -3,6 +3,7 @@ import { basename, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
 import { spawn } from 'node:child_process'
+import { atomicJsonPublisher } from './push-fixture-publication.mjs'
 
 /** Run an owned fixture build command and retain bounded diagnostics. */
 async function run(command, args, cwd, env = process.env) {
@@ -25,11 +26,14 @@ function hostEntrySource(repository) {
 import { createPushHost } from ${JSON.stringify(hostPath)}
 import { ATTENTION_TTL_MS, OUTCOME_COALESCE_MS } from ${JSON.stringify(pathToFileURL(join(repository, 'src/mobile-push/contracts.ts')).href)}
 import { randomUUID } from 'node:crypto'
-import { mkdir, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { mkdir, rename, rm, writeFile } from 'node:fs/promises'
+import { dirname, join } from 'node:path'
 
 export const name = 'dsh-mobile-push-contract-fixture'
 export const inject = ['agents', 'sessions', 'sessionProjections', 'sessionQuery', 'userQuestions', 'approval', 'goals']
+const publishDocument = (${atomicJsonPublisher.toString()})({ mkdir, writeFile, rename, rm, dirname, randomUUID })
+export const writeProgress = async (target, value, hold) => { await publishDocument(target, value, hold) }
+export const writeResult = async (target, value, hold) => { await publishDocument(target, value, hold) }
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms))
 const waitFor = async (predicate, label, timeoutMs = 6000) => {
   const deadline = Date.now() + timeoutMs
@@ -52,7 +56,7 @@ async function runFixtureJob(ctx, controls) {
   const result = { runtime: 'dsh-cordis-host', checks: [], sources: [], available: false, stage: 'job-started', applyEnteredAt: controls.applyEnteredAt, jobStartedAt: controls.jobStartedAt ?? Date.now(), stageHistory: [{ stage: 'job-started', at: controls.jobStartedAt ?? Date.now() }], approvalAnswererEntries: 0 }
   const home = process.env.DSH_HOME ?? process.cwd()
   const progressPath = join(home, 'push-contract-progress.json')
-  const persistProgress = async () => writeFile(progressPath, JSON.stringify(result, null, 2) + '\\n', { mode: 0o600 })
+  const persistProgress = async () => { await writeProgress(progressPath, result) }
   controls.result = result
   controls.persistProgress = persistProgress
   await mkdir(home, { recursive: true })
@@ -532,8 +536,7 @@ async function runFixtureJob(ctx, controls) {
     }
     const home = process.env.DSH_HOME ?? process.cwd()
     const destination = join(home, 'push-contract-result.json')
-    await mkdir(home, { recursive: true })
-    await writeFile(destination, JSON.stringify(result, null, 2) + '\\n', { mode: 0o600 })
+    await writeResult(destination, result)
     if (!result.ok) throw new Error('public push host contract fixture failed; see owned push-contract-result.json')
   }
 }

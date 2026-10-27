@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { describe, expect, it } from 'vitest'
 
 const fixtureUrl = new URL('../scripts/push-integration-fixture.mjs', import.meta.url)
@@ -22,6 +22,17 @@ const fixture: {
   atomicJsonPublisher?: (deps: PublisherDeps) => Publisher
   createPushIntegrationFixture: (options: { root: string }) => Promise<{ packageRoot: string, packageName: string }>
 } = await import(fixtureUrl.href)
+
+const contractFixtureUrl = new URL('../scripts/push-contract-fixture.mjs', import.meta.url)
+const contract: {
+  createPushContractFixture: (options: { root: string, repository: string, tsdown: string }) => Promise<{ packageRoot: string, entry: string, packageName: string }>
+} = await import(contractFixtureUrl.href)
+
+// Tolerant while the shared publication module does not exist yet so the rest of this file keeps running.
+const publicationUrl = new URL('../scripts/push-fixture-publication.mjs', import.meta.url)
+const publication: { atomicJsonPublisher?: (deps: PublisherDeps) => Publisher } = await import(publicationUrl.href).catch(() => ({}) as Record<string, never>)
+
+const repositoryRoot = fileURLToPath(new URL('../', import.meta.url))
 
 const makePublisher = (): Publisher => {
   if (typeof fixture.atomicJsonPublisher !== 'function') {
@@ -173,6 +184,109 @@ describe('push integration fixture JSON publication', () => {
       if (previousHome === undefined) delete process.env.DSH_HOME
       else process.env.DSH_HOME = previousHome
       await rm(root, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('push contract fixture JSON publication', () => {
+  let contractBuild: Promise<{ packageRoot: string, entry: string, packageName: string, root: string }> | undefined
+  const buildContract = (): typeof contractBuild => contractBuild ??= (async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-mobile-contract-publication-'))
+    const built = await contract.createPushContractFixture({ root, repository: repositoryRoot, tsdown: join(repositoryRoot, 'node_modules/.bin/tsdown') })
+    return { ...built, root }
+  })()
+
+  it('exposes the identical canonical publisher through the shared publication module', () => {
+    expect(typeof publication.atomicJsonPublisher).toBe('function')
+    expect(fixture.atomicJsonPublisher).toBeTypeOf('function')
+    expect(publication.atomicJsonPublisher!.toString()).toBe(fixture.atomicJsonPublisher!.toString())
+  })
+
+  it('generated contract Host exports and exercises thin atomic writeProgress/writeResult wrappers', async () => {
+    const built = (await buildContract())!
+    try {
+      const host: {
+        writeProgress?: (target: string, value: unknown, hold?: PublisherHold) => Promise<void>
+        writeResult?: (target: string, value: unknown, hold?: PublisherHold) => Promise<void>
+      } = await import(pathToFileURL(built.entry).href)
+      expect(typeof host.writeProgress).toBe('function')
+      expect(typeof host.writeResult).toBe('function')
+      // First publication creates the directory and the complete document without residue.
+      const home = join(built.root, 'fresh-home')
+      const progressTarget = join(home, 'push-contract-progress.json')
+      const resultTarget = join(home, 'push-contract-result.json')
+      await host.writeProgress!(progressTarget, { stage: 'job-started', ok: true })
+      await host.writeResult!(resultTarget, { stage: 'teardown-complete', ok: true })
+      expect(JSON.parse(await readFile(progressTarget, 'utf8'))).toEqual({ stage: 'job-started', ok: true })
+      expect(JSON.parse(await readFile(resultTarget, 'utf8'))).toEqual({ stage: 'teardown-complete', ok: true })
+      if (process.platform !== 'win32') {
+        expect(await modeOf(progressTarget)).toBe(0o600)
+        expect(await modeOf(resultTarget)).toBe(0o600)
+      }
+      expect((await readdir(home)).sort()).toEqual(['push-contract-progress.json', 'push-contract-result.json'])
+    } finally {
+      await rm(built.root, { recursive: true, force: true })
+      contractBuild = undefined
+    }
+  })
+
+  it('keeps the previous complete contract document visible while a publication is held at the barrier', async () => {
+    const built = (await buildContract())!
+    try {
+      const host: { writeProgress: (target: string, value: unknown, hold?: PublisherHold) => Promise<void> } = await import(pathToFileURL(built.entry).href)
+      const home = join(built.root, 'barrier-home')
+      const target = join(home, 'push-contract-progress.json')
+      await host.writeProgress(target, { stage: 'first', ok: true })
+      let releaseBarrier!: () => void
+      let barrierReached!: (candidate: string) => void
+      const gate = new Promise<void>(resolve => { releaseBarrier = resolve })
+      const atBarrier = new Promise<string>(resolve => { barrierReached = resolve })
+      const publishing = host.writeProgress(target, { stage: 'second', ok: true }, async candidate => {
+        barrierReached(candidate)
+        await gate
+      })
+      const candidate = await atBarrier
+      // A strict reader polling the target only ever sees the previous complete document.
+      expect(JSON.parse(await readFile(target, 'utf8'))).toEqual({ stage: 'first', ok: true })
+      expect(JSON.parse(await readFile(candidate, 'utf8'))).toEqual({ stage: 'second', ok: true })
+      expect(dirname(candidate)).toBe(home)
+      releaseBarrier()
+      await publishing
+      expect(JSON.parse(await readFile(target, 'utf8'))).toEqual({ stage: 'second', ok: true })
+      expect(await readdir(home)).toEqual([basename(target)])
+    } finally {
+      await rm(built.root, { recursive: true, force: true })
+      contractBuild = undefined
+    }
+  })
+
+  it('propagates a contract rename failure without corrupting evidence or leaving residue', async () => {
+    const built = (await buildContract())!
+    try {
+      const host: { writeResult: (target: string, value: unknown, hold?: PublisherHold) => Promise<void> } = await import(pathToFileURL(built.entry).href)
+      const home = join(built.root, 'failure-home')
+      const bystander = join(home, 'bystander.json')
+      await mkdir(home, { recursive: true })
+      await writeFile(bystander, 'keep\n')
+      const target = join(home, 'push-contract-result.json')
+      await host.writeResult(target, { stage: 'first', ok: true })
+      const outcome = host.writeResult(target, { stage: 'second', ok: true }, async candidate => {
+        await rm(candidate)
+      })
+      await expect(outcome).rejects.toMatchObject({ code: 'ENOENT' })
+      expect(JSON.parse(await readFile(target, 'utf8'))).toEqual({ stage: 'first', ok: true })
+      expect(await readFile(bystander, 'utf8')).toBe('keep\n')
+      expect((await readdir(home)).sort()).toEqual(['bystander.json', 'push-contract-result.json'])
+      // tsdown re-prints the embedded factory, so the bundled artifact is verified by the
+      // behavioral cases above plus the writer's structural markers.
+      const source = await readFile(built.entry, 'utf8')
+      expect(source).toContain('.candidate')
+      // tsdown minifies the private mode literal (0o600 -> 384); both spellings prove the marker.
+      expect(source).toMatch(/mode:\s*(384|0o600)/)
+      expect(source).toMatch(/rename\(\s*candidate\s*,\s*target\s*\)/)
+    } finally {
+      await rm(built.root, { recursive: true, force: true })
+      contractBuild = undefined
     }
   })
 })
