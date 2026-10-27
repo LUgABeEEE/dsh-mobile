@@ -28,7 +28,6 @@ const MAX_RECEIPTS_PER_SCOPE = 1_024
 const MAX_REFERENCES_PER_SCOPE = 1_024
 const MAX_TEST_QUEUE = 64
 const TEST_RATE_LIMIT_MS = 60_000
-const STORAGE_RETRY_MS = 5_000
 const UNVERIFIABLE_RECHECK_MS = 30_000
 
 type AuthorizedDevice = Readonly<{ id: string; expiresAt: number }>
@@ -95,7 +94,6 @@ export class PushDelivery {
   #admitting = true
   #pumping = false
   #active = 0
-  #overflowDrops = 0
 
   constructor(options: PushDeliveryOptions) {
     this.#host = options.host
@@ -232,7 +230,7 @@ export class PushDelivery {
           if (clean.receipts.some(item => item.sourceId === source.sourceId && sameKey(item.key, key))) continue
           if (pending.some(item => item.source.sourceId === source.sourceId && sameKey(item.key, key))) continue
           const count = pending.filter(item => item.key.scopeId === origin.scopeId).length
-          if (count >= MAX_PENDING_PER_SCOPE) { this.#overflowDrops += 1; continue }
+          if (count >= MAX_PENDING_PER_SCOPE) continue
           pending.push({
             id: randomUUID(), key, source: structuredClone(source),
             ownerGeneration: current.ownerGenerations.find(row => ownerId(row) === ownerId(key))?.generation ?? 0,
@@ -467,7 +465,8 @@ export class PushDelivery {
       ? await this.#guardKey(work.key, fakeSource, origin, false, registration.generation)
       : 'denied'
     if (result.kind === 'accepted' && finalGuard === 'allowed' && !this.#closed) work.resolve()
-    else work.reject(new Error(result.kind === 'retry' || finalGuard !== 'allowed' ? 'push_test_unavailable' : `push_test_${result.kind}`))
+    // Every non-accepted Test rejects generically (finalGuard is 'denied' for all of them); no per-kind error contract exists.
+    else work.reject(new Error('push_test_unavailable'))
   }
 
   async #guard(intent: PushIntent, origin: Origin): Promise<GuardResult> {

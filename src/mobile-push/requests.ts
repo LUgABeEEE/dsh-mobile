@@ -135,6 +135,8 @@ export class RequestLifetimes {
     // A repeated observation of one call dedupes onto its existing record; the original expiry never moves forward.
     const existing = this.#records.get(sourceId)
     if (existing && existing.source.expiresAt > createdAt) return existing
+    // The replaced record is expired: retire it so its abort listener and settle timer do not outlive it.
+    if (existing) this.#retire(existing)
     let turn: number | undefined
     try {
       const boundary = this.#ctx.sessionProjections?.stateOf?.(agent.session ?? agent, 'turnBoundary') as any

@@ -92,6 +92,23 @@ describe('request lifetime retention', () => {
     await held
   })
 
+  it('retires the replaced expired same-source record, disposing its abort listener', async () => {
+    vi.useFakeTimers()
+    let now = 20_000_000
+    const lifetimes = new RequestLifetimes(pushContext(), () => undefined, () => now)
+    opened.push(() => lifetimes.close())
+    const firstSignal = { addEventListener: vi.fn(), removeEventListener: vi.fn() }
+    await lifetimes.observeQuestion(agent('s1'), { ...questionRequest('s1', 'shared'), signal: firstSignal }, async () => 'first')
+    expect(firstSignal.addEventListener).toHaveBeenCalledTimes(1)
+    // Past the original TTL but before any sweep: a re-observation replaces the expired record.
+    now += ATTENTION_TTL_MS + 1
+    const secondSignal = { addEventListener: vi.fn(), removeEventListener: vi.fn() }
+    await lifetimes.observeQuestion(agent('s1'), { ...questionRequest('s1', 'shared'), signal: secondSignal }, async () => 'second')
+    // Asserted before close() — close() disposes everything and would mask the leak.
+    expect(firstSignal.removeEventListener).toHaveBeenCalledTimes(1)
+    expect(secondSignal.removeEventListener).toHaveBeenCalledTimes(0)
+  })
+
   it('preserves the exact delegated result and error identity through observation', async () => {
     const lifetimes = new RequestLifetimes(pushContext(), () => undefined, () => 0)
     opened.push(() => lifetimes.close())
