@@ -24,29 +24,11 @@ The Android App runtime contains [Kotlin standard library](https://github.com/Je
 
 Native-enabled Android candidate builds package `libdsh_mobile_iroh_android_transport.so` for arm64-v8a and x86_64, from `native/iroh-android-transport` and `native/iroh-core`. These sources retain their MIT license; the surrounding Android shell remains Apache-2.0. `native/Cargo.lock` records Rust dependency versions. The ordinary CI lane explicitly opts out with `-PirohNative=false`; the native CI/release lanes build both selected ABIs. This candidate does not change the already published APK or establish 32-bit-device installation support.
 
-### Rust dependency licenses in the native Android build
+### Rust workspace dependency metadata
 
-`cargo metadata --locked --manifest-path native/Cargo.toml` resolves 412 packages for the
-native-enabled build, across 30 license expressions. Almost all are permissive (MIT,
-Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC, Zlib, CC0-1.0, Unicode-3.0, Unlicense,
-CDLA-Permissive-2.0), typically offered as a choice such as `MIT OR Apache-2.0`.
+The inventory made with `cargo metadata --locked --manifest-path native/Cargo.toml` describes the whole Rust workspace, including target-specific and development dependencies. It is not an inventory of code linked into either Android ABI, nor a complete set of license/notice texts for distribution. The exact versions remain in `native/Cargo.lock`.
 
-Two entries need a specific statement rather than "permissive":
-
-- **`attohttpc` 0.30.1** and **`option-ext` 0.2.0** are **MPL-2.0**
-  (<https://github.com/sbstp/attohttpc>, <https://github.com/soc/option-ext>). MPL-2.0 is
-  file-level copyleft: it permits static linking and distribution inside a larger
-  work, and requires that the MPL-covered source files remain available under MPL-2.0
-  and that recipients are told where to get them. Both are unmodified upstream crates;
-  their source is available from the repositories above and from crates.io at the
-  pinned versions in `native/Cargo.lock`. No DSH Mobile source file is derived from
-  them.
-- **`r-efi` 5.3.0 and 6.0.0** declare `MIT OR Apache-2.0 OR LGPL-2.1-or-later`. The
-  permissive options are taken, so LGPL-2.1 does not apply to this distribution.
-
-The exact resolved versions are fixed by `native/Cargo.lock`. Anyone rebuilding must
-re-run `cargo metadata --locked` against that lock file to regenerate this list; the
-package set is not guaranteed stable across an unlocked dependency update.
+Before publishing a native-enabled APK, identify the dependencies actually shipped for each target, retain the applicable license and notice texts with the distribution, and verify any source-availability obligations. The source MIT notices retained here do not by themselves complete that release check.
 
 ## Notification identity hashing
 

@@ -27,6 +27,8 @@ iroh 用加密直连（打不通时走中继）代替公网域名和隧道账号
 
 ## 排障
 
+组件发布前必须使用目录中固定的二进制验证首次启用，不能只测本地编译的 host 或手工初始化过的目录。控制器调用 `tls-prepare`，因为 `id` 只读取既有身份。Windows 可设置 `DSH_IROH_PINNED_FIRST_USE=<已校验的程序>` 后运行 `npx vitest run tests/iroh-pinned-first-use.test.ts`，检查私有测试目录中的初始化、复用与损坏拒绝。失败应阻止组件验收，不得通过放松目录 ACL 检查或替换真实身份来让测试通过。
+
 | 现象 | 含义 |
 | --- | --- |
 | `iroh_companion_missing` | 还没点安装（或配套不在常规布局旁）；先点安装官方组件，或用 `DSH_MOBILE_IROH_COMPANION` 指向配套绝对路径复用 |

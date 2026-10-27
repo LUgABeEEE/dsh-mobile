@@ -27,6 +27,8 @@ iroh replaces public domains and tunnel accounts with an encrypted direct connec
 
 ## Troubleshooting
 
+Before a component release, verify first use with the exact catalog-pinned executable, not only a locally compiled host or a directory initialized by hand. The controller invokes `tls-prepare` because `id` only reads existing identity state. On Windows, `DSH_IROH_PINNED_FIRST_USE=<verified executable> npx vitest run tests/iroh-pinned-first-use.test.ts` checks initialization, reuse and corruption refusal in owned private storage. A failure blocks component acceptance; do not loosen directory ACL checks or replace real identities to make it pass.
+
 | Symptom | Meaning |
 | --- | --- |
 | `iroh_companion_missing` | Nothing installed yet: press Install first, or point `DSH_MOBILE_IROH_COMPANION` at a companion absolute path to reuse |

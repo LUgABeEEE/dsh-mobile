@@ -72,7 +72,7 @@ describe('iroh identity probe lifecycle', () => {
       launch: () => child as never,
       timeoutMs: 5_000,
     }).catch((error: unknown) => error)
-    stdout.emit('data', Buffer.alloc(129))
+    stdout.emit('data', Buffer.alloc(8193))
     const failure = await outcome
     child.emit('close', 0, null)
     expect(failure).toBeInstanceOf(AggregateError)
@@ -82,7 +82,11 @@ describe('iroh identity probe lifecycle', () => {
   it('returns the verified endpoint id of a successful probe', async () => {
     const root = await ownedRoot()
     const marker = join(root, 'pid')
-    await expect(defaultResolveIdentity('sidecar', root, { launch: launch('valid-id', marker) })).resolves.toBe(ENDPOINT)
+    const launcher = launch('valid-id', marker)
+    await expect(defaultResolveIdentity('sidecar', root, { launch: (file, args) => {
+      expect(args).toEqual(['--lang', 'en', 'tls-prepare', '--data-dir', root])
+      return launcher(file, args)
+    } })).resolves.toBe(ENDPOINT)
     expect(alive(await publishedPid(marker))).toBe(false)
   })
 

@@ -31,14 +31,14 @@ if (mode === 'hang') {
   })
   setInterval(() => {}, 1_000)
 } else if (mode === 'valid-id') {
-  process.stdout.write('0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n')
+  process.stdout.write(JSON.stringify({ version: 1, endpointId: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' }) + '\n')
   process.exit(0)
 } else if (mode === 'bad-id') {
   process.stdout.write('not-a-valid-endpoint-id\n')
   process.exit(0)
 } else if (mode === 'huge-output') {
-  // Far beyond the 128-byte identity budget; the parent must stop the probe.
-  process.stdout.write('a'.repeat(4096))
+  // Exceed the bounded metadata reply; the parent must stop the probe.
+  process.stdout.write('a'.repeat(16384))
   setInterval(() => {}, 1_000)
 } else if (mode === 'exit-nonzero') {
   process.stdout.write('0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n')

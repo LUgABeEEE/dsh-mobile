@@ -23,6 +23,7 @@ import { settleRemoteResources, terminateRemoteProcess, type RemoteProviderContr
 
 const READY_TIMEOUT_MS = 45_000
 const IDENTITY_TIMEOUT_MS = 15_000
+const IDENTITY_METADATA_MAX_BYTES = 8192
 const PAIRING_TIMEOUT_MS = 15_000
 const MAX_LINE_BYTES = 16 * 1024
 /** Gateway pairing windows default to five minutes; the descriptor caps at ten. */
@@ -68,7 +69,7 @@ function publicStatus(status: IrohStatus): IrohStatus {
 }
 
 /**
- * Resolve the persistent endpoint identity from the sidecar.
+ * Prepare the sidecar's private identity/TLS state and resolve its endpoint.
  *
  * Failed termination is reported separately; the controller retains the child
  * until close so shutdown/reconnect can retry cleanup before starting a successor.
@@ -82,7 +83,7 @@ export async function defaultResolveIdentity(executable: string, dataDir: string
   readonly timeoutMs?: number
   readonly onSpawn?: (child: ChildProcess) => void
 } = {}): Promise<string> {
-  const args = ['--lang', 'en', 'id', '--data-dir', dataDir]
+  const args = ['--lang', 'en', 'tls-prepare', '--data-dir', dataDir]
   const child = options.launch === undefined
     ? spawn(executable, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
     : options.launch(executable, args)
@@ -103,7 +104,7 @@ export async function defaultResolveIdentity(executable: string, dataDir: string
     deadline.unref?.()
     child.stdout.on('data', (chunk: Buffer) => {
       if (settled) return
-      if (output.length + chunk.length > 128) { fail('iroh_identity_output_too_large'); return }
+      if (output.length + chunk.length > IDENTITY_METADATA_MAX_BYTES) { fail('iroh_identity_output_too_large'); return }
       output = Buffer.concat([output, chunk])
     })
     // The probe is short-lived and writes nothing useful to stderr; drain it so
@@ -116,10 +117,13 @@ export async function defaultResolveIdentity(executable: string, dataDir: string
       clearTimeout(deadline)
       if (settled) return
       settled = true
-      let id = ''
-      try { id = new TextDecoder('utf-8', { fatal: true }).decode(output).trim() } catch { reject(new Error('iroh_identity_invalid')); return }
-      if (code !== 0 || !/^[0-9a-f]{64}$/u.test(id)) reject(new Error('iroh_identity_invalid'))
-      else resolve(id)
+      let metadata: unknown
+      try { metadata = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(output)) } catch { reject(new Error('iroh_identity_invalid')); return }
+      if (code !== 0 || typeof metadata !== 'object' || metadata === null
+        || !('version' in metadata) || metadata.version !== 1
+        || !('endpointId' in metadata) || typeof metadata.endpointId !== 'string'
+        || !/^[0-9a-f]{64}$/u.test(metadata.endpointId)) reject(new Error('iroh_identity_invalid'))
+      else resolve(metadata.endpointId)
     })
   })
   return result
