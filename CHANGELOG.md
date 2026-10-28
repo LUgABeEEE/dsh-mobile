@@ -2,6 +2,22 @@
 
 Notable changes are recorded here. GitHub Releases provide the downloadable packages and generated commit notes.
 
+## Unreleased
+
+- Rebuild the Mobile access panel as a compact floating two-column layout: channel selection stays on the left, provider configuration on the right, with aligned LAN/remote widths, a stable scrollbar gutter and denser spacing.
+
+- Move paired-device management to its own page with a header entry beside Diagnostics and separate LAN/remote device tabs; inline device rows leave the main panes.
+
+- cloudflared: keep tunnel switching to the tab row, surface tunnel notes as a hover popover, collapse named-tunnel settings behind an expandable section that stays read-only after saving until edited, require saving the named tunnel before enabling remote access, and close a running connection before switching tunnel types.
+
+- Only show the pairing QR placeholder when a provider is actually ready to pair; provider component install buttons move below the QR next to the enable row.
+
+- Add iroh component cleanup: a purge action removes the installed sidecar from the plugin private directory (new authenticated route), disabled while the connection runs.
+
+- Show real APK download sizes on the download buttons, resolved dynamically from the published GitHub release assets.
+
+- State fixes: the LAN option's aria-checked follows the active view, the notes popover opens for touch and keyboard, the install row hides when nothing is installable, and iroh cleanup is blocked while connected.
+
 ## 0.7.0 - 2026-10-28
 
 - Distribute the iroh sidecar from this plugin. **Install official component** downloads the pinned `dsh-mobile-iroh 0.1.0-alpha.1` release per platform, verifies byte length and SHA-256, and promotes it into the plugin private directory with backup and rollback; a verified companion copy is reused without downloading during the transition, and switching the channel on alone never downloads. The panel names the download size, reports verification progress, and identifies the exact missing/invalid/offline failure instead of a generic not-ready message.
