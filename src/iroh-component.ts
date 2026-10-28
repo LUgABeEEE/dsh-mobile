@@ -330,6 +330,23 @@ export class IrohComponentManager {
     }
   }
 
+  /** Remove the installed sidecar component from the plugin private directory. */
+  async purge(): Promise<IrohComponentStatus> {
+    return this.enqueue(async () => {
+      const failures: unknown[] = []
+      try {
+        await removeIrohTree(this.stateDirectory, this.componentStorage)
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') failures.push(error)
+      }
+      this.cachedExecutable = undefined
+      this.origin = undefined
+      this.cached = this.baseStatus()
+      if (failures.length > 0) throw new AggregateError(failures, 'iroh_component_cleanup_failed')
+      return this.cached
+    })
+  }
+
   private async refresh(): Promise<IrohComponentStatus> {
     if (this.artifact === undefined) {
       this.origin = undefined

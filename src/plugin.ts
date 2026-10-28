@@ -1375,6 +1375,20 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
           sendJson(response, 200, remotePayload(), false)
           return
         }
+        if (request.method === 'POST' && target.decodedPathname === `${LOCAL_ADMIN_PREFIX}/remote/iroh/component/purge`) {
+          const body = await readJsonObject(request, 4096)
+          if (body.confirm !== true) throw new HttpError(400, 'bad_request')
+          logger.info('iroh component purge started')
+          try {
+            await remoteProviders.mutate(async () => irohComponent.purge())
+            logger.info('iroh component purge completed')
+          } catch (error) {
+            logger.error('iroh component purge failed: %s', error instanceof Error ? error.stack ?? error.message : String(error))
+            throw error
+          }
+          sendJson(response, 200, remotePayload(), false)
+          return
+        }
         if (request.method === 'POST' && target.decodedPathname === `${LOCAL_ADMIN_PREFIX}/remote/iroh/pairing/begin`) {
           await readJsonObject(request, 4096)
           logger.info('iroh pairing window requested')

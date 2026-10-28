@@ -39,6 +39,9 @@ export interface PluginReleaseStatus {
   readonly updateSupported: boolean
   readonly androidVersion?: string
   readonly androidDownloadUrl: string
+  /** Actual byte sizes of the published APKs, resolved from the GitHub release assets. */
+  readonly androidCompatBytes?: number
+  readonly androidIrohBytes?: number
   /** Trimmed GitHub release notes for the selected npm version. */
   readonly releaseNotes?: string
 }
@@ -203,6 +206,7 @@ async function fetchNpmVersion(fetcher: typeof globalThis.fetch): Promise<string
 
 interface AndroidRelease {
   readonly version: string
+  readonly tag: string
   readonly downloadUrl: string
 }
 
@@ -211,8 +215,38 @@ function androidRelease(version: unknown, tag: unknown): AndroidRelease | undefi
     || parseSemver(version) === undefined || (tag !== `v${version}` && tag !== `android-v${version}`)) return undefined
   return Object.freeze({
     version,
+    tag: tag as string,
     downloadUrl: `https://github.com/saya-ch/dsh-mobile/releases/download/${tag}/dsh-mobile-android-v${version}.apk`,
   })
+}
+
+/** Read the published APK byte sizes from the GitHub release assets (best effort). */
+async function fetchAndroidAssetSizes(
+  fetcher: typeof globalThis.fetch,
+  version: string,
+  tag: string,
+): Promise<{ readonly compatBytes?: number; readonly irohBytes?: number }> {
+  try {
+    const response = await fetcher(`${GITHUB_RELEASE_API}${encodeURIComponent(tag)}`, {
+      headers: { accept: 'application/vnd.github+json', 'user-agent': 'dsh-mobile-release-check' },
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    })
+    if (!response.ok) return {}
+    const payload = await response.json() as { readonly assets?: unknown }
+    const assets = Array.isArray(payload.assets) ? payload.assets as Record<string, unknown>[] : []
+    const sizeOf = (name: string): number | undefined => {
+      const asset = assets.find(entry => entry.name === name)
+      return asset !== undefined && typeof asset.size === 'number' ? asset.size : undefined
+    }
+    const compatBytes = sizeOf(`dsh-mobile-android-v${version}.apk`)
+    const irohBytes = sizeOf(`dsh-mobile-android-v${version}-iroh.apk`)
+    return {
+      ...(compatBytes === undefined ? {} : { compatBytes }),
+      ...(irohBytes === undefined ? {} : { irohBytes }),
+    }
+  } catch {
+    return {}
+  }
 }
 
 function androidReleaseDescriptor(payload: unknown): AndroidRelease | undefined {
@@ -457,6 +491,9 @@ export class PluginReleaseManager {
     const latestVersion = npmResult.status === 'fulfilled' ? npmResult.value : undefined
     const android = androidResult.status === 'fulfilled' ? androidResult.value : undefined
     const releaseNotes = notesResult.status === 'fulfilled' ? notesResult.value : undefined
+    const androidSizes: { readonly compatBytes?: number; readonly irohBytes?: number } = android === undefined
+      ? {}
+      : await fetchAndroidAssetSizes(this.fetcher, android.version, android.tag)
     const comparison = latestVersion === undefined
       ? undefined
       : comparePluginVersions(latestVersion, this.installedVersion)
@@ -467,6 +504,8 @@ export class PluginReleaseManager {
       updateSupported,
       ...(android === undefined ? {} : { androidVersion: android.version }),
       androidDownloadUrl: android?.downloadUrl ?? GITHUB_RELEASES_URL,
+      ...(androidSizes.compatBytes === undefined ? {} : { androidCompatBytes: androidSizes.compatBytes }),
+      ...(androidSizes.irohBytes === undefined ? {} : { androidIrohBytes: androidSizes.irohBytes }),
       ...(releaseNotes === undefined ? {} : { releaseNotes }),
     })
     this.cache = { expiresAt: this.now() + STATUS_CACHE_MS, status }

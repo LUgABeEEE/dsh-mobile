@@ -546,7 +546,10 @@ describe('mobile-control localization', () => {
     expect(source).toContain('/remote/cloudflared/tunnel/purge')
     expect(source).toContain('cloudflaredToken.value = \'\'')
     // Quick tunnels allocate their own address, so the named fields stay hidden.
-    expect(source).toContain('cloudflaredTunnel.hidden = cloudflaredShownMode !== \'named\'')
+    // The form is collapsed by default and, once a named tunnel is configured, it
+    // stays locked until the operator explicitly chooses Edit.
+    expect(source).toContain('cloudflaredTunnel.hidden = true')
+    expect(source).toContain("const locked = named && cloudflaredTunnelMode === 'named' && !cloudflaredConfigEditing")
     expect(CONTROL_STYLES).toContain('.dsh-mobile-control__tunnel[hidden]{display:none}')
   })
 
@@ -600,12 +603,16 @@ describe('mobile-control localization', () => {
       latestVersion: '0.4.1',
       androidVersion: '0.4.1',
       androidDownloadUrl: 'https://github.com/saya-ch/dsh-mobile/releases/download/v0.4.1/dsh-mobile-android-v0.4.1.apk',
+
+      androidIrohDownloadUrl: 'https://github.com/saya-ch/dsh-mobile/releases/download/android-v0.4.1/dsh-mobile-android-v0.4.1-iroh.apk',
       releaseNotes: '## notes',
     })).toEqual({
       updateAvailable: true,
       latestVersion: '0.4.1',
       androidVersion: '0.4.1',
       androidDownloadUrl: 'https://github.com/saya-ch/dsh-mobile/releases/download/v0.4.1/dsh-mobile-android-v0.4.1.apk',
+
+      androidIrohDownloadUrl: 'https://github.com/saya-ch/dsh-mobile/releases/download/android-v0.4.1/dsh-mobile-android-v0.4.1-iroh.apk',
       releaseNotes: '## notes',
     })
     expect(clientReleaseInfo({
@@ -622,11 +629,15 @@ describe('mobile-control localization', () => {
       latestVersion: '0.4.1',
       androidVersion: '0.4.1',
       androidDownloadUrl: 'https://github.com/saya-ch/dsh-mobile/releases/download/v0.4.1/dsh-mobile-android-v0.4.1.apk',
+
+      androidIrohDownloadUrl: 'https://github.com/saya-ch/dsh-mobile/releases/download/android-v0.4.1/dsh-mobile-android-v0.4.1-iroh.apk',
     })).toEqual({
       updateAvailable: true,
       latestVersion: '0.4.1',
       androidVersion: '0.4.1',
       androidDownloadUrl: 'https://github.com/saya-ch/dsh-mobile/releases/download/v0.4.1/dsh-mobile-android-v0.4.1.apk',
+
+      androidIrohDownloadUrl: 'https://github.com/saya-ch/dsh-mobile/releases/download/android-v0.4.1/dsh-mobile-android-v0.4.1-iroh.apk',
     })
     expect(clientReleaseInfo({
       updateAvailable: true,
@@ -652,6 +663,7 @@ describe('mobile-control localization', () => {
     const androidDownloadUrl = `https://github.com/saya-ch/dsh-mobile/releases/download/${releaseTag}/dsh-mobile-android-v0.6.1.apk`
     expect(clientReleaseInfo({ updateAvailable: true, latestVersion: '0.6.2', androidVersion: '0.6.1', androidDownloadUrl })).toEqual({
       updateAvailable: true, latestVersion: '0.6.2', androidVersion: '0.6.1', androidDownloadUrl,
+      androidIrohDownloadUrl: 'https://github.com/saya-ch/dsh-mobile/releases/download/android-v0.6.1/dsh-mobile-android-v0.6.1-iroh.apk',
     })
   })
 
@@ -729,8 +741,8 @@ describe('mobile-control localization', () => {
     expect(it.cloudflaredBadge).toBe('Account facoltativo')
     expect(en.prepareCloudflared).toBe('Prepare cloudflared')
     for (const [catalog, label] of [[en, 'en'], [it, 'it'], [zh, 'zh']] as const) {
-      expect(catalog.cloudflaredDescription, label).toMatch(/quick|快速|rapido/iu)
-      expect(catalog.cloudflaredDescription, label).toMatch(/named|命名|con nome/iu)
+      expect(catalog.cloudflaredDescription, label).toMatch(/temporary|临时|temporaneo/iu)
+      expect(catalog.cloudflaredDescription, label).toMatch(/fixed|fixed domain|固定|fisso/iu)
     }
     // A quick tunnel is temporary, rate-limited, and carries no uptime promise;
     // the UI must say so rather than implying a production-grade channel.
@@ -855,7 +867,7 @@ describe('mobile-control localization', () => {
       expect(copy.caddyName?.length).toBeGreaterThan(0)
       expect(copy.caddyModePreviewNote?.length).toBeGreaterThan(0)
     }
-    expect((MOBILE_CONTROL_MESSAGES.en as Record<string, string>).originDescription).toContain('managed Caddy')
+    expect((MOBILE_CONTROL_MESSAGES.en as Record<string, string>).originDescription).toContain('Caddy')
   })
 
   it('keeps every origin validation and runtime error translated in all locales', () => {
@@ -870,7 +882,7 @@ describe('mobile-control localization', () => {
 
   it('wires private-origin controls and protects edited forms from stale poll snapshots', () => {
     const source = readFileSync(new URL('../src/client.ts', import.meta.url), 'utf8')
-    expect(source).toContain('selfHostedBody.append(frpChoice, originChoice, irohChoice)')
+    expect(source).toContain('providerChoices.append(irohChoice, frpChoice, originChoice)')
     expect(source).toContain('/api/mobile-access/remote/origin/configure')
     expect(source).toContain('/api/mobile-access/remote/origin/purge')
     expect(source).toContain('if (!originFormDirty && !originFormBusy)')

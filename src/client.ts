@@ -502,6 +502,11 @@ export interface ClientReleaseInfo {
   readonly latestVersion?: string
   readonly androidVersion?: string
   readonly androidDownloadUrl: string
+  /** Full 64-bit APK that also ships the optional iroh transport. */
+  readonly androidIrohDownloadUrl?: string
+  /** Published APK byte sizes resolved from the release assets. */
+  readonly androidCompatBytes?: number
+  readonly androidIrohBytes?: number
   /** Trimmed release notes body for the preview card (best effort). */
   readonly releaseNotes?: string
 }
@@ -523,11 +528,19 @@ export function clientReleaseInfo(data: Readonly<Record<string, unknown>>): Clie
   const androidDownloadUrl = typeof data.androidDownloadUrl === 'string' && expectedAndroidDownloadUrls.includes(data.androidDownloadUrl)
     ? data.androidDownloadUrl
     : GITHUB_RELEASES_URL
+  // The full build shares the same release tag and only adds the -iroh suffix, so
+  // its URL is derived from the validated version instead of a separate response field.
+  const androidIrohDownloadUrl = androidVersion === undefined || androidDownloadUrl === GITHUB_RELEASES_URL
+    ? undefined
+    : `${GITHUB_RELEASES_URL}/download/android-v${androidVersion}/dsh-mobile-android-v${androidVersion}-iroh.apk`
   return {
     updateAvailable: data.updateAvailable === true && latestVersion !== undefined,
     ...(latestVersion === undefined ? {} : { latestVersion }),
     ...(androidVersion === undefined ? {} : { androidVersion }),
     androidDownloadUrl,
+    ...(androidIrohDownloadUrl === undefined ? {} : { androidIrohDownloadUrl }),
+    ...(typeof data.androidCompatBytes === 'number' && data.androidCompatBytes > 0 ? { androidCompatBytes: data.androidCompatBytes } : {}),
+    ...(typeof data.androidIrohBytes === 'number' && data.androidIrohBytes > 0 ? { androidIrohBytes: data.androidIrohBytes } : {}),
     ...(typeof data.releaseNotes === 'string' && data.releaseNotes !== '' ? { releaseNotes: data.releaseNotes.slice(0, 4000) } : {}),
   }
 }
@@ -549,7 +562,26 @@ async function requestJson(
       signal: controller.signal,
       headers: localAdminRequestHeaders(init, location),
     })
-    const body = await response.json() as Record<string, unknown>
+    // Read the text first: a proxy, an older host, or a non-plugin route can answer
+    // with a plain-text body, and response.json() would surface a raw SyntaxError.
+    const text = await response.text()
+    let body: Record<string, unknown> = {}
+    if (text.trim() !== '') {
+      let parsed: unknown
+      try {
+        parsed = JSON.parse(text)
+      } catch {
+        throw new Error(!response.ok
+          ? `HTTP ${String(response.status)} (${path})`
+          : `${controlTranslator()('invalidResponse')} (${path})`)
+      }
+      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        throw new Error(!response.ok
+          ? `HTTP ${String(response.status)} (${path})`
+          : `${controlTranslator()('invalidResponse')} (${path})`)
+      }
+      body = parsed as Record<string, unknown>
+    }
     if (!response.ok) throw new Error(typeof body.error === 'string' ? body.error : `HTTP ${String(response.status)}`)
     return body
   } catch (error) {
@@ -936,9 +968,15 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
   updateActions.append(updateLater, updateNow); updateCard.append(updateCardTitle, updateCardNotes, updateCardNotice, updateActions)
   const diagnosticsEntry = element('button', 'dsh-mobile-control__diagnostic-entry'); diagnosticsEntry.type = 'button'; diagnosticsEntry.textContent = t('diagnostics'); diagnosticsEntry.setAttribute('aria-label', t('openDiagnostics')); diagnosticsEntry.setAttribute('aria-pressed', 'false')
   const close = element('button', 'dsh-mobile-control__close'); close.type = 'button'; close.textContent = '×'; close.setAttribute('aria-label', t('collapseMobileAccess'))
-  headerActions.append(updatePlugin, diagnosticsEntry, close)
+  const devicesEntry = element('button', 'dsh-mobile-control__diagnostic-entry'); devicesEntry.type = 'button'; devicesEntry.textContent = t('device'); devicesEntry.setAttribute('aria-label', t('managePairedDevices')); devicesEntry.setAttribute('aria-pressed', 'false')
+  headerActions.append(updatePlugin, diagnosticsEntry, devicesEntry, close)
   const releaseNotice = element('p', 'dsh-mobile-control__release-notice'); releaseNotice.hidden = true; releaseNotice.setAttribute('role', 'status'); releaseNotice.setAttribute('aria-live', 'polite')
+  // Two App builds exist: the compatibility APK (32-bit friendly, no iroh) and the
+  // full 64-bit APK that adds the optional iroh transport.
+  const appDownloads = element('div', 'dsh-mobile-control__app-downloads')
   const appDownload = element('a', 'dsh-mobile-control__app-download'); appDownload.href = GITHUB_RELEASES_URL; appDownload.target = '_blank'; appDownload.rel = 'noopener noreferrer'; appDownload.textContent = t('downloadAndroid'); appDownload.setAttribute('aria-label', t('downloadAndroidAria'))
+  const appDownloadIroh = element('a', 'dsh-mobile-control__app-download is-iroh'); appDownloadIroh.href = GITHUB_RELEASES_URL; appDownloadIroh.target = '_blank'; appDownloadIroh.rel = 'noopener noreferrer'; appDownloadIroh.textContent = t('downloadAndroidIroh'); appDownloadIroh.setAttribute('aria-label', t('downloadAndroidIrohAria')); appDownloadIroh.hidden = true
+  appDownloads.append(appDownload, appDownloadIroh)
   const switcher = element('div', 'dsh-mobile-control__switcher')
   const lanTab = element('button', 'dsh-mobile-control__tab is-active'); lanTab.type = 'button'; lanTab.textContent = t('lan')
   const remoteTab = element('button', 'dsh-mobile-control__tab'); remoteTab.type = 'button'; remoteTab.textContent = t('remote')
@@ -1008,7 +1046,7 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
   const accessLabel = element('span', 'dsh-mobile-control__access-label'); accessLabel.textContent = t('browserAccess')
   const accessLink = element('a', 'dsh-mobile-control__access-link'); accessLink.target = '_blank'; accessLink.rel = 'noreferrer'
   access.append(accessLabel, accessLink)
-  const qrBox = element('div', 'dsh-mobile-control__qr'); qrBox.hidden = true
+  const qrBox = element('div', 'dsh-mobile-control__qr')
   const status = element('p', 'dsh-mobile-control__status'); status.textContent = t('loadingStatus')
   const extensionStatus = element('p', 'dsh-mobile-control__extensions'); extensionStatus.hidden = true
   const actions = element('div', 'dsh-mobile-control__actions')
@@ -1018,20 +1056,13 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
   const manageRow = element('div', 'dsh-mobile-control__manage-row')
   const manageDevices = element('button', 'dsh-mobile-control__manage'); manageDevices.type = 'button'; manageDevices.textContent = t('managePairedDevices')
   const resetAll = element('button', 'dsh-mobile-control__manage'); resetAll.type = 'button'; resetAll.textContent = t('clearAllDevices')
-  manageRow.append(manageDevices, resetAll)
-  const devicePanel = element('div', 'dsh-mobile-control__devices'); devicePanel.hidden = true
-  const remoteView = element('div', 'dsh-mobile-control__view is-remote'); remoteView.hidden = true
+  manageRow.append(manageDevices)
+  const devicePanel = element('div', 'dsh-mobile-control__devices')
+  const remoteView = element('div', 'dsh-mobile-control__view is-remote')
   const remoteIntro = element('p', 'dsh-mobile-control__intro'); remoteIntro.textContent = t('remoteIntro')
   const httpFrameWarning = element('p', 'dsh-mobile-control__http-frame-warning'); httpFrameWarning.textContent = t('httpFrameWarning'); httpFrameWarning.hidden = location.protocol !== 'https:'; httpFrameWarning.setAttribute('role', 'note')
   const providerSection = element('section', 'dsh-mobile-control__provider-section')
   const providerHeading = element('h3', 'dsh-mobile-control__section-title'); providerHeading.textContent = t('chooseProvider')
-  const providerInfo = element('div', 'dsh-mobile-control__provider-info')
-  const providerInfoButton = element('button', 'dsh-mobile-control__provider-info-button'); providerInfoButton.type = 'button'; providerInfoButton.setAttribute('aria-label', t('providerInfoAria')); providerInfoButton.setAttribute('aria-expanded', 'false'); providerInfoButton.setAttribute('aria-controls', 'dsh-mobile-provider-info'); providerInfoButton.setAttribute('aria-describedby', 'dsh-mobile-provider-info')
-  const providerInfoGlyph = element('span', 'dsh-mobile-control__provider-info-glyph'); providerInfoGlyph.textContent = 'i'; providerInfoGlyph.setAttribute('aria-hidden', 'true')
-  const providerInfoPopover = element('div', 'dsh-mobile-control__provider-info-popover'); providerInfoPopover.id = 'dsh-mobile-provider-info'; providerInfoPopover.setAttribute('role', 'tooltip'); providerInfoPopover.hidden = true
-  const providerInfoTitle = element('strong'); providerInfoTitle.textContent = t('providerSafeTitle')
-  const providerInfoText = element('span'); providerInfoText.textContent = t('providerSafeText')
-  providerInfoButton.append(providerInfoGlyph); providerInfoPopover.append(providerInfoTitle, providerInfoText); providerInfo.append(providerInfoButton, providerInfoPopover)
   const providerChoices = element('div', 'dsh-mobile-control__provider-choices'); providerChoices.setAttribute('role', 'radiogroup'); providerChoices.setAttribute('aria-label', t('providerGroupAria'))
   const tailscaleChoice = element('button', 'dsh-mobile-control__provider'); tailscaleChoice.type = 'button'; tailscaleChoice.setAttribute('role', 'radio'); tailscaleChoice.setAttribute('aria-checked', 'true')
   const tailscaleChoiceTop = element('span', 'dsh-mobile-control__provider-top')
@@ -1070,7 +1101,7 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
   const cpolarSetup = element('section', 'dsh-mobile-control__cpolar-setup'); cpolarSetup.hidden = true
   const cpolarSetupTitle = element('h3', 'dsh-mobile-control__section-title'); cpolarSetupTitle.textContent = t('prepareCpolar')
   const cpolarComponentStatus = element('p', 'dsh-mobile-control__component-status'); cpolarComponentStatus.textContent = t('checkingComponent')
-  const cpolarInstall = element('button', 'dsh-mobile-control__primary'); cpolarInstall.type = 'button'; cpolarInstall.textContent = t('installOfficial')
+  const cpolarInstall = element('button', 'dsh-mobile-control__primary'); cpolarInstall.type = 'button'; cpolarInstall.textContent = t('installOfficial'); cpolarInstall.hidden = true
   const cpolarAccount = element('div', 'dsh-mobile-control__cpolar-account'); cpolarAccount.hidden = true
   const cpolarAccountText = element('p', 'dsh-mobile-control__component-note'); cpolarAccountText.textContent = t('cpolarAccountNote')
   const cpolarAccountLinks = element('div', 'dsh-mobile-control__link-row')
@@ -1090,7 +1121,7 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
   const cpolarTerms = element('a', 'dsh-mobile-control__text-link'); cpolarTerms.href = 'https://www.cpolar.com/tos'; cpolarTerms.target = '_blank'; cpolarTerms.rel = 'noopener noreferrer'; cpolarTerms.textContent = t('terms')
   const cpolarPurge = element('button', 'dsh-mobile-control__danger'); cpolarPurge.type = 'button'; cpolarPurge.textContent = t('purgeCpolar')
   cpolarDetailsBody.append(cpolarDetailsText, cpolarStorage, cpolarOfficial, cpolarTerms, cpolarPurge); cpolarDetails.append(cpolarDetailsSummary, cpolarDetailsBody)
-  cpolarSetup.append(cpolarSetupTitle, cpolarComponentStatus, cpolarInstall, cpolarAccount, cpolarDetails)
+  cpolarSetup.append(cpolarSetupTitle, cpolarComponentStatus, cpolarAccount)
   // Share the managed-component setup layout: a quick tunnel has no account
   // section, so only the install action, the temporary-address warning, and the
   // component source/cleanup disclosure remain.
@@ -1104,6 +1135,26 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
   const cloudflaredModeNamed = element('button', 'dsh-mobile-control__tab'); cloudflaredModeNamed.type = 'button'; cloudflaredModeNamed.textContent = t('cloudflaredTunnelNamed')
   cloudflaredMode.append(cloudflaredModeQuick, cloudflaredModeNamed)
   const cloudflaredModeHint = element('p', 'dsh-mobile-control__component-status'); cloudflaredModeHint.textContent = t('cloudflaredTunnelQuickHint')
+  // Tunnel-mode notes are tucked behind an info icon inside this panel rather than
+  // shown as a long banner in the form.
+  const cloudflaredNotesToggle = element('button', 'dsh-mobile-control__notes-toggle'); cloudflaredNotesToggle.type = 'button'; cloudflaredNotesToggle.textContent = 'i'; cloudflaredNotesToggle.setAttribute('aria-label', t('providerInfoAria')); cloudflaredNotesToggle.setAttribute('aria-expanded', 'false')
+  const cloudflaredNotesPanel = element('div', 'dsh-mobile-control__notes-panel'); cloudflaredNotesPanel.hidden = true
+  const cloudflaredNotesQuick = element('p'); cloudflaredNotesQuick.textContent = t('cloudflaredQuickNote')
+  const cloudflaredNotesNamed = element('p'); cloudflaredNotesNamed.textContent = t('cloudflaredNamedNote')
+  cloudflaredNotesPanel.append(cloudflaredNotesQuick, cloudflaredNotesNamed)
+  const cloudflaredModeRow = element('div', 'dsh-mobile-control__mode-row'); cloudflaredModeRow.append(cloudflaredMode, cloudflaredNotesToggle, cloudflaredNotesPanel)
+  const setCloudflaredNotesOpen = (open: boolean): void => {
+    cloudflaredNotesPanel.hidden = !open
+    cloudflaredNotesToggle.setAttribute('aria-expanded', String(open))
+  }
+  // Hover shows the notes; only touch (no hover) falls back to tapping.
+  const hoverCapable = window.matchMedia('(hover: hover)')
+  cloudflaredModeRow.addEventListener('pointerenter', () => { if (hoverCapable.matches) setCloudflaredNotesOpen(true) })
+  cloudflaredModeRow.addEventListener('pointerleave', () => { if (hoverCapable.matches) setCloudflaredNotesOpen(false) })
+  cloudflaredNotesToggle.addEventListener('click', () => {
+    if (hoverCapable.matches) { setCloudflaredNotesOpen(true); return }
+    setCloudflaredNotesOpen(!cloudflaredNotesPanel.hidden)
+  })
   const cloudflaredTunnel = element('div', 'dsh-mobile-control__tunnel'); cloudflaredTunnel.hidden = true
   const cloudflaredTunnelFields = element('div', 'dsh-mobile-control__frp-fields')
   const cloudflaredHostnameLabel = element('label', 'dsh-mobile-control__field'); cloudflaredHostnameLabel.textContent = t('cloudflaredTunnelHostname')
@@ -1121,12 +1172,15 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
   const cloudflaredSaveLabel = (): string => (cloudflaredModeDraft ?? cloudflaredTunnelMode) === 'named'
     ? t('cloudflaredTunnelSave') : t('cloudflaredTunnelSaveQuick')
   const cloudflaredTunnelForget = element('button', 'dsh-mobile-control__danger dsh-mobile-control__frp-action'); cloudflaredTunnelForget.type = 'button'; cloudflaredTunnelForget.textContent = t('cloudflaredTunnelForget'); cloudflaredTunnelForget.hidden = true
+  const cloudflaredTunnelToggle = element('button', 'dsh-mobile-control__tunnel-toggle'); cloudflaredTunnelToggle.type = 'button'; cloudflaredTunnelToggle.textContent = t('cloudflaredShowConfig') + ' ▾'; cloudflaredTunnelToggle.hidden = true
+  const cloudflaredEditButton = element('button', 'dsh-mobile-control__secondary'); cloudflaredEditButton.type = 'button'; cloudflaredEditButton.textContent = t('cloudflaredEditConfig'); cloudflaredEditButton.hidden = true
   // Only the named-tunnel inputs live in this container. Save and Forget stay
   // outside it: Save is also how a quick tunnel is committed, so hiding the
   // container must never take the only way to submit the form with it.
-  cloudflaredTunnel.append(cloudflaredTunnelFields, cloudflaredTunnelStatus, cloudflaredTunnelHint)
+  const cloudflaredTunnelFeedback = element('p', 'dsh-mobile-control__component-status'); cloudflaredTunnelFeedback.hidden = true
+  cloudflaredTunnel.append(cloudflaredTunnelFields, cloudflaredTunnelStatus, cloudflaredTunnelHint, cloudflaredEditButton, cloudflaredTunnelSave, cloudflaredTunnelForget, cloudflaredTunnelFeedback)
   const cloudflaredComponentStatus = element('p', 'dsh-mobile-control__component-status'); cloudflaredComponentStatus.textContent = t('checkingComponent')
-  const cloudflaredInstall = element('button', 'dsh-mobile-control__primary'); cloudflaredInstall.type = 'button'; cloudflaredInstall.textContent = t('installOfficial')
+  const cloudflaredInstall = element('button', 'dsh-mobile-control__primary'); cloudflaredInstall.type = 'button'; cloudflaredInstall.textContent = t('installOfficial'); cloudflaredInstall.hidden = true
   const cloudflaredNote = element('p', 'dsh-mobile-control__origin-warning'); cloudflaredNote.textContent = t('cloudflaredQuickNote')
   const cloudflaredDetails = element('details', 'dsh-mobile-control__details')
   const cloudflaredDetailsSummary = element('summary'); cloudflaredDetailsSummary.textContent = t('componentDetails')
@@ -1137,33 +1191,38 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
   const cloudflaredTerms = element('a', 'dsh-mobile-control__text-link'); cloudflaredTerms.href = 'https://www.cloudflare.com/website-terms/'; cloudflaredTerms.target = '_blank'; cloudflaredTerms.rel = 'noopener noreferrer'; cloudflaredTerms.textContent = t('terms')
   const cloudflaredPurge = element('button', 'dsh-mobile-control__danger'); cloudflaredPurge.type = 'button'; cloudflaredPurge.textContent = t('purgeCloudflared')
   cloudflaredDetailsBody.append(cloudflaredDetailsText, cloudflaredStorage, cloudflaredOfficial, cloudflaredTerms, cloudflaredPurge); cloudflaredDetails.append(cloudflaredDetailsSummary, cloudflaredDetailsBody)
-  cloudflaredSetup.append(cloudflaredSetupTitle, cloudflaredTunnelTitle, cloudflaredMode, cloudflaredModeHint, cloudflaredTunnel, cloudflaredTunnelSave, cloudflaredTunnelForget, cloudflaredComponentStatus, cloudflaredInstall, cloudflaredNote, cloudflaredDetails)
-  const selfHosted = element('details', 'dsh-mobile-control__self-hosted')
-  const selfHostedSummary = element('summary', 'dsh-mobile-control__self-hosted-summary')
-  const selfHostedSummaryText = element('span')
-  const selfHostedSummaryTitle = element('strong'); selfHostedSummaryTitle.textContent = t('selfHostedConnections')
-  const selfHostedSummaryDescription = element('span'); selfHostedSummaryDescription.textContent = t('selfHostedDescription')
-  const selfHostedBadge = element('span', 'dsh-mobile-control__provider-badge is-frp'); selfHostedBadge.textContent = t('advanced')
-  selfHostedSummaryText.append(selfHostedSummaryTitle, selfHostedSummaryDescription); selfHostedSummary.append(selfHostedSummaryText, selfHostedBadge)
-  const selfHostedBody = element('div', 'dsh-mobile-control__self-hosted-body')
+  cloudflaredSetup.append(cloudflaredSetupTitle, cloudflaredTunnelTitle, cloudflaredModeRow, cloudflaredModeHint, cloudflaredTunnelToggle, cloudflaredTunnel, cloudflaredComponentStatus)
   const frpChoice = element('button', 'dsh-mobile-control__provider is-frp'); frpChoice.type = 'button'; frpChoice.setAttribute('aria-pressed', 'false')
   const frpChoiceTop = element('span', 'dsh-mobile-control__provider-top')
   const frpChoiceName = element('strong'); frpChoiceName.textContent = t('frpName')
   const frpChoiceDescription = element('span', 'dsh-mobile-control__provider-description'); frpChoiceDescription.textContent = t('frpDescription')
-  frpChoiceTop.append(frpChoiceName); frpChoice.append(frpChoiceTop, frpChoiceDescription)
+  const frpChoiceBadge = element('span', 'dsh-mobile-control__provider-badge is-frp'); frpChoiceBadge.textContent = t('advanced')
+  frpChoiceTop.append(frpChoiceName, frpChoiceBadge); frpChoice.append(frpChoiceTop, frpChoiceDescription)
   const originChoice = element('button', 'dsh-mobile-control__provider is-origin'); originChoice.type = 'button'; originChoice.setAttribute('aria-pressed', 'false')
   const originChoiceTop = element('span', 'dsh-mobile-control__provider-top')
   const originChoiceName = element('strong'); originChoiceName.textContent = t('originName')
   const originChoiceDescription = element('span', 'dsh-mobile-control__provider-description'); originChoiceDescription.textContent = t('originDescription')
-  originChoiceTop.append(originChoiceName); originChoice.append(originChoiceTop, originChoiceDescription)
+  const originChoiceBadge = element('span', 'dsh-mobile-control__provider-badge'); originChoiceBadge.textContent = t('advanced')
+  originChoiceTop.append(originChoiceName, originChoiceBadge); originChoice.append(originChoiceTop, originChoiceDescription)
   const irohChoice = element('button', 'dsh-mobile-control__provider is-iroh'); irohChoice.type = 'button'; irohChoice.setAttribute('aria-pressed', 'false')
   const irohChoiceTop = element('span', 'dsh-mobile-control__provider-top')
   const irohChoiceName = element('strong'); irohChoiceName.textContent = t('irohName')
   const irohChoiceBadge = element('span', 'dsh-mobile-control__provider-badge is-iroh'); irohChoiceBadge.textContent = t('irohExperimental')
   const irohChoiceDescription = element('span', 'dsh-mobile-control__provider-description'); irohChoiceDescription.textContent = t('irohDescription')
   irohChoiceTop.append(irohChoiceName, irohChoiceBadge); irohChoice.append(irohChoiceTop, irohChoiceDescription)
-  selfHostedBody.append(frpChoice, originChoice, irohChoice); selfHosted.append(selfHostedSummary, selfHostedBody)
-  providerSection.append(providerHeading, providerInfo, providerChoices, selfHosted)
+  // iroh is a peer-to-peer transport with relay fallback, not a self-hosted inbound
+  // endpoint: keep it beside the other managed channels instead of filing it under
+  // "self-hosted" (own VPS / reverse proxy).
+  providerChoices.append(irohChoice, frpChoice, originChoice)
+  // LAN joins the channel list as the first entry, so "local" and "remote" share one
+  // left column and the right pane just renders whichever channel is selected.
+  const lanChoice = element('button', 'dsh-mobile-control__provider is-lan'); lanChoice.type = 'button'; lanChoice.setAttribute('role', 'radio'); lanChoice.setAttribute('aria-checked', 'true')
+  const lanChoiceTop = element('span', 'dsh-mobile-control__provider-top')
+  const lanChoiceName = element('strong'); lanChoiceName.textContent = t('lan')
+  const lanChoiceBadge = element('span', 'dsh-mobile-control__provider-badge'); lanChoiceBadge.textContent = t('builtIn')
+  const lanChoiceDescription = element('span', 'dsh-mobile-control__provider-description'); lanChoiceDescription.textContent = t('lanChoiceDescription')
+  lanChoiceTop.append(lanChoiceName, lanChoiceBadge); lanChoice.append(lanChoiceTop, lanChoiceDescription)
+  providerSection.append(providerHeading, lanChoice, providerChoices)
   const frpSetup = element('section', 'dsh-mobile-control__frp-setup'); frpSetup.hidden = true
   const frpSetupTitle = element('h3', 'dsh-mobile-control__section-title'); frpSetupTitle.textContent = t('prepareFrp')
   const frpStep1 = element('section', 'dsh-mobile-control__frp-step')
@@ -1300,7 +1359,7 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
   const frpVerifyGroup = element('details', 'dsh-mobile-control__frp-group'); frpVerifyGroup.open = true
   const frpVerifySummary = element('summary'); frpVerifySummary.textContent = t('frpStep4Title')
   frpVerifyGroup.append(frpVerifySummary, frpStep4)
-  frpSetup.append(frpSetupTitle, frpOverview, frpConnectionGroup, frpVpsGroup, frpComponentGroup, frpVerifyGroup, frpDetails)
+  frpSetup.append(frpSetupTitle, frpOverview, frpConnectionGroup, frpVpsGroup, frpComponentGroup, frpVerifyGroup)
   const originSetup = element('section', 'dsh-mobile-control__origin-setup'); originSetup.hidden = true
   const originSetupTitle = element('h3', 'dsh-mobile-control__section-title'); originSetupTitle.textContent = t('originHttpsTitle')
   const originHelp = element('p', 'dsh-mobile-control__component-note'); originHelp.id = 'dsh-mobile-origin-help'; originHelp.textContent = t('originHelp')
@@ -1385,13 +1444,15 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
   const irohComponentStatus = element('p', 'dsh-mobile-control__component-status'); irohComponentStatus.textContent = t('checkingComponent'); irohComponentStatus.setAttribute('role', 'status'); irohComponentStatus.setAttribute('aria-live', 'polite')
   const irohInstall = element('button', 'dsh-mobile-control__primary'); irohInstall.type = 'button'; irohInstall.textContent = t('installOfficial')
   const irohInstallProgress = element('progress', 'dsh-mobile-control__progress'); irohInstallProgress.hidden = true; irohInstallProgress.setAttribute('aria-hidden', 'true')
-  const irohPairing = element('div', 'dsh-mobile-control__ws-paths')
+  const irohPairing = element('div', 'dsh-mobile-control__iroh-pairing')
   const irohPairingTitle = element('p', 'dsh-mobile-control__component-status'); irohPairingTitle.textContent = t('irohPairingTitle')
   const irohPair = element('button', 'dsh-mobile-control__primary'); irohPair.type = 'button'; irohPair.textContent = t('generateIrohQr')
   const irohQr = element('div', 'dsh-mobile-control__qr is-expandable'); irohQr.hidden = true
   const irohPairStatus = element('p', 'dsh-mobile-control__component-status')
   const irohCopyDescriptor = element('button', 'dsh-mobile-control__secondary'); irohCopyDescriptor.type = 'button'; irohCopyDescriptor.textContent = t('copyPairLink'); irohCopyDescriptor.hidden = true
-  irohPairing.append(irohPairingTitle, irohPair, irohQr, irohPairStatus, irohCopyDescriptor)
+  // The pairing trigger sits beside enable/disable remote access; the QR code and
+  // its status stay in the card below as the result area.
+  irohPairing.append(irohPairingTitle, irohQr, irohPairStatus, irohCopyDescriptor)
   const irohDetails = element('details', 'dsh-mobile-control__details')
   const irohDetailsSummary = element('summary'); irohDetailsSummary.textContent = t('componentDetails')
   const irohDetailsBody = element('div', 'dsh-mobile-control__details-body')
@@ -1399,8 +1460,9 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
   const irohInstallNote = element('p'); irohInstallNote.textContent = t('irohInstallNote')
   const irohStorage = element('code', 'dsh-mobile-control__storage'); irohStorage.textContent = t('pluginPrivateDirectory')
   const irohOfficial = element('a', 'dsh-mobile-control__text-link'); irohOfficial.href = 'https://www.npmjs.com/package/dsh-mobile-iroh'; irohOfficial.target = '_blank'; irohOfficial.rel = 'noopener noreferrer'; irohOfficial.textContent = t('officialDownload')
-  irohDetailsBody.append(irohDetailsText, irohInstallNote, irohStorage, irohOfficial); irohDetails.append(irohDetailsSummary, irohDetailsBody)
-  irohSetup.append(irohSetupTitle, irohPhaseNote, irohComponentStatus, irohInstall, irohInstallProgress, irohPairing, irohDetails)
+  const irohPurge = element('button', 'dsh-mobile-control__danger'); irohPurge.type = 'button'; irohPurge.textContent = t('purgeIroh')
+  irohDetailsBody.append(irohDetailsText, irohInstallNote, irohStorage, irohOfficial, irohPurge); irohDetails.append(irohDetailsSummary, irohDetailsBody)
+  irohSetup.append(irohSetupTitle, irohPhaseNote, irohComponentStatus, irohInstall, irohInstallProgress, irohPairing)
   providerSetupBody.append(cpolarSetup, cloudflaredSetup, frpSetup, originSetup, irohSetup, tailscaleInfo)
   // Fullscreen viewer for the dense iroh pairing QR: the encoded descriptor
   // is far too small to scan reliably at inline size.
@@ -1455,12 +1517,12 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
   let activeRemotePairExpiresAt = 0
   let activeIrohDescriptor = ''
   let activeIrohQrSvg = ''
-  remoteActions.append(remoteToggle, remoteLogin, remoteReconnect, remotePair, remoteCopyLink)
+  remoteActions.append(remoteToggle, irohPair, remoteLogin, remoteReconnect, remotePair, remoteCopyLink)
   const remoteManageRow = element('div', 'dsh-mobile-control__manage-row')
   const remoteDevices = element('button', 'dsh-mobile-control__manage'); remoteDevices.type = 'button'; remoteDevices.textContent = t('manageRemoteDevices'); remoteDevices.disabled = true
   const remoteReset = element('button', 'dsh-mobile-control__manage'); remoteReset.type = 'button'; remoteReset.textContent = t('resetRemoteLogin')
   remoteManageRow.append(remoteDevices, remoteReset)
-  const remoteDevicePanel = element('div', 'dsh-mobile-control__devices'); remoteDevicePanel.hidden = true
+  const remoteDevicePanel = element('div', 'dsh-mobile-control__devices')
   const wsPathsSection = element('section', 'dsh-mobile-control__ws-paths')
   const wsPathsTitle = element('h3', 'dsh-mobile-control__section-title'); wsPathsTitle.textContent = t('wsPathsTitle')
   const wsPathsIntro = element('p', 'dsh-mobile-control__intro'); wsPathsIntro.textContent = t('wsPathsIntro')
@@ -1600,9 +1662,41 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
     wsPathsInput.value = ''
     saveWsPaths([...wsPathsCurrent, value])
   })
-  const remoteWorkspace = element('section', 'dsh-mobile-control__remote-workspace')
-  remoteWorkspace.append(providerSetupHeader, remoteStatus, remoteAccess, remoteGuide, providerSetupBody, remoteActions, remoteQr, remotePairLink, remoteManageRow, remoteDevicePanel)
+  const remoteWorkspace = element('div', 'dsh-mobile-control__remote-workspace')
+  // Provider component install buttons live below the QR / above the enable row,
+  // not buried inside the provider setup form.
+  const providerInstallRow = element('div', 'dsh-mobile-control__provider-install')
+  providerInstallRow.append(cpolarInstall, cloudflaredInstall)
+  // Component source/cleanup disclosures always sit at the very bottom of the
+  // provider page, below the action buttons, regardless of the active provider.
+  const setupDetailsRow = element('div', 'dsh-mobile-control__setup-details')
+  for (const disclosure of [cpolarDetails, cloudflaredDetails, frpDetails, irohDetails]) { disclosure.hidden = true; setupDetailsRow.append(disclosure) }
+  remoteWorkspace.append(remoteStatus, remoteAccess, remoteGuide, providerSetupBody, remoteQr, providerInstallRow, remoteActions, remotePairLink, setupDetailsRow)
   const diagnosticsView = element('div', 'dsh-mobile-control__view is-diagnostics'); diagnosticsView.hidden = true
+  // Paired-device management is its own page (like diagnostics), reached from the
+  // LAN view's "Manage paired devices" button, instead of expanding inline.
+  const devicesView = element('div', 'dsh-mobile-control__view is-devices'); devicesView.hidden = true
+  const devicesSwitcher = element('div', 'dsh-mobile-control__switcher')
+  const devicesLanTab = element('button', 'dsh-mobile-control__tab is-active'); devicesLanTab.type = 'button'; devicesLanTab.textContent = t('devicesLanTitle')
+  const devicesRemoteTab = element('button', 'dsh-mobile-control__tab'); devicesRemoteTab.type = 'button'; devicesRemoteTab.textContent = t('devicesRemoteTitle')
+  devicesSwitcher.append(devicesLanTab, devicesRemoteTab)
+  const devicesLanGroup = element('div')
+  const devicesLanRow = element('div', 'dsh-mobile-control__manage-row'); devicesLanRow.append(resetAll)
+  devicesLanGroup.append(devicePanel, devicesLanRow)
+  const devicesRemoteGroup = element('div'); devicesRemoteGroup.hidden = true
+  const devicesRemoteRow = element('div', 'dsh-mobile-control__manage-row'); devicesRemoteRow.append(remoteReset)
+  devicesRemoteGroup.append(remoteDevicePanel, devicesRemoteRow)
+  devicesView.append(devicesSwitcher, devicesLanGroup, devicesRemoteGroup)
+  const showDevicesGroup = (which: 'lan' | 'remote'): void => {
+    const lan = which === 'lan'
+    devicesLanGroup.hidden = !lan
+    devicesRemoteGroup.hidden = lan
+    devicesLanTab.classList.toggle('is-active', lan)
+    devicesRemoteTab.classList.toggle('is-active', !lan)
+    if (lan) loadDevices(); else loadRemoteDevices()
+  }
+  devicesLanTab.addEventListener('click', () => showDevicesGroup('lan'))
+  devicesRemoteTab.addEventListener('click', () => showDevicesGroup('remote'))
   const diagnosticsIntro = element('p', 'dsh-mobile-control__intro'); diagnosticsIntro.textContent = t('diagnosticsIntro')
   const diagnosticsSummary = element('section', 'dsh-mobile-control__diagnostic-summary is-idle'); diagnosticsSummary.setAttribute('aria-live', 'polite')
   const diagnosticsSummaryMain = element('div', 'dsh-mobile-control__diagnostic-summary-main')
@@ -1625,10 +1719,16 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
   const diagnosticsReport = element('pre', 'dsh-mobile-control__diagnostic-report')
   diagnosticsDetails.append(diagnosticsDetailsSummary, diagnosticsReport)
   header.append(title, headerActions); actions.append(toggle, pair, linkPair)
-  lanView.append(lanSetup, access, qrBox, status, extensionStatus, actions, manageRow, devicePanel, trustedNetworks)
-  remoteView.append(remoteIntro, httpFrameWarning, providerSection, remoteWorkspace)
+  lanView.append(lanSetup, access, qrBox, status, extensionStatus, actions, trustedNetworks)
+  // Two-column remote layout: the channel list on the left, its configuration on
+  // the right, so switching providers no longer scrolls the setup out of view.
+  const channelPane = element('div', 'dsh-mobile-control__channel-pane')
+  channelPane.append(lanView, remoteWorkspace)
+  const remoteColumns = element('div', 'dsh-mobile-control__remote-columns')
+  remoteColumns.append(providerSection, channelPane)
+  remoteView.append(remoteIntro, httpFrameWarning, remoteColumns)
   diagnosticsView.append(diagnosticsIntro, diagnosticsSummary, diagnosticsToolbar, diagnosticsFeedback, diagnosticsChecks, wsPathsSection, diagnosticsDetails)
-  panel.append(header, releaseNotice, updateCard, appDownload, extensionRecovery.section, switcher, lanView, remoteView, diagnosticsView); root.append(panel); document.body.append(root)
+  panel.append(header, releaseNotice, updateCard, appDownloads, extensionRecovery.section, remoteView, diagnosticsView, devicesView); root.append(panel); document.body.append(root)
   let running = false
   let origin = ''
   let lanConfigured = true
@@ -1652,6 +1752,7 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
   let cloudflaredInstalled = false
   let cloudflaredDownloadSize = ''
   let cloudflaredTunnelMode: 'quick' | 'named' = 'quick'
+  let cloudflaredConfigEditing = false
   let cloudflaredModeDraft: 'quick' | 'named' | null = null
   let cloudflaredTunnelConfigured = false
   let configuredCloudflaredHostname = ''
@@ -1702,8 +1803,6 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
   let frpEntryTlsDraft = false
   let frpVhostDraft = false
   let frpAttachVhostExplicit = false
-  let providerInfoPinned = false
-  let providerInfoHovered = false
   let previousAccessView: 'lan' | 'remote' = 'lan'
   let diagnosticsBusy = false
   let copiedDiagnosticReport = ''
@@ -1720,53 +1819,75 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
     updatePlugin.textContent = t('updatePlugin')
     if (pluginLatestVersion !== '') updatePlugin.setAttribute('aria-label', t('updatePluginAria', { version: pluginLatestVersion }))
     if (release.androidVersion !== undefined) {
-      appDownload.textContent = t('downloadAndroidVersion', { version: release.androidVersion })
-      appDownload.setAttribute('aria-label', t('downloadAndroidVersionAria', { version: release.androidVersion }))
+      const version = release.androidVersion
+      const sizeMb = (bytes: number | undefined): string | undefined => bytes === undefined ? undefined : (bytes / 1048576).toFixed(1)
+      const compatSize = sizeMb(release.androidCompatBytes)
+      const irohSize = sizeMb(release.androidIrohBytes)
+      appDownload.textContent = compatSize === undefined ? t('downloadAndroidVersion', { version }) : t('downloadAndroidVersionSize', { version, size: compatSize })
+      appDownload.setAttribute('aria-label', t('downloadAndroidVersionAria', { version }))
+      appDownloadIroh.textContent = irohSize === undefined ? t('downloadAndroidIrohVersion', { version }) : t('downloadAndroidIrohVersionSize', { version, size: irohSize })
+      appDownloadIroh.setAttribute('aria-label', t('downloadAndroidIrohAria', { version }))
     }
     appDownload.href = release.androidDownloadUrl
+    if (release.androidIrohDownloadUrl === undefined) {
+      appDownloadIroh.hidden = true
+    } else {
+      appDownloadIroh.href = release.androidIrohDownloadUrl
+      appDownloadIroh.hidden = false
+    }
   }
-  const syncProviderInfo = (): void => {
-    const open = providerInfoPinned || providerInfoHovered || providerInfo.contains(document.activeElement)
-    providerInfoPopover.hidden = !open
-    providerInfoButton.setAttribute('aria-expanded', String(open))
+  let currentAccessView: 'lan' | 'remote' | 'diagnostics' | 'devices' = 'lan'
+  // Single source of truth for the left-column selection. Exactly one channel
+  // is highlighted: LAN view -> the LAN row; remote view -> the active remote
+  // provider. Previously the LAN row and the active remote provider could both
+  // show as selected, and iroh never got a selected state at all.
+  const applyChoiceSelection = (): void => {
+    const inRemote = currentAccessView === 'remote'
+    lanChoice.classList.toggle('is-selected', currentAccessView === 'lan')
+    lanChoice.setAttribute('aria-checked', String(currentAccessView === 'lan'))
+    tailscaleChoice.classList.toggle('is-selected', inRemote && remoteProvider === 'tailscale')
+    cpolarChoice.classList.toggle('is-selected', inRemote && remoteProvider === 'cpolar')
+    cloudflaredChoice.classList.toggle('is-selected', inRemote && remoteProvider === 'cloudflared')
+    frpChoice.classList.toggle('is-selected', inRemote && remoteProvider === 'frp')
+    originChoice.classList.toggle('is-selected', inRemote && remoteProvider === 'origin')
+    irohChoice.classList.toggle('is-selected', inRemote && remoteProvider === 'iroh')
   }
-  providerInfo.addEventListener('pointerenter', () => { providerInfoHovered = true; syncProviderInfo() })
-  providerInfo.addEventListener('pointerleave', () => { providerInfoHovered = false; syncProviderInfo() })
-  providerInfo.addEventListener('focusin', syncProviderInfo)
-  providerInfo.addEventListener('focusout', () => { window.setTimeout(syncProviderInfo, 0) })
-  providerInfoButton.addEventListener('click', () => { providerInfoPinned = !providerInfoPinned; syncProviderInfo() })
-  providerInfoButton.addEventListener('keydown', event => {
-    if (event.key !== 'Escape') return
-    providerInfoPinned = false
-    providerInfoHovered = false
-    providerInfoPopover.hidden = true
-    providerInfoButton.setAttribute('aria-expanded', 'false')
-  })
-  const selectView = (view: 'lan' | 'remote' | 'diagnostics'): void => {
+  const selectView = (view: 'lan' | 'remote' | 'diagnostics' | 'devices'): void => {
     if (!panel.hidden) void extensionRecovery.refresh()
-    if (view !== 'diagnostics') previousAccessView = view
+    currentAccessView = view
+    if (view === 'lan' || view === 'remote') previousAccessView = view
+    const subpage = view === 'diagnostics' || view === 'devices'
+    remoteView.hidden = subpage
     lanView.hidden = view !== 'lan'
-    remoteView.hidden = view !== 'remote'
+    remoteWorkspace.hidden = view !== 'remote'
     diagnosticsView.hidden = view !== 'diagnostics'
+    devicesView.hidden = view !== 'devices'
     lanTab.classList.toggle('is-active', view === 'lan')
     remoteTab.classList.toggle('is-active', view === 'remote')
+    applyChoiceSelection()
     lanTab.setAttribute('aria-pressed', String(view === 'lan'))
     remoteTab.setAttribute('aria-pressed', String(view === 'remote'))
     diagnosticsEntry.setAttribute('aria-pressed', String(view === 'diagnostics'))
     diagnosticsEntry.textContent = view === 'diagnostics' ? t('back') : t('diagnostics')
     diagnosticsEntry.setAttribute('aria-label', view === 'diagnostics' ? t('backToMobile') : t('openDiagnostics'))
+    devicesEntry.setAttribute('aria-pressed', String(view === 'devices'))
+    devicesEntry.textContent = view === 'devices' ? t('back') : t('device')
+    devicesEntry.setAttribute('aria-label', view === 'devices' ? t('backToMobile') : t('managePairedDevices'))
     if (view === 'diagnostics') {
       wsPathsSeenAttempts = wsBlockedTotal(wsPathsBlocked)
       renderWsDot()
       if (!wsPathsLoaded) loadWsPaths()
     }
-    updatePlugin.hidden = view === 'diagnostics' || !pluginUpdateAvailable
-    appDownload.hidden = view === 'diagnostics'
-    switcher.hidden = view === 'diagnostics'
-    title.textContent = view === 'lan' ? t('lanAccess') : view === 'remote' ? t('remoteAccess') : t('connectionDiagnostics')
+    updatePlugin.hidden = subpage || !pluginUpdateAvailable
+    appDownloads.hidden = subpage
+    switcher.hidden = subpage
+    title.textContent = view === 'lan' ? t('lanAccess') : view === 'remote' ? t('remoteAccess') : view === 'devices' ? t('managePairedDevices') : t('connectionDiagnostics')
   }
   lanTab.addEventListener('click', () => { selectView('lan') })
+  lanChoice.addEventListener('click', () => { selectView('lan') })
+  providerChoices.addEventListener('click', () => { selectView('remote'); loadRemote() })
   remoteTab.addEventListener('click', () => { selectView('remote'); loadRemote() })
+  selectView('lan')
   const setOpen = (open: boolean): void => {
     panel.hidden = !open
     if (open) void extensionRecovery.refresh()
@@ -1776,6 +1897,7 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
     lanConfigured = data.configured !== false
     lanRestartRequired = data.restartRequired === true
     running = data.running === true
+    lanChoiceBadge.textContent = running ? t('lanBadgeOn') : t('lanBadgeOff')
     origin = running && typeof data.origin === 'string' ? data.origin : ''
     lanSetup.hidden = lanConfigured && !lanRestartRequired
     lanSetupForm.hidden = lanRestartRequired
@@ -1801,7 +1923,7 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
       extensionStatus.hidden = false
       extensionStatus.textContent = failed === 0 ? t('extensionsLoaded', { loaded }) : t('extensionsFailed', { loaded, failed })
     } else extensionStatus.hidden = true
-    if (!running) qrBox.hidden = true
+    if (!running) showQr('')
     toggle.textContent = running ? t('disableLan') : t('enableLan')
     actions.hidden = !lanConfigured || lanRestartRequired
     manageRow.hidden = !lanConfigured || lanRestartRequired
@@ -1862,7 +1984,18 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
   })
   const showQr = (svg: string, target: HTMLDivElement = qrBox): void => {
     target.replaceChildren()
-    if (svg === '') { target.hidden = true; return }
+    if (svg === '') {
+      const placeholderText = target === irohQr ? t('irohQrPlaceholder') : target === remoteQr ? t('remoteQrPlaceholder') : target === qrBox ? t('qrPlaceholder') : undefined
+      if (placeholderText !== undefined) {
+        const placeholder = element('span', 'dsh-mobile-control__qr-placeholder')
+        placeholder.textContent = placeholderText
+        target.hidden = false
+        target.append(placeholder)
+      } else {
+        target.hidden = true
+      }
+      return
+    }
     const image = element('img')
     image.alt = t('pairingQr')
     image.width = 176
@@ -1871,20 +2004,36 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
     target.hidden = false
     target.append(image)
   }
+  showQr('')
+  const showIrohQrPlaceholder = (): void => {
+    irohQr.replaceChildren()
+    const placeholder = element('span', 'dsh-mobile-control__qr-placeholder')
+    placeholder.textContent = t('irohQrPlaceholder')
+    irohQr.hidden = false
+    irohQr.append(placeholder)
+  }
+  const showRemoteQrPlaceholder = (text: string): void => {
+    remoteQr.replaceChildren()
+    const placeholder = element('span', 'dsh-mobile-control__qr-placeholder')
+    placeholder.textContent = text
+    remoteQr.hidden = false
+    remoteQr.append(placeholder)
+  }
   const openPairing = (target: 'key' | 'link'): void => {
     void controlRequestJson('/api/mobile-access/lan/pairing/open', { method: 'POST', body: '{}' }).then(async data => {
       const value = target === 'key'
         ? (typeof data.appKey === 'string' ? data.appKey : '')
         : (typeof data.pairUrl === 'string' ? data.pairUrl : '')
       showQr(typeof data.qrSvg === 'string' ? data.qrSvg : '')
+      // Generating the LAN pairing code only shows the QR; it no longer copies
+      // the plaintext key to the clipboard. Copying stays explicit via the link.
+      if (target === 'key') { status.classList.remove('is-key'); status.textContent = t('qrGenerated'); return }
       if (value === '') { status.textContent = t('keyGenerationFailed'); return }
       try {
         await navigator.clipboard.writeText(value)
-        status.textContent = target === 'key'
-          ? t('keyCopied')
-          : t('linkCopied')
+        status.textContent = t('linkCopied')
       } catch {
-        status.textContent = t('copySecret', { kind: target === 'key' ? t('pairingKey') : t('pairingLink'), value })
+        status.textContent = t('copySecret', { kind: t('pairingLink'), value })
         status.classList.add('is-key')
       }
     }, error => { status.textContent = t('requestFailed', { error: String(error) }) }).finally(() => {
@@ -1919,12 +2068,16 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
     }
   }
   const loadDevices = (): void => {
-    void controlRequestJson('/api/mobile-access/lan/devices').then(renderDevices, error => { status.textContent = t('requestFailed', { error: String(error) }) })
+    void controlRequestJson('/api/mobile-access/lan/devices').then(renderDevices, error => {
+      status.textContent = t('requestFailed', { error: String(error) })
+      devicePanel.replaceChildren()
+      const note = element('p', 'dsh-mobile-control__device-empty'); note.textContent = t('noDevices')
+      devicePanel.append(note)
+    })
   }
   manageDevices.addEventListener('click', () => {
-    const show = devicePanel.hidden
-    devicePanel.hidden = !show
-    if (show) loadDevices()
+    selectView('devices')
+    loadDevices()
   })
   resetAll.addEventListener('click', () => {
     if (!window.confirm(t('confirmResetDevices'))) return
@@ -1943,11 +2096,6 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
     // Current-connection copy follows the controller, never the unsaved form mode.
     const managedOrigin = origin && data.originMode === 'managed'
     const tailscale = remoteProvider === 'tailscale'
-    tailscaleChoice.classList.toggle('is-selected', tailscale)
-    cpolarChoice.classList.toggle('is-selected', cpolar)
-    cloudflaredChoice.classList.toggle('is-selected', cloudflared)
-    frpChoice.classList.toggle('is-selected', frp)
-    originChoice.classList.toggle('is-selected', origin)
     tailscaleChoice.setAttribute('aria-checked', String(tailscale))
     cpolarChoice.setAttribute('aria-checked', String(cpolar))
     cloudflaredChoice.setAttribute('aria-checked', String(cloudflared))
@@ -1958,6 +2106,7 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
     frpChoice.setAttribute('aria-pressed', String(frp))
     originChoice.setAttribute('aria-pressed', String(origin))
     irohChoice.setAttribute('aria-pressed', String(iroh))
+    applyChoiceSelection()
     providerSetupName.textContent = cpolar ? 'cpolar' : cloudflared ? 'cloudflared' : frp ? t('frpName') : origin ? t(managedOrigin ? 'caddyName' : 'originName') : iroh ? t('irohName') : 'Tailscale Funnel'
     tailscaleChoice.disabled = remoteProviderBusy
     cpolarChoice.disabled = remoteProviderBusy
@@ -1970,7 +2119,6 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
     frpSetup.hidden = !frp
     originSetup.hidden = !origin
     irohSetup.hidden = !iroh
-    if (frp || origin || iroh) selfHosted.open = true
     tailscaleInfo.hidden = !tailscale
     remoteReset.textContent = tailscale ? t('resetRemoteLogin') : t('resetRemoteDevices')
     const providers = data.providers !== null && typeof data.providers === 'object' ? data.providers as Record<string, unknown> : {}
@@ -1987,7 +2135,7 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
     const componentStorage = typeof component.storagePath === 'string' ? component.storagePath : `DSH Mobile ${t('pluginPrivateDirectory')}`
     cpolarStorage.textContent = componentStorage
     cpolarStorage.title = componentStorage
-    cpolarInstall.hidden = cpolarInstalled || !cpolarSupported
+    cpolarInstall.hidden = !cpolar || cpolarInstalled || !cpolarSupported
     cpolarInstall.textContent = componentDownloadBytes > 0
       ? t('installWithSize', { size: formatMegabytes(componentDownloadBytes) })
       : t('installOfficial')
@@ -2019,7 +2167,7 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
     cloudflaredStorage.title = cloudflaredStoragePath
     cloudflaredChoiceBadge.textContent = cloudflaredInstalled ? t('ready') : t('cloudflaredBadge')
     // A quick tunnel needs no account, so installation is the only precondition.
-    cloudflaredInstall.hidden = cloudflaredInstalled || !cloudflaredSupported
+    cloudflaredInstall.hidden = !cloudflared || cloudflaredInstalled || !cloudflaredSupported
     cloudflaredInstall.textContent = cloudflaredDownloadBytes > 0
       ? t('installWithSize', { size: formatMegabytes(cloudflaredDownloadBytes) })
       : t('installOfficial')
@@ -2054,8 +2202,8 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
     // The component note describes whichever tunnel is about to run, so a
     // quick-tunnel warning never sits next to named-tunnel settings.
     cloudflaredNote.textContent = cloudflaredShownMode === 'named' ? t('cloudflaredNamedNote') : t('cloudflaredQuickNote')
-    cloudflaredTunnel.hidden = cloudflaredShownMode !== 'named'
     cloudflaredTunnelSave.textContent = cloudflaredSaveLabel()
+    syncCloudflaredForm()
     // Untouched fields always mirror the saved configuration, so a field can never
     // keep showing a value that is no longer in effect.
     if (!cloudflaredHostnameDirty) cloudflaredHostname.value = configuredCloudflaredHostname
@@ -2196,6 +2344,8 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
     const irohDownloadBytes = typeof irohComponent.downloadBytes === 'number' ? irohComponent.downloadBytes : 0
     const irohStoragePath = typeof irohComponent.storagePath === 'string' ? irohComponent.storagePath : `DSH Mobile ${t('pluginPrivateDirectory')}`
     irohInstall.hidden = irohInstalled || !irohSupported
+    irohPurge.hidden = !irohInstalled
+    irohPurge.disabled = iroh && remoteRunning
     if (irohVerifying) {
       // A poll that lands mid-verification must not wipe the in-flight
       // progress: the checksum check is one quick round trip, so the bar
@@ -2296,9 +2446,8 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
     remoteSetupUrl = candidateSetupUrl !== '' ? candidateSetupUrl : (fallbackSetupUrls[errorCode] ?? '')
     const needsFunnelSetup = state === 'error' && remoteSetupUrl !== ''
     remoteReady = remoteRunning && state === 'ready' && remoteOrigin !== ''
-    selfHostedBadge.textContent = origin
-      ? managedOrigin ? t(remoteReady ? 'ready' : 'advanced') : originListening ? t('originBackendReady') : t('advanced')
-      : frpConfigured && frpInstalled ? t('ready') : t('advanced')
+    frpChoiceBadge.textContent = frpConfigured && frpInstalled ? t('ready') : t('advanced')
+    originChoiceBadge.textContent = managedOrigin ? t(remoteReady ? 'ready' : 'advanced') : originListening ? t('originBackendReady') : t('advanced')
     remoteStateBadge.classList.toggle('is-ready', remoteReady)
     remoteStateBadge.classList.toggle('is-busy', state === 'starting' || state === 'connecting' || state === 'needs-login')
     remoteStateBadge.classList.toggle('is-attention', state === 'error' || state === 'unavailable')
@@ -2309,6 +2458,10 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
         : state === 'error' || state === 'unavailable'
           ? t('remoteStateAttention')
           : t('remoteStateOff')
+    // The selected provider and its state already live in the left column. The
+    // status line is only meaningful while connecting or when attention/errors
+    // occur; hide it with display:none (not just hidden text) so it takes no space.
+    remoteStatus.style.display = state === 'off' && remoteFailureText === '' ? 'none' : ''
     remoteAccess.hidden = !remoteReady
     remoteAccessLink.href = remoteOrigin
     remoteAccessLink.textContent = remoteOrigin
@@ -2318,7 +2471,8 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
       off: t('remoteOff'),
       unavailable: cpolar ? t('remoteUnavailableCpolar')
         : cloudflared ? t('remoteUnavailableCloudflared')
-          : frp ? t('remoteUnavailableFrp') : origin ? t('originUnavailable') : iroh ? t('irohUnavailable') : t('remoteUnavailableTailscale'),
+          : frp ? t('remoteUnavailableFrp') : origin ? t('originUnavailable')
+            : iroh ? (irohInstalled ? t('irohInstalledNotReady') : t('irohUnavailable')) : t('remoteUnavailableTailscale'),
       starting: cpolar ? t('remoteStartingCpolar')
         : cloudflared ? t('remoteStartingCloudflared')
           : frp ? t('remoteStartingFrp') : origin ? t('originStarting') : iroh ? t('irohStarting') : t('remoteStartingTailscale'),
@@ -2346,11 +2500,19 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
     const providerPrepared = cpolar ? cpolarInstalled && cpolarConfigured
       : cloudflared ? cloudflaredInstalled
         : frp ? frpInstalled && frpConfigured : origin ? originPrepared : iroh ? irohInstalled : true
-    remoteToggle.disabled = remoteProviderBusy || (!providerPrepared && !(origin && remoteRunning))
+    const namedUnconfigured = cloudflared && cloudflaredShownMode === 'named' && cloudflaredTunnelMode !== 'named' && !remoteRunning
+    remoteToggle.disabled = remoteProviderBusy || (!providerPrepared && !(origin && remoteRunning)) || namedUnconfigured
+    if (namedUnconfigured) {
+      remoteStatus.textContent = t('cloudflaredEnableNeedsConfig')
+      remoteStatus.style.display = ''
+    }
     remoteLogin.hidden = !tailscale || state !== 'needs-login' || remoteLoginUrl === ''
     remoteReconnect.hidden = needsFunnelSetup || (state !== 'error' && state !== 'unavailable')
       || !providerPrepared
     remoteActions.hidden = !providerPrepared && !(origin && remoteRunning)
+    // No pairing QR is possible until the provider component is installed/prepared.
+    if (!providerPrepared) remoteQr.hidden = true
+    providerInstallRow.hidden = cpolarInstall.hidden && cloudflaredInstall.hidden
     remotePair.disabled = !remoteReady || remoteProviderBusy
     remoteCopyLink.disabled = !remoteReady || remoteProviderBusy
     remoteDevices.disabled = !remoteReady || remoteProviderBusy
@@ -2365,6 +2527,11 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
       remotePairLink.hidden = true
     }
     irohPair.disabled = !remoteReady || !iroh || remoteProviderBusy
+    // The trigger now lives in the shared action row, so it must hide for the
+    // other remote providers instead of showing a permanently disabled button.
+    irohPair.hidden = !iroh
+    if (iroh && irohInstalled && activeIrohQrSvg === '') showIrohQrPlaceholder()
+    else if (!iroh || !irohInstalled) irohQr.hidden = true
     if ((!iroh || !remoteReady) && activeIrohDescriptor !== '') {
       activeIrohDescriptor = ''
       activeIrohQrSvg = ''
@@ -2376,11 +2543,20 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
     if (origin) { remoteReconnect.disabled = remoteProviderBusy || remoteReconnectBusy; remoteReset.disabled = remoteProviderBusy }
     else remoteReset.disabled = false
     if (!remoteReady) {
-      remoteQr.hidden = true
       remotePairLink.hidden = true
       activeRemotePairUrl = ''
       activeRemotePairExpiresAt = 0
+      if (iroh) remoteQr.hidden = true
+      else showRemoteQrPlaceholder(t('remoteQrPlaceholderIdle'))
+    } else if (!iroh && activeRemotePairUrl === '') {
+      showQr('', remoteQr)
     }
+    // Source/cleanup disclosures are pinned to the bottom and only shown for the
+    // provider that owns them.
+    cpolarDetails.hidden = !cpolar
+    cloudflaredDetails.hidden = !cloudflared
+    frpDetails.hidden = !frp
+    irohDetails.hidden = !iroh
     if (!needsFunnelSetup) remoteSetupPending = false
   }
   frpMode.addEventListener('change', () => {
@@ -2469,6 +2645,21 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
       })
       .finally(() => { remoteProviderBusy = false; irohVerifying = false; loadRemote() })
   })
+  irohPurge.addEventListener('click', () => {
+    if (remoteProviderBusy) return
+    if (!window.confirm(t('irohPurgeConfirm'))) return
+    remoteProviderBusy = true
+    irohPurge.disabled = true
+    irohComponentStatus.textContent = t('purgingIroh')
+    remoteStatus.textContent = t('purgingIroh')
+    void controlRequestJson('/api/mobile-access/remote/iroh/component/purge', { method: 'POST', body: JSON.stringify({ confirm: true }) }, LONG_CONTROL_REQUEST_TIMEOUT_MS)
+      .then(renderRemote, error => {
+        remoteFailureText = remoteFailureTextFor(error, 'purgeFailed')
+        remoteStatus.textContent = remoteFailureText
+        irohComponentStatus.textContent = remoteFailureText
+      })
+      .finally(() => { remoteProviderBusy = false; irohPurge.disabled = false; loadRemote() })
+  })
   const openIrohQrZoom = (): void => {
     if (activeIrohQrSvg === '' || irohQr.hidden) return
     irohQrZoomImage.src = `data:image/svg+xml;base64,${btoa(activeIrohQrSvg)}`
@@ -2550,6 +2741,18 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
   })
   // Tunnel type is staged locally and only reaches the provider through Save, so
   // clicking between the two never silently discards a saved token.
+  const syncCloudflaredForm = (): void => {
+    const mode = cloudflaredModeDraft ?? cloudflaredTunnelMode
+    const named = mode === 'named'
+    const locked = named && cloudflaredTunnelMode === 'named' && !cloudflaredConfigEditing
+    cloudflaredHostname.disabled = locked
+    cloudflaredPort.disabled = locked
+    cloudflaredToken.disabled = locked
+    cloudflaredTunnelToggle.hidden = !named
+    cloudflaredEditButton.hidden = !locked
+    cloudflaredTunnelSave.hidden = !named || locked
+    cloudflaredTunnelForget.hidden = !named || cloudflaredTunnelMode !== 'named' || cloudflaredConfigEditing
+  }
   const showCloudflaredMode = (mode: 'quick' | 'named'): void => {
     cloudflaredModeDraft = mode
     cloudflaredModeQuick.classList.toggle('is-active', mode === 'quick')
@@ -2557,18 +2760,56 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
     cloudflaredModeQuick.setAttribute('aria-pressed', String(mode === 'quick'))
     cloudflaredModeNamed.setAttribute('aria-pressed', String(mode === 'named'))
     cloudflaredModeHint.textContent = mode === 'named' ? t('cloudflaredTunnelNamedHint') : t('cloudflaredTunnelQuickHint')
-    // The component note follows the same choice immediately. Waiting for the next poll
-    // would leave a quick-tunnel warning sitting beside named-tunnel settings.
     cloudflaredNote.textContent = mode === 'named' ? t('cloudflaredNamedNote') : t('cloudflaredQuickNote')
-    cloudflaredTunnel.hidden = mode !== 'named'
+    cloudflaredTunnel.hidden = true
+    cloudflaredTunnelToggle.textContent = t('cloudflaredShowConfig') + ' ▾'
     cloudflaredTunnelSave.textContent = cloudflaredSaveLabel()
+    syncCloudflaredForm()
+    if (mode === 'named' && cloudflaredTunnelMode !== 'named') {
+      remoteToggle.disabled = true
+      remoteStatus.textContent = t('cloudflaredEnableNeedsConfig')
+      remoteStatus.style.display = ''
+    }
   }
-  cloudflaredModeQuick.addEventListener('click', () => { if (!remoteProviderBusy) showCloudflaredMode('quick') })
-  cloudflaredModeNamed.addEventListener('click', () => { if (!remoteProviderBusy) showCloudflaredMode('named') })
+  cloudflaredTunnelToggle.addEventListener('click', () => {
+    const open = cloudflaredTunnel.hidden
+    cloudflaredTunnel.hidden = !open
+    cloudflaredTunnelToggle.textContent = open ? t('cloudflaredHideConfig') + ' ▴' : t('cloudflaredShowConfig') + ' ▾'
+  })
+  cloudflaredEditButton.addEventListener('click', () => {
+    cloudflaredConfigEditing = true
+    syncCloudflaredForm()
+    cloudflaredTunnel.hidden = false
+    cloudflaredTunnelToggle.textContent = t('cloudflaredHideConfig') + ' ▴'
+  })
+  const switchCloudflaredMode = (mode: 'quick' | 'named'): void => {
+    if (remoteProviderBusy || (cloudflaredModeDraft ?? cloudflaredTunnelMode) === mode) return
+    // Quick and named are different cloudflared tunnels; only one can run at a
+    // time, so switching while connected must first close the current remote
+    // connection (otherwise the UI shows the new mode while the old tunnel runs).
+    const activeState = typeof latestRemoteState.state === 'string' ? latestRemoteState.state : 'off'
+    if (remoteRunning || activeState !== 'off') {
+      if (!window.confirm(t('cloudflaredSwitchModeDisconnect'))) return
+      remoteToggle.disabled = true
+      void controlRequestJson('/api/mobile-access/remote/control', { method: 'POST', body: JSON.stringify({ running: false }) })
+        .then(() => { showCloudflaredMode(mode) }, error => { remoteFailureText = remoteFailureTextFor(error, 'requestFailed'); remoteStatus.textContent = remoteFailureText })
+        .finally(loadRemote)
+      return
+    }
+    // Not connected: switch straight away, no dialog.
+    showCloudflaredMode(mode)
+  }
+  cloudflaredModeQuick.addEventListener('click', () => { switchCloudflaredMode('quick') })
+  cloudflaredModeNamed.addEventListener('click', () => { switchCloudflaredMode('named') })
   cloudflaredHostname.addEventListener('input', () => { cloudflaredHostnameDirty = true })
   cloudflaredPort.addEventListener('input', () => { cloudflaredPortDirty = true })
   cloudflaredTunnelSave.addEventListener('click', () => {
     if (remoteProviderBusy) return
+    const report = (message: string): void => {
+      remoteStatus.textContent = message
+      cloudflaredTunnelFeedback.hidden = false
+      cloudflaredTunnelFeedback.textContent = message
+    }
     const mode = cloudflaredModeDraft ?? cloudflaredTunnelMode
     const hostname = String(cloudflaredHostname.value ?? '').trim()
     const portValue = String(cloudflaredPort.value ?? '').trim()
@@ -2577,24 +2818,24 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
     // The provider re-validates everything; these checks only keep an obviously
     // incomplete form from costing a round trip.
     if (mode === 'named') {
-      if (hostname === '') { remoteStatus.textContent = t('cloudflaredTunnelHostnameInvalid'); return }
+      if (hostname === '') { report(t('cloudflaredTunnelHostnameInvalid')); return }
       if (portValue === '' || !Number.isSafeInteger(port) || port < 1024 || port > 65535) {
-        remoteStatus.textContent = t('cloudflaredTunnelPortInvalid')
+        report(t('cloudflaredTunnelPortInvalid'))
         return
       }
       // The LAN gateway owns 3443 for as long as DSH runs, so this is not a
       // transient conflict worth a round trip.
-      if (port === 3443) { remoteStatus.textContent = t('cloudflaredTunnelPortReserved'); return }
-      if (token === '' && !cloudflaredTunnelConfigured) { remoteStatus.textContent = t('cloudflaredTunnelConfigMissing'); return }
+      if (port === 3443) { report(t('cloudflaredTunnelPortReserved')); return }
+      if (token === '' && !cloudflaredTunnelConfigured) { report(t('cloudflaredTunnelConfigMissing')); return }
       if (token !== '' && (token.length < 32 || !/^[A-Za-z0-9_=+/-]+$/u.test(token))) {
-        remoteStatus.textContent = t('cloudflaredTunnelTokenInvalid')
+        report(t('cloudflaredTunnelTokenInvalid'))
         return
       }
     }
     remoteProviderBusy = true
     cloudflaredTunnelSave.disabled = true
     cloudflaredTunnelSave.textContent = t('saving')
-    remoteStatus.textContent = mode === 'named' ? t('cloudflaredTunnelSaving') : t('switchingCloudflared')
+    report(mode === 'named' ? t('cloudflaredTunnelSaving') : t('switchingCloudflared'))
     void controlRequestJson('/api/mobile-access/remote/cloudflared/tunnel', {
       method: 'POST',
       body: JSON.stringify(mode === 'named' ? { mode, hostname, port, token } : { mode: 'quick' }),
@@ -2607,8 +2848,10 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
         cloudflaredHostnameDirty = false
         cloudflaredPortDirty = false
         remoteFailureText = ''
+        cloudflaredTunnelFeedback.hidden = false
+        cloudflaredTunnelFeedback.textContent = t('cloudflaredTunnelSaved')
         renderRemote(data)
-      }, error => { remoteFailureText = remoteFailureTextFor(error, 'requestFailed'); remoteStatus.textContent = remoteFailureText })
+      }, error => { remoteFailureText = remoteFailureTextFor(error, 'requestFailed'); report(remoteFailureText) })
       .finally(() => {
         remoteProviderBusy = false
         cloudflaredTunnelSave.disabled = false
@@ -3322,8 +3565,22 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
   })
   remoteToggle.addEventListener('click', () => {
     remoteToggle.disabled = true
-    void controlRequestJson('/api/mobile-access/remote/control', { method: 'POST', body: JSON.stringify({ running: !remoteRunning }) })
-      .then(renderRemote, error => { remoteFailureText = remoteFailureTextFor(error, 'requestFailed'); remoteStatus.textContent = remoteFailureText })
+    // A staged cloudflared mode that differs from the saved one must be committed
+    // first: otherwise "Enable" would start the previously saved tunnel type while
+    // the UI shows the newly selected one.
+    const commitMode = remoteProvider === 'cloudflared' && cloudflaredModeDraft !== null && cloudflaredModeDraft !== cloudflaredTunnelMode
+      ? controlRequestJson('/api/mobile-access/remote/cloudflared/tunnel', { method: 'POST', body: JSON.stringify({ mode: cloudflaredModeDraft }) })
+      : Promise.resolve()
+    void commitMode
+      .then(() => controlRequestJson('/api/mobile-access/remote/control', { method: 'POST', body: JSON.stringify({ running: !remoteRunning }) }))
+      .then(renderRemote, error => {
+        remoteFailureText = remoteFailureTextFor(error, 'requestFailed')
+        remoteStatus.textContent = remoteFailureText
+        if (remoteProvider === 'cloudflared') {
+          cloudflaredTunnelFeedback.hidden = false
+          cloudflaredTunnelFeedback.textContent = remoteFailureText
+        }
+      })
       .finally(loadRemote)
   })
   remoteLogin.addEventListener('click', () => {
@@ -3420,7 +3677,16 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
     }
   }
   const loadRemoteDevices = (): void => {
-    void controlRequestJson('/api/mobile-access/remote/devices').then(renderRemoteDevices, error => { remoteFailureText = remoteFailureTextFor(error, 'requestFailed'); remoteStatus.textContent = remoteFailureText })
+    void controlRequestJson('/api/mobile-access/remote/devices').then(renderRemoteDevices, error => {
+      remoteFailureText = remoteFailureTextFor(error, 'requestFailed')
+      remoteStatus.textContent = remoteFailureText
+      // The remote status line lives on the remote workspace, which is hidden on
+      // the devices page; surface an explicit empty state inside the group.
+      remoteDevicePanel.replaceChildren()
+      const note = element('p', 'dsh-mobile-control__device-empty')
+      note.textContent = remoteRunning ? t('noRemoteDevices') : t('remoteOff')
+      remoteDevicePanel.append(note)
+    })
   }
   remoteDevices.addEventListener('click', () => {
     const show = remoteDevicePanel.hidden
@@ -3547,6 +3813,10 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
     if (!diagnosticsView.hidden) { selectView(previousAccessView); return }
     selectView('diagnostics'); loadDiagnostics()
   })
+  devicesEntry.addEventListener('click', () => {
+    if (!devicesView.hidden) { selectView(previousAccessView); return }
+    selectView('devices'); showDevicesGroup('lan')
+  })
   diagnosticsRun.addEventListener('click', loadDiagnostics)
   diagnosticsRun.addEventListener('click', () => { void extensionRecovery.refresh() })
   const closeUpdateCard = (): void => {
@@ -3606,12 +3876,7 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
   close.addEventListener('click', () => { setOpen(false) })
   const dismiss = (event: PointerEvent): void => {
     if (panel.hidden || !(event.target instanceof Node)) return
-    if (!providerInfo.contains(event.target)) {
-      providerInfoPinned = false
-      providerInfoHovered = false
-      syncProviderInfo()
-    }
-    if (!panel.contains(event.target) && !document.querySelector('.dsh-mobile-control__trigger')?.contains(event.target)) setOpen(false)
+    if (!panel.contains(event.target) && !irohQrZoom.contains(event.target) && !document.querySelector('.dsh-mobile-control__trigger')?.contains(event.target)) setOpen(false)
   }
   document.addEventListener('pointerdown', dismiss)
   void controlRequestJson('/api/mobile-access/release').then(renderRelease, () => {})
@@ -4706,9 +4971,31 @@ async function refreshCssLegacy(style: HTMLStyleElement, signal: AbortSignal, st
 /** Theme-aware desktop Mobile Access panel styles. */
 export const CONTROL_STYLES = `
 .dsh-mobile-control{position:fixed;z-index:1000;left:16px;bottom:112px;font:14px/1.45 system-ui;color:var(--dsw-alias-label-primary,#16181d)}
-.dsh-mobile-control__panel{box-sizing:border-box;width:min(380px,calc(100vw - 32px));max-height:calc(100vh - 140px);overflow-y:auto;padding:16px;border:1px solid var(--dsw-alias-border-l2,#e1e5eb);border-radius:18px;background:var(--dsw-alias-bg-layer-2,#fff);box-shadow:0 18px 50px rgb(15 23 42 / 18%)}
+.dsh-mobile-control__panel{box-sizing:border-box;width:min(704px,calc(100vw - 32px));max-height:calc(100vh - 140px);overflow-y:auto;padding:16px;border:0;border-radius:16px;background:var(--dsw-alias-bg-layer-2,#fff);box-shadow:0 12px 34px rgb(15 23 42 / 13%)}.dsh-mobile-control__remote-columns{display:grid;grid-template-columns:minmax(230px,300px) minmax(0,1fr);gap:14px;align-items:start;max-height:calc(100vh - 330px)}
+/* Floating panel with dense, borderless content. */
+.dsh-mobile-control{inset:auto;left:16px;bottom:112px;pointer-events:none}
+.dsh-mobile-control__panel{position:relative;inset:auto;width:min(704px,calc(100vw - 32px));height:auto;max-height:calc(100vh - 140px);border:0;border-radius:16px;box-shadow:0 12px 34px rgb(15 23 42 / 13%);display:flex;flex-direction:column;overflow:hidden;pointer-events:auto;background:var(--dsw-alias-bg-layer-2,#fff)}.dsh-mobile-control__panel[hidden]{display:none}
+.dsh-mobile-control__header{flex:none;margin:0;padding:12px 16px;border-bottom:1px solid var(--dsw-alias-border-l2,#e1e5eb)}
+.dsh-mobile-control__app-downloads{flex:none;padding:8px 16px;border-bottom:1px solid var(--dsw-alias-border-l2,#e1e5eb);margin:0}
+.dsh-mobile-control__view.is-remote{flex:1;min-height:0;display:flex;flex-direction:column}
+.dsh-mobile-control__remote-columns{flex:1;min-height:0;display:grid;grid-template-columns:260px minmax(0,1fr);gap:0;max-height:none;align-items:stretch}
+.dsh-mobile-control__remote-columns>.dsh-mobile-control__provider-section{overflow-y:auto;border-right:1px solid var(--dsw-alias-border-l2,#e1e5eb);background:var(--dsw-alias-bg-layer-1,#f7f8fa);padding:10px 8px}
+.dsh-mobile-control__channel-pane{overflow-y:auto;padding:14px 20px;min-width:0;scrollbar-gutter:stable}
+.dsh-mobile-control__provider{position:relative;border:0;border-radius:8px;padding:8px 10px;min-height:0;background:transparent;box-shadow:none}
+.dsh-mobile-control__provider:hover{background:var(--dsw-alias-interactive-bg-hover,#f1f5f9)}
+.dsh-mobile-control__provider.is-selected{background:var(--dsw-alias-interactive-bg-active,#f5f8ff);box-shadow:none}
+.dsh-mobile-control__provider.is-selected::before{content:"";position:absolute;left:0;top:8px;bottom:8px;width:2px;border-radius:2px;background:var(--dsw-alias-label-primary-bluish,#2563eb)}
+.dsh-mobile-control__remote-workspace section{border:0;border-radius:0;padding:12px 0;background:transparent;box-shadow:none;border-top:1px solid var(--dsw-alias-border-l2,#e1e5eb)}
+.dsh-mobile-control__remote-workspace section:first-child{border-top:0}
+.dsh-mobile-control__remote-workspace .dsh-mobile-control__details{border:0;border-radius:0;background:transparent;box-shadow:none}
+.dsh-mobile-control__btn,.dsh-mobile-control__primary,.dsh-mobile-control__secondary{min-height:32px;padding:6px 12px;border-radius:8px;font-size:12px}
+.dsh-mobile-control__self-hosted{border:0;border-radius:0;background:transparent;box-shadow:none}
+.dsh-mobile-control__self-hosted-summary{border-bottom:1px solid var(--dsw-alias-border-l2,#e1e5eb)}
+.dsh-mobile-control__self-hosted-body{padding:0}
+@media (max-width:860px){.dsh-mobile-control__remote-columns{grid-template-columns:1fr}.dsh-mobile-control__remote-columns>.dsh-mobile-control__provider-section{border-right:0;border-bottom:1px solid var(--dsw-alias-border-l2,#e1e5eb);max-height:40vh}}
+.dsh-mobile-control__channel-pane{min-width:0;overflow-y:auto;padding-right:4px;max-height:100%}.dsh-mobile-control__channel-pane>.dsh-mobile-control__view{display:block}.dsh-mobile-control__provider.is-lan{border-color:var(--dsw-alias-label-primary-bluish,#2563eb);background:var(--dsw-alias-interactive-bg-active,var(--dsw-alias-bg-layer-1,#f5f8ff))}.dsh-mobile-control__remote-columns>.dsh-mobile-control__provider-section{overflow-y:auto;padding-right:4px}.dsh-mobile-control__remote-columns>.dsh-mobile-control__remote-workspace{overflow-y:auto;padding-right:4px}.dsh-mobile-control__remote-columns>.dsh-mobile-control__provider-section{margin:0}@media (max-width:760px){.dsh-mobile-control__remote-columns{grid-template-columns:1fr}}
 .dsh-mobile-control__header{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px}.dsh-mobile-control__panel h2{margin:0;font-size:17px;line-height:24px}.dsh-mobile-control__header-actions{display:flex;align-items:center;gap:2px}.dsh-mobile-control__update-plugin,.dsh-mobile-control__diagnostic-entry,.dsh-mobile-control__close{display:inline-flex;align-items:center;justify-content:center;min-width:44px;height:44px;padding:0;border:0;border-radius:10px;background:transparent;color:inherit;cursor:pointer}.dsh-mobile-control__update-plugin,.dsh-mobile-control__diagnostic-entry{padding:0 8px;color:var(--dsw-alias-label-primary-bluish,#2563eb);font:650 12px/1 system-ui;white-space:nowrap}.dsh-mobile-control__update-plugin[hidden]{display:none}.dsh-mobile-control__update-plugin:disabled{cursor:wait;opacity:.55}.dsh-mobile-control__close{font-size:24px;line-height:1}.dsh-mobile-control__update-plugin:hover:not(:disabled),.dsh-mobile-control__diagnostic-entry:hover,.dsh-mobile-control__close:hover{background:var(--dsw-alias-interactive-bg-hover,#f1f3f6)}
-.dsh-mobile-control__release-notice{margin:-2px 0 10px;padding:8px 10px;border-radius:9px;background:var(--dsw-alias-bg-layer-1,#eff6ff);color:var(--dsw-alias-label-primary,#1d4ed8);font-size:11px;line-height:1.45}.dsh-mobile-control__release-notice.is-error{color:var(--dsw-alias-label-primary,#dc2626);border-left:3px solid var(--dsw-alias-state-error-primary,#dc2626)}.dsh-mobile-control__release-notice[hidden]{display:none}.dsh-mobile-control__update-card{margin:0 0 10px;padding:11px;border:1px solid var(--dsw-alias-border-l2,#dbe1e8);border-radius:12px;background:var(--dsw-alias-bg-layer-1,#f8fafc)}.dsh-mobile-control__update-card[hidden]{display:none}.dsh-mobile-control__update-card-title{margin:0 0 7px;color:var(--dsw-alias-label-primary,#16181d);font:650 13px/1.4 system-ui}.dsh-mobile-control__update-notes{display:block;box-sizing:border-box;max-height:150px;overflow-y:auto;margin:0 0 8px;padding:8px 10px;border:1px solid var(--dsw-alias-border-l2,#e1e5eb);border-radius:9px;background:var(--dsw-alias-bg-layer-2,#fff);color:var(--dsw-alias-label-secondary,#475569);white-space:pre-wrap;word-break:break-word;font:11px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}.dsh-mobile-control__update-notes[hidden]{display:none}.dsh-mobile-control__update-notice{margin:0 0 9px;padding:7px 9px;border-radius:8px;background:var(--dsw-alias-state-warn-tertiary,#fff4d6);color:var(--dsw-alias-state-warn-label,#92400e);font-size:11px;line-height:1.5}.dsh-mobile-control__update-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px}.dsh-mobile-control__update-actions .dsh-mobile-control__primary,.dsh-mobile-control__update-actions .dsh-mobile-control__secondary{min-height:36px;padding:0 12px}.dsh-mobile-control__app-download{display:flex;align-items:center;justify-content:space-between;box-sizing:border-box;min-height:44px;margin:0 0 10px;padding:8px 11px;border:1px solid var(--dsw-alias-border-l2,#dbe1e8);border-radius:11px;background:var(--dsw-alias-bg-layer-1,#f7f8fa);color:var(--dsw-alias-label-primary,#16181d);font:600 12px/1.3 system-ui;text-decoration:none}.dsh-mobile-control__app-download[hidden]{display:none}.dsh-mobile-control__app-download::after{color:var(--dsw-alias-label-primary-bluish,#2563eb);font-size:14px;content:"↗"}.dsh-mobile-control__app-download:hover{border-color:#9fb9e8;background:var(--dsw-alias-interactive-bg-hover-solid,var(--dsw-alias-bg-layer-2,#f5f8ff));color:var(--dsw-alias-label-primary,#1d4ed8)}
+.dsh-mobile-control__release-notice{margin:-2px 0 10px;padding:8px 10px;border-radius:9px;background:var(--dsw-alias-bg-layer-1,#eff6ff);color:var(--dsw-alias-label-primary,#1d4ed8);font-size:11px;line-height:1.45}.dsh-mobile-control__release-notice.is-error{color:var(--dsw-alias-label-primary,#dc2626);border-left:3px solid var(--dsw-alias-state-error-primary,#dc2626)}.dsh-mobile-control__release-notice[hidden]{display:none}.dsh-mobile-control__update-card{margin:0 0 10px;padding:11px;border:1px solid var(--dsw-alias-border-l2,#dbe1e8);border-radius:12px;background:var(--dsw-alias-bg-layer-1,#f8fafc)}.dsh-mobile-control__update-card[hidden]{display:none}.dsh-mobile-control__update-card-title{margin:0 0 7px;color:var(--dsw-alias-label-primary,#16181d);font:650 13px/1.4 system-ui}.dsh-mobile-control__update-notes{display:block;box-sizing:border-box;max-height:150px;overflow-y:auto;margin:0 0 8px;padding:8px 10px;border:1px solid var(--dsw-alias-border-l2,#e1e5eb);border-radius:9px;background:var(--dsw-alias-bg-layer-2,#fff);color:var(--dsw-alias-label-secondary,#475569);white-space:pre-wrap;word-break:break-word;font:11px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}.dsh-mobile-control__update-notes[hidden]{display:none}.dsh-mobile-control__update-notice{margin:0 0 9px;padding:7px 9px;border-radius:8px;background:var(--dsw-alias-state-warn-tertiary,#fff4d6);color:var(--dsw-alias-state-warn-label,#92400e);font-size:11px;line-height:1.5}.dsh-mobile-control__update-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px}.dsh-mobile-control__primary{display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;min-height:40px;padding:9px 14px;border:1px solid var(--dsw-alias-label-primary-bluish,#2563eb);border-radius:10px;background:var(--dsw-alias-label-primary-bluish,#2563eb);color:#fff;font:600 12px/1.3 system-ui;cursor:pointer;touch-action:manipulation}.dsh-mobile-control__primary:hover:not(:disabled){border-color:#1d4ed8;background:#1d4ed8}.dsh-mobile-control__primary:active:not(:disabled){border-color:#1e40af;background:#1e40af}.dsh-mobile-control__primary:disabled{cursor:wait;opacity:.55}.dsh-mobile-control__primary[hidden]{display:none}.dsh-mobile-control__update-actions .dsh-mobile-control__primary,.dsh-mobile-control__update-actions .dsh-mobile-control__secondary{min-height:36px;padding:0 12px}.dsh-mobile-control__app-download{display:flex;align-items:center;justify-content:space-between;box-sizing:border-box;min-height:44px;margin:0 0 10px;padding:8px 11px;border:1px solid var(--dsw-alias-border-l2,#dbe1e8);border-radius:11px;background:var(--dsw-alias-bg-layer-1,#f7f8fa);color:var(--dsw-alias-label-primary,#16181d);font:600 12px/1.3 system-ui;text-decoration:none}.dsh-mobile-control__app-downloads{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 10px}.dsh-mobile-control__app-downloads .dsh-mobile-control__app-download{flex:1 1 240px;margin:0}.dsh-mobile-control__app-download.is-iroh{border-color:var(--dsw-alias-label-primary-bluish,#2563eb);color:var(--dsw-alias-label-primary-bluish,#2563eb)}.dsh-mobile-control__app-download.is-iroh[hidden]{display:none}.dsh-mobile-control__app-download[hidden]{display:none}.dsh-mobile-control__app-download::after{color:var(--dsw-alias-label-primary-bluish,#2563eb);font-size:14px;content:"↗"}.dsh-mobile-control__app-download:hover{border-color:#9fb9e8;background:var(--dsw-alias-interactive-bg-hover-solid,var(--dsw-alias-bg-layer-2,#f5f8ff));color:var(--dsw-alias-label-primary,#1d4ed8)}
 .dsh-mobile-control__switcher{display:grid;grid-template-columns:repeat(2,1fr);gap:4px;margin:0 0 14px;padding:4px;border-radius:12px;background:var(--dsw-alias-bg-layer-1,#f3f5f8)}.dsh-mobile-control__switcher[hidden]{display:none}.dsh-mobile-control__tab{min-height:36px;border:0;border-radius:9px;background:transparent;color:var(--dsw-alias-label-secondary,#606873);font:600 13px/1 system-ui;cursor:pointer}.dsh-mobile-control__tab.is-active{background:var(--dsw-alias-bg-layer-2,#fff);color:var(--dsw-alias-label-primary,#16181d);box-shadow:0 1px 3px rgb(15 23 42 / 10%)}.dsh-mobile-control__view[hidden]{display:none}.dsh-mobile-control__intro{margin:0 0 12px;color:var(--dsw-alias-label-secondary,#606873);font-size:12px;line-height:1.55}.dsh-mobile-control__http-frame-warning{box-sizing:border-box;margin:-4px 0 12px;padding:8px 10px;border:1px solid #d6a83f;border-radius:9px;background:var(--dsw-alias-bg-layer-1,#fff7df);color:var(--dsw-alias-label-primary,#694b00);font-size:11px;line-height:1.5;overflow-wrap:anywhere}.dsh-mobile-control__http-frame-warning[hidden]{display:none}.dsh-mobile-control__view.is-remote .dsh-mobile-control__actions{display:grid;grid-template-columns:1fr 1fr;gap:8px}.dsh-mobile-control__view.is-remote .dsh-mobile-control__actions button[hidden]{display:none}
 .dsh-mobile-control__provider-section{position:relative;margin:0 0 14px}.dsh-mobile-control__section-title{margin:0 0 8px;color:var(--dsw-alias-label-primary,#16181d);font:650 13px/1.4 system-ui}.dsh-mobile-control__provider-section>.dsh-mobile-control__section-title{padding-right:42px}.dsh-mobile-control__provider-choices{display:grid;grid-template-columns:1fr;gap:8px}.dsh-mobile-control__provider{display:flex;min-width:0;flex-direction:column;gap:6px;min-height:94px;padding:10px 11px;border:1px solid var(--dsw-alias-border-l2,#dbe1e8);border-radius:13px;background:var(--dsw-alias-bg-layer-2,#fff);color:var(--dsw-alias-label-primary,#16181d);text-align:left;cursor:pointer;touch-action:manipulation;transition:border-color 160ms ease,background-color 160ms ease,box-shadow 160ms ease}.dsh-mobile-control__provider:hover{border-color:#6f96db;background:var(--dsw-alias-interactive-bg-hover-solid,var(--dsw-alias-bg-layer-1,#f8fbff))}.dsh-mobile-control__provider.is-selected{border-color:var(--dsw-alias-label-primary-bluish,#2563eb);background:var(--dsw-alias-interactive-bg-active,var(--dsw-alias-bg-layer-1,#f5f8ff));box-shadow:0 0 0 1px var(--dsw-alias-label-primary-bluish,#2563eb) inset}.dsh-mobile-control__provider:disabled{cursor:wait;opacity:.62}.dsh-mobile-control__provider-top{display:flex;min-width:0;align-items:flex-start;justify-content:space-between;gap:5px}.dsh-mobile-control__provider-top strong{min-width:0;font-size:12px;line-height:1.3}.dsh-mobile-control__provider-badge{flex:none;padding:2px 5px;border-radius:999px;background:var(--dsw-alias-state-business-tertiary,#e8f0ff);color:var(--dsw-alias-label-primary,#1d4ed8);font:650 11px/1.25 system-ui}.dsh-mobile-control__provider-badge.is-cpolar{background:var(--dsw-alias-state-success-tertiary,#eaf8f2);color:var(--dsw-alias-label-primary,#087454)}.dsh-mobile-control__provider-description{color:var(--dsw-alias-label-secondary,#606873);font-size:12px;line-height:1.45}.dsh-mobile-control__provider-info{position:absolute;z-index:5;top:-13px;right:-8px}.dsh-mobile-control__provider-info-button{display:flex;align-items:center;justify-content:center;width:44px;height:44px;padding:0;border:0;border-radius:50%;background:transparent;color:var(--dsw-alias-label-secondary,#475569);cursor:pointer;touch-action:manipulation}.dsh-mobile-control__provider-info-button:hover{background:var(--dsw-alias-interactive-bg-hover,#f1f5f9);color:var(--dsw-alias-label-primary-bluish,#2563eb)}.dsh-mobile-control__provider-info-glyph{display:flex;align-items:center;justify-content:center;box-sizing:border-box;width:18px;height:18px;border:1.5px solid currentColor;border-radius:50%;font:700 12px/1 system-ui}.dsh-mobile-control__provider-info-popover{position:absolute;z-index:6;top:38px;right:4px;box-sizing:border-box;width:min(292px,calc(100vw - 72px));padding:10px 12px;border:1px solid var(--dsw-alias-border-l2,#dbe1e8);border-radius:12px;background:var(--dsw-alias-bg-layer-2,#fff);box-shadow:0 10px 28px rgb(15 23 42 / 16%)}.dsh-mobile-control__provider-info-popover[hidden]{display:none}.dsh-mobile-control__provider-info-popover strong,.dsh-mobile-control__provider-info-popover span{display:block}.dsh-mobile-control__provider-info-popover strong{margin-bottom:3px;font-size:12px}.dsh-mobile-control__provider-info-popover span{color:var(--dsw-alias-label-secondary,#606873);font-size:11px;line-height:1.55}
 .dsh-mobile-control__self-hosted{margin:8px 0 0;border:1px solid var(--dsw-alias-border-l2,#dbe1e8);border-radius:12px;background:var(--dsw-alias-bg-layer-1,#f8fafc)}.dsh-mobile-control__self-hosted-summary{display:flex;box-sizing:border-box;min-height:48px;align-items:center;justify-content:space-between;gap:10px;padding:8px 11px;cursor:pointer;list-style-position:inside}.dsh-mobile-control__self-hosted-summary>span:first-child{display:flex;min-width:0;flex-direction:column;gap:1px}.dsh-mobile-control__self-hosted-summary strong{font-size:11px}.dsh-mobile-control__self-hosted-summary span span{color:var(--dsw-alias-label-secondary,#606873);font-size:11px;line-height:1.35}.dsh-mobile-control__provider-badge.is-frp{background:var(--dsw-alias-bg-layer-1,#eef0f3);color:var(--dsw-alias-label-secondary,#475569)}.dsh-mobile-control__self-hosted-body{padding:0 8px 8px}.dsh-mobile-control__provider.is-frp{width:100%;min-height:64px;background:var(--dsw-alias-bg-layer-2,#fff)}
@@ -4732,7 +5019,7 @@ export const CONTROL_STYLES = `
 .dsh-mobile-control__diagnostic-checks{display:grid;gap:12px;margin-top:12px;animation:dsh-diagnostic-reveal 160ms ease-out both}.dsh-mobile-control__diagnostic-checks[hidden]{display:none}.dsh-mobile-control__diagnostic-group{overflow:hidden;border:1px solid var(--dsw-alias-border-l2,#dbe1e8);border-radius:13px;background:var(--dsw-alias-bg-layer-2,#fff)}.dsh-mobile-control__diagnostic-group-header{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 11px;border-bottom:1px solid var(--dsw-alias-border-l2,#e1e5eb);background:var(--dsw-alias-bg-layer-1,#f8fafc)}.dsh-mobile-control__diagnostic-group-header h3{margin:0;font:650 11px/1.4 system-ui}.dsh-mobile-control__diagnostic-group-header span{color:var(--dsw-alias-label-secondary,#606873);font-size:11px}.dsh-mobile-control__diagnostic-list{display:flex;flex-direction:column}.dsh-mobile-control__diagnostic-check{display:grid;grid-template-columns:26px minmax(0,1fr);gap:9px;padding:11px;background:var(--dsw-alias-bg-layer-2,#fff)}.dsh-mobile-control__diagnostic-check + .dsh-mobile-control__diagnostic-check{border-top:1px solid var(--dsw-alias-border-l2,#e1e5eb)}.dsh-mobile-control__diagnostic-marker{position:relative;width:26px;height:26px;border-radius:50%;background:var(--dsw-alias-bg-layer-1,#edf1f5);color:var(--dsh-diagnostic-info)}.dsh-mobile-control__diagnostic-marker::before,.dsh-mobile-control__diagnostic-marker::after{position:absolute;content:""}.dsh-mobile-control__diagnostic-check.is-ok .dsh-mobile-control__diagnostic-marker{background:var(--dsw-alias-state-success-tertiary,#e6f7f0);color:var(--dsh-diagnostic-ok)}.dsh-mobile-control__diagnostic-check.is-ok .dsh-mobile-control__diagnostic-marker::before{top:7px;left:7px;width:9px;height:5px;border-bottom:1.8px solid currentColor;border-left:1.8px solid currentColor;transform:rotate(-45deg)}.dsh-mobile-control__diagnostic-check.is-warning .dsh-mobile-control__diagnostic-marker{background:var(--dsw-alias-state-warn-tertiary,#fff4dc);color:var(--dsh-diagnostic-warning)}.dsh-mobile-control__diagnostic-check.is-error .dsh-mobile-control__diagnostic-marker{background:var(--dsw-alias-state-error-secondary,#fdecec);color:var(--dsh-diagnostic-error)}.dsh-mobile-control__diagnostic-check.is-warning .dsh-mobile-control__diagnostic-marker::before,.dsh-mobile-control__diagnostic-check.is-error .dsh-mobile-control__diagnostic-marker::before{top:6px;left:12px;width:2px;height:9px;border-radius:2px;background:currentColor}.dsh-mobile-control__diagnostic-check.is-warning .dsh-mobile-control__diagnostic-marker::after,.dsh-mobile-control__diagnostic-check.is-error .dsh-mobile-control__diagnostic-marker::after{bottom:6px;left:12px;width:2px;height:2px;border-radius:50%;background:currentColor}.dsh-mobile-control__diagnostic-check.is-info .dsh-mobile-control__diagnostic-marker::before{top:6px;left:12px;width:2px;height:2px;border-radius:50%;background:currentColor}.dsh-mobile-control__diagnostic-check.is-info .dsh-mobile-control__diagnostic-marker::after{top:10px;left:12px;width:2px;height:9px;border-radius:2px;background:currentColor}.dsh-mobile-control__diagnostic-check-body{min-width:0}.dsh-mobile-control__diagnostic-check-header{display:flex;align-items:flex-start;justify-content:space-between;gap:8px}.dsh-mobile-control__diagnostic-check-header strong{min-width:0;font-size:12px;line-height:1.4}.dsh-mobile-control__diagnostic-badge{flex:none;padding:2px 6px;border-radius:999px;background:var(--dsw-alias-bg-layer-1,#edf1f5);color:var(--dsh-diagnostic-info);font:650 11px/1.3 system-ui}.dsh-mobile-control__diagnostic-check.is-ok .dsh-mobile-control__diagnostic-badge{background:var(--dsw-alias-state-success-tertiary,#e6f7f0);color:var(--dsh-diagnostic-ok)}.dsh-mobile-control__diagnostic-check.is-warning .dsh-mobile-control__diagnostic-badge{background:var(--dsw-alias-state-warn-tertiary,#fff4dc);color:var(--dsh-diagnostic-warning)}.dsh-mobile-control__diagnostic-check.is-error .dsh-mobile-control__diagnostic-badge{background:var(--dsw-alias-state-error-secondary,#fdecec);color:var(--dsh-diagnostic-error)}.dsh-mobile-control__diagnostic-check p{margin:4px 0 0;color:var(--dsw-alias-label-secondary,#606873);font-size:11px;line-height:1.5;overflow-wrap:anywhere}.dsh-mobile-control__diagnostic-check .dsh-mobile-control__diagnostic-action{margin-top:7px;padding:7px 8px;border-radius:8px;background:var(--dsw-alias-bg-layer-1,#f8fafc);color:var(--dsw-alias-label-primary,#16181d)}.dsh-mobile-control__diagnostic-action span{display:inline-block;margin-right:6px;color:var(--dsw-alias-label-primary-bluish,#2563eb);font-weight:700}.dsh-mobile-control__diagnostic-details{margin-top:12px}.dsh-mobile-control__diagnostic-details[hidden]{display:none}.dsh-mobile-control__diagnostic-details>summary{box-sizing:border-box;min-height:44px;line-height:44px}.dsh-mobile-control__diagnostic-report{box-sizing:border-box;max-height:220px;margin:4px 0 0;overflow:auto;padding:10px;border:1px solid var(--dsw-alias-border-l2,#dbe1e8);border-radius:10px;background:var(--dsw-alias-bg-layer-1,#f3f5f8);color:var(--dsw-alias-label-secondary,#606873);font:11px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}
 .dsh-mobile-control__diagnostic-checks{transition:opacity 150ms ease}.dsh-mobile-control__diagnostic-checks.is-refreshing{opacity:.52}
 @keyframes dsh-diagnostic-spin{to{transform:rotate(360deg)}}@keyframes dsh-diagnostic-reveal{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
-.dsh-mobile-control__actions{display:flex;flex-wrap:nowrap;gap:6px}.dsh-mobile-control__actions[hidden],.dsh-mobile-control__manage-row[hidden]{display:none}.dsh-mobile-control__actions button{flex:1 1 0;min-width:0;min-height:44px;padding:8px 4px;border-radius:10px;font:12px/1.2 system-ui;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.dsh-mobile-control__secondary{border:1px solid var(--dsw-alias-border-l3,#cfd5dd);background:transparent;color:inherit}.dsh-mobile-control__primary{border:1px solid #2563eb;background:#2563eb;color:#fff}.dsh-mobile-control__actions button:disabled{cursor:not-allowed;opacity:.45}
+.dsh-mobile-control__actions{display:flex;flex-wrap:nowrap;gap:6px}.dsh-mobile-control__actions[hidden],.dsh-mobile-control__manage-row[hidden]{display:none}.dsh-mobile-control__actions button{flex:1 1 0;min-width:0;min-height:44px;padding:8px 4px;border-radius:10px;font:12px/1.2 system-ui;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.dsh-mobile-control__secondary{display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;min-height:40px;padding:9px 14px;border:1px solid var(--dsw-alias-border-l3,#cfd5dd);border-radius:10px;background:transparent;color:inherit;font:600 12px/1.3 system-ui;cursor:pointer;touch-action:manipulation}.dsh-mobile-control__secondary:hover:not(:disabled){border-color:#6f96db;background:var(--dsw-alias-interactive-bg-hover-solid,var(--dsw-alias-bg-layer-1,#f8fbff))}.dsh-mobile-control__secondary:disabled{cursor:wait;opacity:.55}.dsh-mobile-control__secondary[hidden]{display:none}.dsh-mobile-control__primary{border:1px solid #2563eb;background:#2563eb;color:#fff}.dsh-mobile-control__actions button:disabled{cursor:not-allowed;opacity:.45}
 .dsh-mobile-control button:focus-visible,.dsh-mobile-control a:focus-visible,.dsh-mobile-control input:focus-visible,.dsh-mobile-control select:focus-visible,.dsh-mobile-control summary:focus-visible{outline:3px solid rgb(37 99 235 / 28%);outline-offset:2px}
 /* 42px matches the DSH sidebar footer row; it is not one of the panel target tiers. */
 /* Other footer entries share the shell's row; only our own action becomes compact. */
@@ -4746,6 +5033,63 @@ export const CONTROL_STYLES = `
 .dsh-mobile-control__origin-modes{min-width:0;margin:0 0 14px;padding:0;border:0}.dsh-mobile-control__origin-modes legend{margin:0 0 8px;padding:0;color:var(--dsw-alias-label-secondary,#606873);font:600 12px/1.4 system-ui}.dsh-mobile-control__origin-mode{display:flex;box-sizing:border-box;min-height:44px;align-items:center;gap:10px;padding:10px;border:1px solid var(--dsw-alias-border-l2,#dbe1e8);border-radius:10px;background:var(--dsw-alias-bg-layer-1,#f3f5f8);font:12px/1.5 system-ui;cursor:pointer}.dsh-mobile-control__origin-mode+.dsh-mobile-control__origin-mode{margin-top:8px}.dsh-mobile-control__origin-mode:has(input:checked){border-color:var(--dsw-alias-label-primary-bluish,#2563eb)}.dsh-mobile-control__origin-mode:focus-within{outline:2px solid var(--dsw-alias-state-business-primary,#2563eb);outline-offset:2px}.dsh-mobile-control__origin-mode:has(input:disabled){cursor:wait;opacity:.55}.dsh-mobile-control__origin-mode input[type=radio]{flex:0 0 18px;box-sizing:border-box;width:18px;height:18px;min-height:18px;margin:0;padding:0;accent-color:var(--dsw-alias-label-primary-bluish,#2563eb)}.dsh-mobile-control__origin-mode span{min-width:0;overflow-wrap:anywhere}
 /* Base the columns on the card width, not the desktop viewport behind the popup. */
 .dsh-mobile-control__origin-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,140px),1fr));gap:12px}.dsh-mobile-control__origin-fields>.dsh-mobile-control__field{min-width:0;grid-column:auto;font-size:12px}.dsh-mobile-control__origin-fields>.dsh-mobile-control__field--full{grid-column:1/-1}.dsh-mobile-control__origin-fields select{box-sizing:border-box;width:100%;min-height:44px;padding:9px 10px;border:1px solid var(--dsw-alias-border-l3,#cfd5dd);border-radius:10px;background:var(--dsw-alias-bg-layer-2,#fff);color:var(--dsw-alias-label-primary,#16181d);font:16px/1.4 system-ui}.dsh-mobile-control__origin-fields select:disabled{cursor:not-allowed;opacity:.55}.dsh-mobile-control__caddy-form{display:grid;gap:12px}.dsh-mobile-control__caddy-form>.dsh-mobile-control__component-note,.dsh-mobile-control__caddy-form>.dsh-mobile-control__component-status,.dsh-mobile-control__caddy-form>.dsh-mobile-control__origin-feedback{margin:0;overflow-wrap:anywhere}.dsh-mobile-control__origin-setup .dsh-mobile-control__actions.dsh-mobile-control__caddy-actions{grid-template-columns:minmax(0,1fr);margin:0}.dsh-mobile-control__caddy-actions button{box-sizing:border-box;min-width:0;min-height:44px;padding:10px 12px;border-radius:10px;font:600 12px/1.4 system-ui;cursor:pointer}.dsh-mobile-control__origin-warning{margin:12px 0;padding:10px 12px;border-left:3px solid var(--dsw-alias-state-warn-primary,#a56810);border-radius:4px;background:var(--dsw-alias-bg-layer-1,#f3f5f8);color:var(--dsw-alias-label-primary,#384152);font-size:12px;line-height:1.6}.dsh-mobile-control__origin-feedback{font-size:12px;line-height:1.6;overflow-wrap:anywhere}.dsh-mobile-control__origin-feedback.is-error{color:var(--dsw-alias-state-error-primary,#bc3030)}.dsh-mobile-control__origin-fields input[aria-invalid=true]{border-color:var(--dsw-alias-state-error-primary,#bc3030)}.dsh-mobile-control__origin-backend{display:flex;min-width:0;flex-direction:column;align-items:stretch;gap:8px;margin-top:12px;padding-top:12px;border-top:1px solid var(--dsw-alias-border-l2,#dbe1e8)}.dsh-mobile-control__origin-backend button{align-self:flex-start;min-height:44px}.dsh-mobile-control__self-hosted-body .is-origin{margin-top:8px}
+/* Final overrides: dense borderless layout must beat the base rules above.
+   The earlier dense block sits before those base rules, so these repeat the
+   essential de-boxing here at the end of the sheet where they win. */
+.dsh-mobile-control__provider{position:relative;border:0;border-radius:8px;padding:8px 10px;min-height:0;background:transparent;box-shadow:none}
+.dsh-mobile-control__provider:hover{border-color:transparent;background:var(--dsw-alias-interactive-bg-hover,#f1f5f9)}
+.dsh-mobile-control__provider.is-selected{border-color:transparent;background:var(--dsw-alias-interactive-bg-active,#f5f8ff);box-shadow:none}
+.dsh-mobile-control__provider.is-lan:not(.is-selected){border-color:transparent;background:transparent}
+.dsh-mobile-control__view:not(.is-remote)>.dsh-mobile-control__actions{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.dsh-mobile-control__view.is-diagnostics,.dsh-mobile-control__view.is-devices{flex:1;min-height:0;overflow-y:auto;padding:14px 20px}
+.dsh-mobile-control__view.is-devices .dsh-mobile-control__devices{max-height:none;margin-top:0}
+.dsh-mobile-control__actions button{white-space:normal;overflow:visible;text-overflow:clip;line-height:1.25;height:auto;padding-top:8px;padding-bottom:8px;word-break:break-word}
+.dsh-mobile-control__qr-placeholder{display:flex;align-items:center;justify-content:center;box-sizing:border-box;width:192px;height:192px;padding:12px;border:1px dashed var(--dsw-alias-border-l2,#dbe1e8);border-radius:12px;color:var(--dsw-alias-label-secondary,#606873);font-size:12px;line-height:1.5;text-align:center}
+.dsh-mobile-control__lan-setup .dsh-mobile-control__actions,.dsh-mobile-control__cpolar-setup .dsh-mobile-control__actions,.dsh-mobile-control__frp-setup .dsh-mobile-control__actions,.dsh-mobile-control__origin-setup .dsh-mobile-control__actions{margin-top:12px}
+.dsh-mobile-control__origin-setup .dsh-mobile-control__actions.dsh-mobile-control__caddy-actions{margin-top:12px}
+.dsh-mobile-control__qr-zoom{pointer-events:auto}
+.dsh-mobile-control__iroh-pairing{border:0;border-radius:0;background:transparent;padding:0;margin:12px 0 0}
+/* Config setup panels: drop the rounded card frame so provider configuration
+   reads as one flat page with hairline dividers instead of nested boxes. */
+.dsh-mobile-control__lan-setup,.dsh-mobile-control__cpolar-setup,.dsh-mobile-control__frp-setup,.dsh-mobile-control__origin-setup{border:0;border-radius:0;background:transparent;padding:0;margin:0 0 12px}
+.dsh-mobile-control__frp-setup>.dsh-mobile-control__frp-step,.dsh-mobile-control__frp-group,.dsh-mobile-control__frp-overview{border:0;border-radius:0;background:transparent}
+.dsh-mobile-control__ws-paths{border:0;border-radius:0;background:transparent;padding:0;margin:10px 0 0}
+.dsh-mobile-control__view.is-remote .dsh-mobile-control__actions{display:flex;flex-wrap:nowrap;gap:8px}
+.dsh-mobile-control__remote-workspace{border:0;border-radius:0;background:transparent;box-shadow:none}
+.dsh-mobile-control__stage-header{border:0;border-radius:0;background:transparent;box-shadow:none}
+.dsh-mobile-control__app-downloads{display:flex;gap:8px;padding:6px 16px;border-bottom:1px solid var(--dsw-alias-border-l2,#e1e5eb)}
+.dsh-mobile-control__app-download{flex:1 1 0;display:flex;align-items:center;justify-content:space-between;gap:6px;box-sizing:border-box;min-height:34px;padding:6px 10px;border:1px solid var(--dsw-alias-border-l3,#cfd5dd);border-radius:8px;background:var(--dsw-alias-bg-layer-2,#fff);color:var(--dsw-alias-label-primary,#16181d);font-size:12px;text-decoration:none;white-space:normal}
+.dsh-mobile-control__app-download.is-iroh{border-color:var(--dsw-alias-label-primary-bluish,#2563eb)}
+.dsh-mobile-control__setup-details{margin-top:12px;padding-top:8px;border-top:1px solid var(--dsw-alias-border-l2,#e1e5eb)}
+.dsh-mobile-control__remote-workspace>.dsh-mobile-control__qr{margin-bottom:18px}
+.dsh-mobile-control__stage-header{display:none}
+.dsh-mobile-control__provider-install{margin:0 0 12px}
+.dsh-mobile-control__provider-install>.dsh-mobile-control__primary{width:100%;min-height:44px}
+.dsh-mobile-control__tunnel-toggle{display:inline-flex;align-items:center;gap:4px;box-sizing:border-box;margin:0 0 10px;padding:6px 12px;border:1px solid var(--dsw-alias-border-l3,#cfd5dd);border-radius:8px;background:transparent;color:var(--dsw-alias-label-primary-bluish,#2563eb);font:600 12px/1 system-ui;cursor:pointer}
+.dsh-mobile-control__tunnel-toggle:hover{background:var(--dsw-alias-interactive-bg-hover,#f1f3f6)}
+.dsh-mobile-control__tunnel>.dsh-mobile-control__primary,.dsh-mobile-control__tunnel>.dsh-mobile-control__secondary{width:100%;min-height:44px;margin-top:10px}
+.dsh-mobile-control__provider-info-popover p{margin:0 0 8px;font-size:11px;line-height:1.5}
+.dsh-mobile-control__provider-info-popover p:last-child{margin-bottom:0}
+.dsh-mobile-control__provider-info-popover{max-width:240px;max-height:44vh;overflow:auto;white-space:normal}
+.dsh-mobile-control__mode-row{position:relative;display:flex;align-items:center;gap:8px;margin:0 0 8px}
+.dsh-mobile-control__mode-row>.dsh-mobile-control__switcher{flex:1 1 auto;margin:0}
+.dsh-mobile-control__notes-toggle{flex:none;display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;padding:0;border:1px solid var(--dsw-alias-border-l3,#cfd5dd);border-radius:50%;background:transparent;color:var(--dsw-alias-label-secondary,#606873);font:600 13px/1 system-ui;cursor:pointer}
+.dsh-mobile-control__notes-toggle:hover{background:var(--dsw-alias-interactive-bg-hover,#f1f3f6)}
+.dsh-mobile-control__notes-panel{position:absolute;top:calc(100% + 6px);right:0;z-index:40;width:min(320px,78vw);max-height:50vh;overflow:auto;box-sizing:border-box;margin:0;padding:10px 12px;border:1px solid var(--dsw-alias-border-l2,#dbe1e8);border-radius:8px;background:var(--dsw-alias-bg-layer-2,#fff);box-shadow:0 6px 20px rgb(15 23 42 / 12%);font-size:11px;line-height:1.5;color:var(--dsw-alias-label-secondary,#475569)}
+.dsh-mobile-control__notes-panel p{margin:0 0 8px}.dsh-mobile-control__notes-panel p:last-child{margin:0}
+.dsh-mobile-control__notes-panel[hidden]{display:none}
+.dsh-mobile-control__tunnel-toggle[hidden]{display:none}
+.dsh-mobile-control__provider-setup-body .dsh-mobile-control__switcher{border-radius:0;background:transparent;padding:0;gap:8px}
+.dsh-mobile-control__provider-setup-body .dsh-mobile-control__tab{border-radius:0;box-shadow:none;border-bottom:2px solid transparent}
+.dsh-mobile-control__provider-setup-body .dsh-mobile-control__tab.is-active{background:transparent;box-shadow:none;border-bottom-color:var(--dsw-alias-label-primary-bluish,#2563eb)}
+.dsh-mobile-control__origin-setup .dsh-mobile-control__origin-mode{border-radius:0;background:transparent}
+.dsh-mobile-control__devices{border:0;border-radius:0;padding:0;margin:0;background:transparent;max-height:none}
+.dsh-mobile-control__provider.is-frp:not(.is-selected),.dsh-mobile-control__provider.is-origin:not(.is-selected),.dsh-mobile-control__provider.is-iroh:not(.is-selected){border-color:transparent;background:transparent}
+.dsh-mobile-control__provider.is-selected::before{content:"";position:absolute;left:0;top:8px;bottom:8px;width:2px;border-radius:2px;background:var(--dsw-alias-label-primary-bluish,#2563eb)}
+.dsh-mobile-control__remote-workspace section{border:0;border-radius:0;padding:12px 0;background:transparent;box-shadow:none;border-top:1px solid var(--dsw-alias-border-l2,#e1e5eb)}
+.dsh-mobile-control__remote-workspace section:first-child{border-top:0}
+.dsh-mobile-control__remote-workspace .dsh-mobile-control__details{border:0;border-radius:0;background:transparent;box-shadow:none}
+.dsh-mobile-control__self-hosted{border:0;border-radius:0;background:transparent;box-shadow:none}
 ` + EXTENSION_RECOVERY_STYLES
 
 /** Mount the desktop control or mobile feature enhancements. */
