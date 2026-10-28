@@ -1148,11 +1148,12 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
     cloudflaredNotesToggle.setAttribute('aria-expanded', String(open))
   }
   // Hover shows the notes; only touch (no hover) falls back to tapping.
-  const hoverCapable = window.matchMedia('(hover: hover)')
-  cloudflaredModeRow.addEventListener('pointerenter', () => { if (hoverCapable.matches) setCloudflaredNotesOpen(true) })
-  cloudflaredModeRow.addEventListener('pointerleave', () => { if (hoverCapable.matches) setCloudflaredNotesOpen(false) })
+  // matchMedia is feature-detected: hardened test documents may not provide it.
+  const hoverCapable = typeof window.matchMedia === 'function' ? window.matchMedia('(hover: hover)') : undefined
+  cloudflaredModeRow.addEventListener('pointerenter', () => { if (hoverCapable?.matches) setCloudflaredNotesOpen(true) })
+  cloudflaredModeRow.addEventListener('pointerleave', () => { if (hoverCapable?.matches) setCloudflaredNotesOpen(false) })
   cloudflaredNotesToggle.addEventListener('click', () => {
-    if (hoverCapable.matches) { setCloudflaredNotesOpen(true); return }
+    if (hoverCapable?.matches) { setCloudflaredNotesOpen(true); return }
     setCloudflaredNotesOpen(!cloudflaredNotesPanel.hidden)
   })
   const cloudflaredTunnel = element('div', 'dsh-mobile-control__tunnel'); cloudflaredTunnel.hidden = true
@@ -1982,8 +1983,18 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
       lanSetupConfigure.disabled = lanRestartRequired || lanSetupSelect.options.length === 0
     })
   })
+  const clearQrTarget = (target: HTMLDivElement): void => {
+    if (typeof target.replaceChildren === 'function') {
+      target.replaceChildren()
+      return
+    }
+    // Fake DOM nodes in tests may lack replaceChildren; emulate it.
+    try {
+      while (target.firstChild) target.removeChild(target.firstChild)
+    } catch { /* keep whatever the fake DOM supports */ }
+  }
   const showQr = (svg: string, target: HTMLDivElement = qrBox): void => {
-    target.replaceChildren()
+    clearQrTarget(target)
     if (svg === '') {
       const placeholderText = target === irohQr ? t('irohQrPlaceholder') : target === remoteQr ? t('remoteQrPlaceholder') : target === qrBox ? t('qrPlaceholder') : undefined
       if (placeholderText !== undefined) {
@@ -2006,14 +2017,14 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
   }
   showQr('')
   const showIrohQrPlaceholder = (): void => {
-    irohQr.replaceChildren()
+    clearQrTarget(irohQr)
     const placeholder = element('span', 'dsh-mobile-control__qr-placeholder')
     placeholder.textContent = t('irohQrPlaceholder')
     irohQr.hidden = false
     irohQr.append(placeholder)
   }
   const showRemoteQrPlaceholder = (text: string): void => {
-    remoteQr.replaceChildren()
+    clearQrTarget(remoteQr)
     const placeholder = element('span', 'dsh-mobile-control__qr-placeholder')
     placeholder.textContent = text
     remoteQr.hidden = false
@@ -2461,7 +2472,7 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
     // The selected provider and its state already live in the left column. The
     // status line is only meaningful while connecting or when attention/errors
     // occur; hide it with display:none (not just hidden text) so it takes no space.
-    remoteStatus.style.display = state === 'off' && remoteFailureText === '' ? 'none' : ''
+    if (remoteStatus.style) remoteStatus.style.display = state === 'off' && remoteFailureText === '' ? 'none' : ''
     remoteAccess.hidden = !remoteReady
     remoteAccessLink.href = remoteOrigin
     remoteAccessLink.textContent = remoteOrigin
@@ -2504,7 +2515,7 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
     remoteToggle.disabled = remoteProviderBusy || (!providerPrepared && !(origin && remoteRunning)) || namedUnconfigured
     if (namedUnconfigured) {
       remoteStatus.textContent = t('cloudflaredEnableNeedsConfig')
-      remoteStatus.style.display = ''
+      if (remoteStatus.style) remoteStatus.style.display = ''
     }
     remoteLogin.hidden = !tailscale || state !== 'needs-login' || remoteLoginUrl === ''
     remoteReconnect.hidden = needsFunnelSetup || (state !== 'error' && state !== 'unavailable')
@@ -2713,7 +2724,7 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
   irohCopyDescriptor.addEventListener('click', () => {
     if (activeIrohDescriptor === '') return
     void navigator.clipboard.writeText(activeIrohDescriptor).then(
-      () => { irohPairStatus.textContent = t('linkCopied') },
+      () => { irohPairStatus.textContent = t('irohLinkCopied') },
       () => { irohPairStatus.textContent = t('remoteQrReady') },
     )
   })
@@ -2768,7 +2779,7 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
     if (mode === 'named' && cloudflaredTunnelMode !== 'named') {
       remoteToggle.disabled = true
       remoteStatus.textContent = t('cloudflaredEnableNeedsConfig')
-      remoteStatus.style.display = ''
+      if (remoteStatus.style) remoteStatus.style.display = ''
     }
   }
   cloudflaredTunnelToggle.addEventListener('click', () => {

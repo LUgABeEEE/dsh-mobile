@@ -50,6 +50,11 @@ DSH Mobile 是一个 DeepSeek Harness 插件，让手机浏览器或 Android App
 
 ## 能做什么
 
+<p align="center">
+  <img src="docs/images/mobile-access-local.zh.png" width="49%" alt="局域网访问面板：左侧选择连接方式，右侧为局域网地址、配对二维码与操作按钮（地址与二维码已打码）">
+  <img src="docs/images/mobile-access-remote.zh.png" width="49%" alt="远程访问面板：左侧选择远程通道，右侧为远程地址、配对二维码与操作按钮（地址与二维码已打码）">
+</p>
+
 - **在手机上继续电脑端的工作**：同一份会话、工作区、消息和工具，实时同步。
 - **用对话定制手机端**：在 DSH 对话里提出布局、交互或功能需求；文件修改完成后，手机页面通常会自动刷新。
 - **专属触屏布局**：会话抽屉、工具详情、设置、提问卡片和输入栏都按手机重新组织；App 跟随系统语言（简/英/意），插件界面跟随 DSH 语言。

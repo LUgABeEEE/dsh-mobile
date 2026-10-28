@@ -50,6 +50,11 @@ It also lets you customize the phone from a DSH conversation: `/mobile <what you
 
 ## What it does
 
+<p align="center">
+  <img src="docs/images/mobile-access-local.en.png" width="49%" alt="Local network access panel: connection list on the left, LAN address, pairing QR code and actions on the right (address and QR redacted)">
+  <img src="docs/images/mobile-access-remote.en.png" width="49%" alt="Remote access panel: remote channel list on the left, remote address, pairing QR code and actions on the right (address and QR redacted)">
+</p>
+
 - **Continue DSH work from a phone**: the same sessions, Workspaces, messages, and tools, in real time.
 - **Customize the phone UI by talking to DSH**: request layout, interaction, or feature changes in a conversation; open pages usually refresh after the files have been changed.
 - **A dedicated touch layout**: session drawer, tool details, settings, question cards, and composer reorganized for phones; the app follows the system locale (Chinese/English/Italian), plugin UI follows DSH's locale.
