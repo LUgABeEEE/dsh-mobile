@@ -6,6 +6,7 @@ const transport = await import(new URL('../scripts/build-android-transport.mjs',
   inspectElf: (bytes: Buffer, expectedMachine: number) => { machine: number; loadAlignments: string[] }
   parseOptions: (args: readonly string[]) => { abis: string[]; output: string; ndk?: string }
   verifyApkEntries: (entries: readonly string[], abis: readonly string[]) => void
+  verifyCompatibilityApkEntries: (entries: readonly string[]) => void
 }
 
 function elf64(machine: number): Buffer {
@@ -45,6 +46,14 @@ describe('android transport build helpers', () => {
     expect(transport.inspectElf(elf64(183), 183)).toMatchObject({ machine: 183 })
     expect(() => transport.inspectElf(elf64(62), 183)).toThrow('differs from its APK ABI')
     expect(() => transport.inspectElf(Buffer.alloc(16), 183)).toThrow('little-endian ELF64')
+  })
+
+  it('rejects native leftovers in compatibility packages and unknown variants', () => {
+    expect(() => transport.verifyCompatibilityApkEntries(['classes.dex', 'assets/THIRD_PARTY_NOTICES.txt'])).not.toThrow()
+    expect(() => transport.verifyCompatibilityApkEntries(['lib/x86_64/libdsh_mobile_iroh_android_transport.so']))
+      .toThrow('compatibility APK must not contain native libraries')
+    expect(() => transport.parseOptions(['--variant', 'unknown'])).toThrow('unsupported APK variant')
+    expect(() => transport.parseOptions(['--variant', 'compatibility'])).not.toThrow()
   })
 
   it('requires exactly one transport library per selected ABI', () => {

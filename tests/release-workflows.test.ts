@@ -38,6 +38,7 @@ describe('independent plugin and Android release workflows', () => {
     expect(publication).toContain('Android App: **${app.version}**')
     expect(publication).toContain('releases/download/${tag}/dsh-mobile-android-v${version}.apk')
     expect(publication).toContain('--generate-notes')
+    expect(publication).toContain('--notes-start-tag "$previous_plugin_tag"')
     expect(publication).toContain('--notes "$release_note"')
     expect(publication).not.toContain('dsh-mobile-android-v${GITHUB_REF_NAME#v}.apk')
   })
@@ -96,5 +97,20 @@ describe('independent plugin and Android release workflows', () => {
   it('includes the verified App descriptor in published npm packages', async () => {
     const manifest = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')) as { readonly files: readonly string[] }
     expect(manifest.files).toContain('apps/mobile/release.json')
+  })
+
+  it('preserves the full signed APK before rebuilding the legacy compatibility download', async () => {
+    const release = await workflow('android-release')
+    const commands = release.jobs.android!.steps.map(step => step.run ?? '').join('\n')
+    const preserveFull = commands.indexOf('cp apps/mobile/android/app/build/outputs/apk/release/app-release.apk "dsh-mobile-android-v${version}-iroh.apk"')
+    const rebuildCompatibility = commands.indexOf('assembleRelease -PirohNative=false')
+    const preserveCompatibility = commands.indexOf('cp apps/mobile/android/app/build/outputs/apk/release/app-release.apk "dsh-mobile-android-v${version}.apk"')
+    expect(preserveFull).toBeGreaterThan(0)
+    expect(rebuildCompatibility).toBeGreaterThan(preserveFull)
+    expect(preserveCompatibility).toBeGreaterThan(rebuildCompatibility)
+    expect(commands).toContain('--variant compatibility')
+    expect(commands).toContain('for apk in dsh-mobile-android-v*.apk; do')
+    const publication = release.jobs['github-release']!.steps.map(step => step.run ?? '').join('\n')
+    expect(publication).toContain('legacy update link serves the compatibility APK')
   })
 })

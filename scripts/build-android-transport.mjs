@@ -50,17 +50,19 @@ export function parseOptions(args) {
   for (let index = 0; index < args.length; index += 1) {
     const flag = args[index]
     const value = args[++index]
-    if (!['--ndk', '--abis', '--output', '--verify-apk', '--build-tools'].includes(flag) || !value) {
+    if (!['--ndk', '--abis', '--output', '--verify-apk', '--build-tools', '--variant'].includes(flag) || !value) {
       throw new Error(`invalid Android transport argument: ${flag}`)
     }
     if (flag === '--abis') options.abis = value.split(',')
     else if (flag === '--output') options.output = resolve(value)
     else if (flag === '--ndk') options.ndk = resolve(value)
     else if (flag === '--build-tools') options.buildTools = resolve(value)
+    else if (flag === '--variant') options.variant = value
     else options.apk = resolve(value)
   }
   if (options.abis.length === 0 || new Set(options.abis).size !== options.abis.length
     || options.abis.some(abi => !Object.hasOwn(ABI_TARGETS, abi))) throw new Error('unsupported or duplicate ABI')
+  if (options.variant && !['full', 'compatibility'].includes(options.variant)) throw new Error('unsupported APK variant')
   return options
 }
 
@@ -73,6 +75,11 @@ export function verifyApkEntries(entries, abis) {
   const unexpected = entries.filter(entry => entry.startsWith('lib/') && entry.endsWith(`/${LIBRARY}`)
     && !abis.some(abi => entry === `lib/${abi}/${LIBRARY}`))
   if (unexpected.length) throw new Error('APK contains an unselected transport ABI')
+}
+
+/** Compatibility downloads must remain installable without a supported native ABI. */
+export function verifyCompatibilityApkEntries(entries) {
+  if (entries.some(entry => entry.startsWith('lib/'))) throw new Error('compatibility APK must not contain native libraries')
 }
 
 function run(command, args, env = process.env, capture = false) {
@@ -95,7 +102,11 @@ async function main() {
     if (!options.buildTools) throw new Error('--verify-apk requires an explicit --build-tools directory')
     // Android builds already require a JDK; its archive reader avoids an owned ZIP parser.
     const entries = run('jar', ['tf', options.apk], process.env, true).split(/\r?\n/u).filter(Boolean)
-    verifyApkEntries(entries, options.abis)
+    if (options.variant === 'compatibility') verifyCompatibilityApkEntries(entries)
+    else verifyApkEntries(entries, options.abis)
+    if (entries.filter(entry => entry === 'assets/THIRD_PARTY_NOTICES.txt').length !== 1) {
+      throw new Error('APK must contain its third-party notices')
+    }
     const executable = join(options.buildTools, process.platform === 'win32' ? 'zipalign.exe' : 'zipalign')
     run(executable, ['-c', '-P', '16', '-v', '4', options.apk])
     return

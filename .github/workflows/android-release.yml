@@ -53,9 +53,25 @@ jobs:
           DSH_ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: bash ./gradlew --no-daemon lintDebug testDebugUnitTest assembleRelease -PirohNative=true -PirohNdk="$ANDROID_HOME/ndk/25.2.9519653" -x lintAnalyzeDebugUnitTest -x lintAnalyzeDebugAndroidTest
         working-directory: apps/mobile/android
-      - name: Verify the packaged transport libraries
-        run: node ../../../scripts/build-android-transport.mjs --verify-apk app/build/outputs/apk/release/app-release.apk --build-tools "$ANDROID_HOME/build-tools/36.0.0"
+      - name: Preserve and verify the full APK before rebuilding compatibility
+        run: |
+          node scripts/check-iroh-notices.mjs
+          version="${GITHUB_REF_NAME#android-v}"
+          cp apps/mobile/android/app/build/outputs/apk/release/app-release.apk "dsh-mobile-android-v${version}-iroh.apk"
+          node scripts/build-android-transport.mjs --verify-apk "dsh-mobile-android-v${version}-iroh.apk" --build-tools "$ANDROID_HOME/build-tools/36.0.0"
+      - name: Build signed compatibility package
+        env:
+          DSH_ANDROID_KEYSTORE_FILE: ${{ runner.temp }}/dsh-mobile-release.jks
+          DSH_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          DSH_ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          DSH_ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: bash ./gradlew --no-daemon assembleRelease -PirohNative=false
         working-directory: apps/mobile/android
+      - name: Preserve and verify the compatibility APK
+        run: |
+          version="${GITHUB_REF_NAME#android-v}"
+          cp apps/mobile/android/app/build/outputs/apk/release/app-release.apk "dsh-mobile-android-v${version}.apk"
+          node scripts/build-android-transport.mjs --verify-apk "dsh-mobile-android-v${version}.apk" --variant compatibility --build-tools "$ANDROID_HOME/build-tools/36.0.0"
       - name: Remove signing keystore
         if: always()
         run: rm -f "$RUNNER_TEMP/dsh-mobile-release.jks"
@@ -67,24 +83,25 @@ jobs:
         run: |
           apksigner="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
           test -x "$apksigner"
-          apk="apps/mobile/android/app/build/outputs/apk/release/app-release.apk"
           report="$RUNNER_TEMP/dsh-mobile-apksigner.txt"
-          "$apksigner" verify --verbose --print-certs "$apk" | tee "$report"
-          node scripts/verify-android-signature.mjs < "$report"
+          for apk in dsh-mobile-android-v*.apk; do
+            "$apksigner" verify --verbose --print-certs "$apk" | tee "$report"
+            node scripts/verify-android-signature.mjs < "$report"
+          done
       - name: Enforce Android package size
         run: |
-          apk="apps/mobile/android/app/build/outputs/apk/release/app-release.apk"
           maximum=$((40 * 1024 * 1024))
-          actual="$(stat -c %s "$apk")"
-          if [ "$actual" -gt "$maximum" ]; then
-            echo "Android APK is $actual bytes; release limit is $maximum bytes." >&2
-            exit 1
-          fi
+          for apk in dsh-mobile-android-v*.apk; do
+            actual="$(stat -c %s "$apk")"
+            if [ "$actual" -gt "$maximum" ]; then
+              echo "$apk is $actual bytes; release limit is $maximum bytes." >&2
+              exit 1
+            fi
+          done
       - name: Name Android package and prepare release descriptor
         run: |
           version="${GITHUB_REF_NAME#android-v}"
-          cp apps/mobile/android/app/build/outputs/apk/release/app-release.apk "dsh-mobile-android-v${version}.apk"
-          sha256sum "dsh-mobile-android-v${version}.apk" > "dsh-mobile-android-v${version}.apk.sha256"
+          for apk in dsh-mobile-android-v*.apk; do sha256sum "$apk" > "$apk.sha256"; done
           node --input-type=module -e 'import {readFileSync,writeFileSync} from "node:fs"; const gradle=readFileSync("apps/mobile/android/app/build.gradle.kts","utf8"); const version=gradle.match(/^\s*versionName\s*=\s*"([^"]+)"\s*$/m)[1]; const versionCode=Number(gradle.match(/^\s*versionCode\s*=\s*(\d+)\s*$/m)[1]); writeFileSync("dsh-mobile-android-release.json", JSON.stringify({version, versionCode, releaseTag:process.env.GITHUB_REF_NAME}, null, 2)+"\n");'
       - uses: actions/upload-artifact@v7
         with:
@@ -120,7 +137,7 @@ jobs:
             --verify-tag \
             --latest=false \
             --title "Android ${GITHUB_REF_NAME#android-v}" \
-            --notes "Android App release. Plugin and App versions are independent. Existing pairing data is retained when upgrading an officially signed App."
+            --notes "Android 0.7.0 adds experimental iroh transport. Choose the full -iroh.apk for arm64-v8a / x86_64, or the compatibility .apk for existing HTTPS channels (including 32-bit devices). The legacy update link serves the compatibility APK. Both use the same package and established signer; existing pairing data is retained. Install only one variant. Plugin and App versions are independent."
       - name: Record descriptor promotion step
         run: |
           echo 'After downloading and verifying the published APK, copy dsh-mobile-android-release.json to apps/mobile/release.json in a separate reviewed commit. This workflow does not change the public App pointer.' >> "$GITHUB_STEP_SUMMARY"

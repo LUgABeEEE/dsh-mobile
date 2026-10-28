@@ -324,6 +324,17 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 24.x
+      - name: Install first-use test dependencies on Windows
+        if: runner.os == 'Windows'
+        run: npm ci
+      - name: Verify first use with the exact catalog-pinned Windows release
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $binary = Join-Path $env:RUNNER_TEMP 'dsh-mobile-iroh-host-pinned.exe'
+          Invoke-WebRequest -Uri 'https://unpkg.com/dsh-mobile-iroh@0.1.0-alpha.1/native/dsh-mobile-iroh-host-win32-x64.exe' -OutFile $binary
+          $env:DSH_IROH_PINNED_FIRST_USE = $binary
+          npx vitest run tests/iroh-pinned-first-use.test.ts
       - run: cargo fmt --all -- --check
         working-directory: native/iroh-host
       - run: cargo test --locked -p dsh-mobile-iroh-host -p dsh-mobile-iroh-core
@@ -408,9 +419,18 @@ jobs:
       - name: Verify the vendored Rust transport builds for both ABIs
         run: bash ./gradlew --no-daemon :app:buildIrohTransport -PirohNative=true -PirohNdk="$ANDROID_HOME/ndk/25.2.9519653"
         working-directory: apps/mobile/android
-      - name: Assemble the native-enabled debug package
-        run: bash ./gradlew --no-daemon assembleDebug -PirohNative=true -PirohNdk="$ANDROID_HOME/ndk/25.2.9519653" -x lintAnalyzeDebugUnitTest -x lintAnalyzeDebugAndroidTest
+      - name: Check Android Rust dependency notice coverage
+        run: node scripts/check-iroh-notices.mjs
+      - name: Assemble native-enabled debug and release packages
+        run: bash ./gradlew --no-daemon assembleDebug assembleRelease -PirohNative=true -PirohNdk="$ANDROID_HOME/ndk/25.2.9519653" -x lintAnalyzeDebugUnitTest -x lintAnalyzeDebugAndroidTest
         working-directory: apps/mobile/android
       - name: Verify the packaged transport libraries
-        run: node ../../../scripts/build-android-transport.mjs --verify-apk app/build/outputs/apk/debug/app-debug.apk --build-tools "$ANDROID_HOME/build-tools/36.0.0"
+        run: |
+          node ../../../scripts/build-android-transport.mjs --verify-apk app/build/outputs/apk/debug/app-debug.apk --build-tools "$ANDROID_HOME/build-tools/36.0.0"
+          node ../../../scripts/build-android-transport.mjs --verify-apk app/build/outputs/apk/release/app-release-unsigned.apk --build-tools "$ANDROID_HOME/build-tools/36.0.0"
+        working-directory: apps/mobile/android
+      - name: Rebuild compatibility after native and reject leftover libraries
+        run: |
+          bash ./gradlew --no-daemon assembleRelease -PirohNative=false
+          node ../../../scripts/build-android-transport.mjs --verify-apk app/build/outputs/apk/release/app-release-unsigned.apk --variant compatibility --build-tools "$ANDROID_HOME/build-tools/36.0.0"
         working-directory: apps/mobile/android

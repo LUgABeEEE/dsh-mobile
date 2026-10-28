@@ -32,7 +32,7 @@
 
 > DSH Mobile 是 DeepSeek Harness 社区插件，原生 App 仅支持 Android。
 >
-> **当前正式版本：0.6.18**。远程目录选择支持新建文件夹，导航和按钮更紧凑，为文件夹列表留出更多空间；修复过期模块配置导致无法进入页面的问题，并增加受控 NAS 管理入口。独立发布的 App **0.6.8** 修复首次加载反复重开，插件功能仍兼容 App 0.6.7。[插件更新与下载](https://github.com/saya-ch/dsh-mobile/releases/tag/v0.6.18) · [完整更新记录](CHANGELOG.md)。
+> **当前正式版本：0.7.0**。新增实验性 iroh 连接，改善透明皮肤下的侧栏、第三方菜单层级和全屏面板退出，并在移动定制加载失败时提供恢复提示。现有 HTTPS 通道和旧版 App 仍可使用；iroh 需要含原生传输的完整版 App。[插件更新与下载](https://github.com/saya-ch/dsh-mobile/releases/tag/v0.7.0) · [完整更新记录](CHANGELOG.md)。
 >
 > **版本说明**：自插件 **0.6.2** 起，Android App 与插件独立编号、独立发布，版本号无需一致；插件升级不代表 App 需要同步升级。[兼容说明](#兼容性)。
 
@@ -207,7 +207,7 @@ Funnel 的运行组件把公开监听生命周期绑定到父进程和受限控�
 
 ### 实验中的 iroh 连接
 
-[dsh-mobile-iroh](https://github.com/saya-ch/dsh-mobile-iroh) 正在独立开发，探索通过 iroh 连接电脑，并沿用 DSH Mobile 的配对、设备列表和 WebView 体验。目前本地开发候选已接通 Rust 传输与 Android，并通过本地 QUIC／HTTPS／WSS 验证和 Android 构建；尚未并入本插件或正式发布，电脑端操作界面、自动证书配置与真机跨网验收仍待完成。它还不是当前正式 App 可选的连接方式。
+插件 0.7.0 整合了 [dsh-mobile-iroh](https://github.com/saya-ch/dsh-mobile-iroh) 的实验性连接：通过加密直连或中继访问电脑，不要求公网域名、端口映射或隧道账号。电脑端选择 **移动访问 → 远程 → iroh（实验性）**，安装并校验官方组件后启用，再用完整版 App 扫描专属二维码。局域网和既有 HTTPS 通道不受影响；手机浏览器不能直接使用 iroh。平台要求、配对与排障见 [iroh 使用说明](docs/IROH.md)。
 
 ## 扩展与自定义
 

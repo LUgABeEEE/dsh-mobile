@@ -15,8 +15,8 @@ val releaseSigningConfigured = listOf(
     releaseKeyPassword,
 ).all { it.isPresent && it.get().isNotBlank() }
 
-// The single-App vision: the iroh transport ships in every build unless a
-// caller explicitly opts out for a fast toolchain-free lane.
+// Full builds include iroh; compatibility builds explicitly omit JNI libraries.
+// Both variants retain the same application identity and release signer.
 val irohNativeEnabled = providers.gradleProperty("irohNative").orElse("true").get() == "true"
 val irohAbis = providers.gradleProperty("irohAbis").orElse("arm64-v8a,x86_64")
 val irohJniOutput = layout.buildDirectory.dir("generated/iroh/jniLibs")
@@ -56,8 +56,8 @@ android {
         applicationId = "io.github.sayach.dshmobile"
         minSdk = 29
         targetSdk = 36
-        versionCode = 84
-        versionName = "0.6.8"
+        versionCode = 85
+        versionName = "0.7.0"
         buildConfigField("boolean", "IROH_NATIVE_ENABLED", irohNativeEnabled.toString())
     }
 

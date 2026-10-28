@@ -22,7 +22,7 @@ The npm package declares direct runtime dependencies on [Schemastery](https://gi
 
 The Android App runtime contains [Kotlin standard library](https://github.com/JetBrains/kotlin) `2.1.0`, [kotlinx.coroutines](https://github.com/Kotlin/kotlinx.coroutines) `1.6.4`, [JetBrains annotations](https://github.com/JetBrains/java-annotations) `13.0`, [AndroidX Core](https://developer.android.com/jetpack/androidx/releases/core) `1.15.0`, [AndroidX WebKit](https://developer.android.com/jetpack/androidx/releases/webkit) `1.17.1`, their AndroidX transitive components, [Guava listenablefuture](https://github.com/google/guava) `1.0`, and [ZXing Core](https://github.com/zxing/zxing) `3.5.4`. These runtime libraries are distributed under the Apache License 2.0; the exact resolved tree is attached to each release as `dsh-mobile-android-v<version>-dependencies.txt`.
 
-Native-enabled Android candidate builds package `libdsh_mobile_iroh_android_transport.so` for arm64-v8a and x86_64, from `native/iroh-android-transport` and `native/iroh-core`. These sources retain their MIT license; the surrounding Android shell remains Apache-2.0. `native/Cargo.lock` records Rust dependency versions. The ordinary CI lane explicitly opts out with `-PirohNative=false`; the native CI/release lanes build both selected ABIs. This candidate does not change the already published APK or establish 32-bit-device installation support.
+The full Android APK packages `libdsh_mobile_iroh_android_transport.so` for arm64-v8a and x86_64, from `native/iroh-android-transport` and `native/iroh-core`. These sources retain their MIT license; the surrounding Android shell remains Apache-2.0. `native/Cargo.lock` records Rust dependency versions. The compatibility APK uses `-PirohNative=false` and contains no native libraries; it retains installation support for 32-bit devices. Both builds include the third-party notices asset.
 
 ### Rust workspace dependency metadata
 
@@ -46,12 +46,12 @@ full:
 - **`r-efi`** offers `MIT OR Apache-2.0 OR LGPL-2.1-or-later`; the permissive option is
   taken, so LGPL-2.1 does not apply.
 
-So the complete inventory and texts exist. The native-enabled APK now **bundles** this
-notice at `assets/THIRD_PARTY_NOTICES.txt` (2 905 107 bytes, copied from the published
-companion package); the packaged APK was verified to contain that entry. When
-`native/Cargo.lock` changes, regenerate the upstream notice and replace this asset so the
-shipped texts stay current. The ABI matrix and 32-bit compatibility channel are recorded
-in the release notes/report as a product decision.
+Both APK variants bundle this notice at `assets/THIRD_PARTY_NOTICES.txt`, based on
+the published companion package with the MIT text for Windows build dependency
+`winapi-util` added from its crate source. `node scripts/check-iroh-notices.mjs`
+checks coverage of each Android ABI's normal/build graph. When `native/Cargo.lock`
+changes, regenerate the notice and replace this asset so the shipped texts stay current. See the [iroh
+guide](docs/IROH.en.md) for the full and compatibility APK requirements.
 
 ## Notification identity hashing
 

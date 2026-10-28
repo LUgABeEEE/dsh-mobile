@@ -32,7 +32,7 @@
 
 > DSH Mobile is a DeepSeek Harness community plugin; the native app supports Android only.
 >
-> **Current stable release: 0.6.18**. Create folders from the remote directory picker, with compact navigation and controls that leave more room for folders. Recover from stale module choices that prevented the page from opening, and optionally administer a NAS from an authenticated, controlled network. Independently released App **0.6.8** fixes repeated first-load restarts; plugin features remain compatible with App 0.6.7. [Plugin release notes and downloads](https://github.com/saya-ch/dsh-mobile/releases/tag/v0.6.18) · [Full changelog](CHANGELOG.md).
+> **Current stable release: 0.7.0**. Add experimental iroh connections, improve sidebars under translucent skins, third-party menu layering and fullscreen-panel exit, and offer recovery feedback when mobile customization fails to load. Existing HTTPS channels and older Apps remain usable; iroh requires the full App with native transport. [Plugin release notes and downloads](https://github.com/saya-ch/dsh-mobile/releases/tag/v0.7.0) · [Full changelog](CHANGELOG.md).
 >
 > **Version policy**: since plugin **0.6.2**, the Android app and plugin use independent version numbers and releases. Their numbers do not need to match, and a plugin update does not imply an app update. [Compatibility notes](#compatibility).
 
@@ -207,7 +207,7 @@ See [Compatibility](#compatibility) for the supported components and platforms. 
 
 ### Experimental iroh connection
 
-[dsh-mobile-iroh](https://github.com/saya-ch/dsh-mobile-iroh) is being developed independently to explore iroh connections while retaining DSH Mobile's pairing, device list and WebView experience. The local development candidate connects the Rust transport and Android app, with local QUIC/HTTPS/WSS checks and Android builds passing. It has not been integrated into this plugin or formally released; the desktop management UI, automatic certificate setup and physical cross-network acceptance remain unfinished. It is not yet a connection option in the current stable app.
+Plugin 0.7.0 integrates the experimental connection from [dsh-mobile-iroh](https://github.com/saya-ch/dsh-mobile-iroh): encrypted direct or relayed access without a public domain, port forwarding or a tunnel account. Select **Mobile access → Remote → iroh (Experimental)** on the computer, install and verify the official component, enable it, then scan its dedicated QR code with the full App. LAN and existing HTTPS channels remain available; mobile browsers cannot connect through iroh directly. See the [iroh guide](docs/IROH.en.md) for platforms, pairing and troubleshooting.
 
 ## Extend and customize
 
