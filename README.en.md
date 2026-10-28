@@ -118,9 +118,9 @@ Registry-installed plugins check for updates when the desktop UI loads and show 
 The plugin runs on the **computer**; Safari loads its mobile interface. There is no native iOS app to install.
 
 1. Install and enable the plugin on the computer as above. In **Mobile Access**, configure your [connection](<#connection-guide>); prefer a stable, trusted HTTPS address for a lasting Home Screen installation.
-2. Choose **Copy pairing link** on the computer, open it in **Safari** on the iPhone/iPad, and complete browser pairing. Use the dedicated Mobile Access link, not the computer's ordinary DSH page; Android `dsh1.`/`dsh2.` keys are not browser pairing codes.
+2. Stay in that connection's panel: use **Copy pairing link** for LAN, or **Generate remote pairing QR code** then **Copy remote pairing link** for Remote. Open the resulting browser link in **Safari** and complete pairing. Use the dedicated Mobile Access link, not the computer's ordinary DSH page; Android `dsh1.`/`dsh2.` keys are not browser pairing codes.
 3. From the paired page, open Safari's **Share** menu → **Add to Home Screen**. Turn on **Open as Web App** if offered, then tap **Add**. Menu layout varies; see [Apple's iPhone instructions](<https://support.apple.com/guide/iphone/bookmark-a-website-iph42ab2f3a7/ios>).
-4. Launch the new Home Screen icon to continue the same DSH sessions and Workspaces. If it asks to connect again, complete browser pairing with the computer's current code; do not assume it shares Safari's login state. Keep existing installations and pairing/site data when troubleshooting.
+4. Launch the new Home Screen icon to continue the same DSH sessions and Workspaces. If it shows a **Pairing code** form, follow the [fresh-code recovery steps](<docs/WEB_PUSH.en.md#if-the-home-screen-app-shows-a-pairing-form>); Safari's first code is single-use. A normal reconnect page uses saved pairing instead. Keep existing installations and pairing/site data when troubleshooting.
 
 You can also keep using Safari without installing an icon. The computer, DSH and Mobile Gateway must stay running and reachable; adding the web app does **not** provide offline DSH. A changing tunnel hostname does not automatically transfer pairing or push consent.
 
