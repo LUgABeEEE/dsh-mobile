@@ -21,12 +21,20 @@ A publicly trusted private HTTPS hostname is architecturally eligible. The phone
 
 ## Enable explicitly
 
-1. Open and pair the dedicated DSH Mobile page on the intended HTTPS origin. Use Safari's **Add to Home Screen**, then launch that icon rather than an ordinary tab. If the Home Screen app asks you to connect again, complete browser pairing with the computer's current code; do not assume Safari and the installed app share login state. Keep an existing installation until its upgrade behavior has been checked; do not clear its pairing or site data as a shortcut.
+1. Open and pair the dedicated DSH Mobile page on the intended HTTPS origin. Use Safari's **Add to Home Screen**, then launch that icon rather than an ordinary tab. If the installed app shows a pairing-code form, follow the [fresh-code recovery steps](<#if-the-home-screen-app-shows-a-pairing-form>); do not reuse the code consumed by Safari. Keep an existing installation until its upgrade behavior has been checked; do not clear its pairing or site data as a shortcut.
 2. **Inside the DSH page**, open **Settings → General** and find **Web push notifications**, separate from the Android **Task notifications** action. This is not the iPhone/iPad system Settings app.
 3. Select **Enable** and respond to the browser's permission prompt. Page load, reconnect and host restart never request permission or subscribe automatically. Enable completes only after the host saves consent.
 4. Choose the categories you want. **Send test** allows one request per installation per minute, with a 60-second TTL; its success means **accepted by the push provider**, not delivered, displayed, read or answered on the phone.
 
 The browser installation ID only distinguishes containers; it is not a credential. Another browser/profile or origin has separate consent. The host derives ownership from the authenticated paired device, not an ID supplied by the page.
+
+### If the Home Screen app shows a pairing form
+
+Safari and the installed app may have separate login state. This recovery is for a **Pairing code** form, not the ordinary reconnect page that renews an existing pairing; it is also independent of whether you enable push.
+
+1. On the computer, stay on the **same LAN/Remote connection and HTTPS origin** used for the Home Screen installation. Generate a fresh browser pairing link: LAN **Copy pairing link**, or Remote **Generate remote pairing QR code** then **Copy remote pairing link**. Merely re-copying the old Remote link can reuse its consumed code until expiry.
+2. From that fresh link's fragment (after `#`), copy **only the 43-character value of `token=`** into the installed app's **Pairing code** field. Do not paste the whole URL or an Android `dsh1.`/`dsh2.` key. If the link has no `token=` field, check that you selected a browser-compatible HTTPS entry; do not extract a code from an Android key or bypass a certificate warning.
+3. Complete pairing in the **Home Screen app** before the new code expires; do not consume it in Safari first. Pairing codes work once, so generate a new link after use or expiry. Treat the entire link and code as secrets: do not post them in issues or logs. Keep existing installations, paired-device records and site data.
 
 ### Everyday notification expectations
 
