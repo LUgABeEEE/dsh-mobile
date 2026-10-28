@@ -30,6 +30,28 @@ The inventory made with `cargo metadata --locked --manifest-path native/Cargo.to
 
 Before publishing a native-enabled APK, identify the dependencies actually shipped for each target, retain the applicable license and notice texts with the distribution, and verify any source-availability obligations. The source MIT notices retained here do not by themselves complete that release check.
 
+#### Where the complete license texts live
+
+The upstream `dsh-mobile-iroh` companion package ships a generated
+`native/THIRD_PARTY_NOTICES.txt` (~2.9 MB). It lists each dependency's declared
+license, crates.io source and the full reproduced license text, and its header states
+it covers build-time dependencies for the Windows x64, Linux x64, Android arm64 and
+Android x64 targets. The two entries that need more than a one-line note are present in
+full:
+
+- **`attohttpc` 0.30.1** and **`option-ext` 0.2.0** — complete Mozilla Public License
+  2.0 text. MPL-2.0 is file-level copyleft: static linking and distribution inside a
+  larger work is permitted, the MPL-covered source stays available under MPL-2.0 from
+  the sources named there, and no DSH Mobile source file is derived from them.
+- **`r-efi`** offers `MIT OR Apache-2.0 OR LGPL-2.1-or-later`; the permissive option is
+  taken, so LGPL-2.1 does not apply.
+
+So the complete inventory and texts exist; what remains is a **packaging step**, not an
+unknown: a native-enabled APK must carry this notice file (for example under
+`assets/`). The current candidate APK does **not** bundle it — verified by listing the
+APK archive, which contains no notice entry. Treating that as a release blocker is
+correct until the file is included.
+
 ## Notification identity hashing
 
 The client bundle includes the SHA-256 implementation from @noble/hashes to derive bounded notification tags from complete IDs. Its MIT license is included below:
