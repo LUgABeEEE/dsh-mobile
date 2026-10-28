@@ -32,6 +32,8 @@
 
 > DSH Mobile is a DeepSeek Harness community plugin; the native app supports Android only.
 >
+> **Using an iPhone or iPad?** Use Safari or [add DSH Mobile to your Home Screen as a web app (PWA)](<#iphone-and-ipad-home-screen-web-app-pwa>)—no native iOS download needed.
+>
 > **Current stable release: 0.7.1**. Reorganize Mobile access and device management, improve cloudflared settings, pairing expiry and folded sidebars, and add iroh component cleanup and VPN troubleshooting. The independently released Android App remains at 0.7.0; existing pairings are kept. [Plugin release notes and downloads](https://github.com/saya-ch/dsh-mobile/releases/tag/v0.7.1) · [Full changelog](CHANGELOG.md).
 >
 > **Version policy**: since plugin **0.6.2**, the Android app and plugin use independent version numbers and releases. Their numbers do not need to match, and a plugin update does not imply an app update. [Compatibility notes](#compatibility).
@@ -58,7 +60,7 @@ The development version remembers the mobile sidebar's list position within the 
 - **Several remote options**: Tailscale, cpolar, cloudflared quick/named tunnels, self-hosted FRP, your own reverse proxy, and experimental iroh without a domain or public port; Windows/Linux x64 can also let the plugin manage Caddy HTTPS and certificates.
 - **Pairing and multi-device**: pair once via QR code, link, or key; Wi-Fi, hotspot, or IP changes normally recover automatically; the app lists LAN and remote paired computers together, checks their reachability periodically, and lets you switch, re-pair, or delete a local record.
 - **One-click diagnostics and approval**: check versions, gateway, network interface, firewall, and the remote path with a redacted report; approve blocked third-party plugin connections per exact path.
-- **Task system notifications**: completion and pending-input alerts via Android system notifications, enabled from DSH General settings inside the app, with redacted lock-screen text.
+- **Task system notifications**: Android completion and pending-input alerts, enabled from DSH General settings inside the app, with redacted lock-screen text. The separate [iPhone/iPad Web Push candidate](<docs/WEB_PUSH.en.md>) is unreleased and opt-in for capable Safari Home Screen apps; iPad and other device/OS validation remain open.
 - **Defense in depth**: a private CA pinned for LAN, trusted HTTPS for public remote paths, and a remote CA pinned by the 0.4.6 app for the self-signed FRP entry. Credentials are Keystore-backed, device tokens go only to their exact Origin, and third-party WebSockets are blocked by default.
 
 A paired device can operate DSH on the computer and must be treated as fully trusted. Enable LAN access only on trusted networks, and use a reliable HTTPS channel for remote access. Revoke a lost phone from the computer immediately.
@@ -107,11 +109,24 @@ Restart DSH, then search for **dsh-mobile** under **Settings → Plugin Market**
 
 `setup` automatically selects and remembers the current LAN; Wi-Fi, hotspot, and IP changes normally recover without re-pairing. Use `--address 192.168.x.x` only when automatic selection fails. Settings, certificates, devices, and customization files live under `$DSH_HOME/mobile-access/`.
 
-### Install the phone app
+### Install the Android app
 
-Download the official Android APK using the link above, or open the computer's pairing link in a mobile browser. Then choose LAN or remote access in the [connection guide](#connection-guide); the phone needs no separate tunnel client.
+Download the official Android APK using the link above. Then choose LAN or remote access in the [connection guide](#connection-guide); the phone needs no separate tunnel client. For browser access, including iOS, follow the steps below.
 
 Registry-installed plugins check for updates when the desktop UI loads and show “Update plugin” beside the access-panel title when a newer release is available. Restart DSH after installation. The app download entry shows the latest version; local development packages are not overwritten, and Android does not check for or push app-version updates.
+
+### iPhone and iPad: Home Screen web app (PWA)
+
+The plugin runs on the **computer**; Safari loads its mobile interface. There is no native iOS app to install.
+
+1. Install and enable the plugin on the computer as above. In **Mobile Access**, configure your [connection](<#connection-guide>); prefer a stable, trusted HTTPS address for a lasting Home Screen installation.
+2. Choose **Copy pairing link** on the computer, open it in **Safari** on the iPhone/iPad, and complete browser pairing. Use the dedicated Mobile Access link, not the computer's ordinary DSH page; Android `dsh1.`/`dsh2.` keys are not browser pairing codes.
+3. From the paired page, open Safari's **Share** menu → **Add to Home Screen**. Turn on **Open as Web App** if offered, then tap **Add**. Menu layout varies; see [Apple's iPhone instructions](<https://support.apple.com/guide/iphone/bookmark-a-website-iph42ab2f3a7/ios>).
+4. Launch the new Home Screen icon to continue the same DSH sessions and Workspaces. If it asks to connect again, complete browser pairing with the computer's current code; do not assume it shares Safari's login state. Keep existing installations and pairing/site data when troubleshooting.
+
+You can also keep using Safari without installing an icon. The computer, DSH and Mobile Gateway must stay running and reachable; adding the web app does **not** provide offline DSH. A changing tunnel hostname does not automatically transfer pairing or push consent.
+
+**Optional notifications (unreleased candidate):** ordinary access does not require push. Capable iOS/iPadOS **18.4+ Safari Home Screen apps** can explicitly enable [Web Push](<docs/WEB_PUSH.en.md#enable-explicitly>) inside **DSH Settings → General**. Eligibility is capability-based; iPad, other device/OS combinations and a final-head recheck remain open. See the guide for trusted-HTTPS requirements, categories, Test and troubleshooting.
 
 ## Connection guide
 
@@ -350,7 +365,8 @@ Selection priority is device choice → computer defaults → plugin configurati
 | Client | Best for | Notes |
 | --- | --- | --- |
 | Android app | Everyday use | Separate Local and Remote entries at first pairing; LAN discovery, system trust for public remote certificates, and app-pinned CA for the self-signed FRP entry |
-| Mobile browser | Temporary or cross-platform | Open the HTTPS origin shown by Mobile Access; a private LAN certificate may need confirmation, while a public remote certificate should not warn |
+| iPhone/iPad Safari or Home Screen web app (PWA) | Everyday iOS browser access | [Pair in Safari and add a Home Screen icon](<#iphone-and-ipad-home-screen-web-app-pwa>); no native iOS download. Optional push is an unreleased, capability-gated feature with iPad/other-device verification still open |
+| Mobile browser | Everyday or cross-platform access | Open the HTTPS origin shown by Mobile Access; a private LAN certificate may need confirmation, while a public remote certificate should not warn. Continuing through a certificate warning does not make the page eligible for Web Push |
 
 The Android app is a thin Kotlin WebView shell and contains no frontend copy; mobile browsers load the same page. Developers can append `?frontend=stock` to an authenticated mobile URL to diagnose boot and layout behavior. This entry skips dedicated mobile boot rewriting and module selection, but installed client adaptation and authenticated customizations may still apply. It is not a plugin-free control; some API operations may be rejected, so it does not replace normal mobile access. See [skins and mobile layout](docs/SKIN_COMPATIBILITY.en.md).
 
@@ -410,6 +426,8 @@ See [SECURITY.md](SECURITY.md).
 The plugin retains DSH host peer declarations without rejecting installation or startup solely by DSH version. If mobile access breaks after a DSH update, update the plugin and check the verified scope below. An installable version does not establish that every feature is compatible. Release history lives in [CHANGELOG.md](CHANGELOG.md).
 
 ### OS support matrix
+
+This table describes the **computer running the plugin**, not the phone's OS; iPhone/iPad access uses the [browser/Home Screen route](<#iphone-and-ipad-home-screen-web-app-pwa>).
 
 | Channel | Windows x64 | Linux x64 | Linux arm64 | macOS |
 | --- | --- | --- | --- | --- |
