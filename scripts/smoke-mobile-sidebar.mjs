@@ -118,6 +118,8 @@ async function revealSessionRow(sessionId) {
     const region = document.querySelector('[data-dsh-mobile-sidebar-root] [class*="_regionArea"]')
     const list = [...region.querySelectorAll('[class]')].find(node => [...node.classList].some(token => token.endsWith('_list')))
     if (list === undefined || getComputedStyle(list).overflowY !== 'auto') throw new Error('Actual Workspace scroll owner missing')
+    // This helper deliberately navigates away from the restored position.
+    list.dispatchEvent(new WheelEvent('wheel', { bubbles: true }))
     list.dataset.sidebarFixtureScroller = 'true'; list.scrollTop = 0
   })
   const row = sidebar().locator(`[data-row-key="session:${sessionId}"]`)
@@ -132,6 +134,40 @@ async function revealSessionRow(sessionId) {
     if (!moved) break
   }
   throw new Error('Actual Workspace virtual list did not reveal the requested owned Session')
+}
+
+async function checkSidebarScrollMemory(frontend, sessions) {
+  // Sessions are newest-first; use older rows in a short, supported viewport.
+  await phone.setViewportSize({ width: 659, height: 393 })
+  for (const id of [sessions[1], sessions[2], sessions[1]]) {
+    await openDrawer()
+    const row = await revealSessionRow(id)
+    await row.scrollIntoViewIfNeeded()
+    await frames(phone)
+    const before = await phone.evaluate(id => {
+      const root = document.querySelector('[data-dsh-mobile-sidebar-root]')
+      const list = [...root.querySelectorAll('[class*="_regionArea"] [class]')].find(node => [...node.classList].some(token => token.endsWith('_list')))
+      const row = [...list.querySelectorAll('[data-row-key]')].find(node => node.dataset.rowKey === `session:${id}`)
+      return { top: list.scrollTop, outer: root.scrollTop, offset: row.getBoundingClientRect().top - list.getBoundingClientRect().top }
+    }, id)
+    assert(before.top > 0, `${frontend}: retention test did not reach the lower list`)
+    await row.tap()
+    await phone.waitForFunction(id => document.querySelector('[data-conversation-session]')?.dataset.conversationSession === id, id)
+    await phone.waitForFunction(() => document.querySelector('[data-dsh-mobile-sidebar]')?.dataset.open === 'false')
+    // Do not use openDrawer(): that geometry helper deliberately resets the
+    // outer scrollport and would conceal a broken retention implementation.
+    await sidebar().locator('[data-dsh-mobile-toggle]').tap()
+    await phone.waitForFunction(({ id, before }) => {
+      const root = document.querySelector('[data-dsh-mobile-sidebar-root]')
+      const list = [...root.querySelectorAll('[class*="_regionArea"] [class]')].find(node => [...node.classList].some(token => token.endsWith('_list')))
+      const row = list && [...list.querySelectorAll('[data-row-key]')].find(node => node.dataset.rowKey === `session:${id}`)
+      return row !== undefined && Math.abs(list.scrollTop - before.top) <= 2
+        && Math.abs(root.scrollTop - before.outer) <= 2
+        && Math.abs(row.getBoundingClientRect().top - list.getBoundingClientRect().top - before.offset) <= 2
+    }, { id, before }, { timeout: 5000 })
+    assert.equal(await phone.locator('[data-composer-input]').evaluate(node => node.contains(document.activeElement)), false, 'Session switching unexpectedly focused the composer')
+  }
+  record.checks.push(`${frontend}: lower-list position, visible keyed row and outer scroll survived three session switches without scrolling again`)
 }
 
 async function geometry(label) {
@@ -309,6 +345,7 @@ try {
     await phone.waitForFunction(id => window.__sidebarFixture.hasSession(id), sessions[0], { timeout: CLIENT_TIMEOUT_MS })
     await phone.evaluate(id => window.__sidebarFixture.openSession(id), sessions[0])
     await phone.locator('[data-composer-input][contenteditable="true"]').waitFor({ state: 'visible', timeout: CLIENT_TIMEOUT_MS })
+    if (!negative) await checkSidebarScrollMemory(frontend, sessions)
     for (const viewport of [{ width: 393, height: 659 }, { width: 369, height: 800 }, { width: 659, height: 393 }]) {
       await phone.setViewportSize(viewport)
       for (const large of [false, true]) {

@@ -8,6 +8,7 @@
 import { installTaskCompletionWatcher, type TaskNotifyKind } from './task-notify.js'
 import { MOBILE_COMPOSER_TOOLBAR_STYLES } from './mobile-composer-toolbar.js'
 import { pickBrowserFiles } from './browser-file-picker.js'
+import { installMobileSidebarScrollMemory } from './mobile-sidebar-scroll.js'
 
 export const NATIVE_MOBILE_OVERLAY_QUERY = '(max-width:720px)'
 
@@ -1655,6 +1656,7 @@ export function installNativeMobileSurface(backServices: NativeMobileBackService
   document.addEventListener('focusin', onStripFocus, true)
   document.addEventListener('click', onStripClickCapture, true)
   document.addEventListener('click', onBranchClick, true)
+  const sidebarScrollMemory = installMobileSidebarScrollMemory()
   let frame: HTMLElement | undefined
   let sidebar: HTMLElement | undefined
   let sidebarRoot: HTMLElement | undefined
@@ -1899,7 +1901,7 @@ export function installNativeMobileSurface(backServices: NativeMobileBackService
       const lastColumn = frame?.style.gridTemplateColumns.trim().split(/\s+/).at(-1)
       details.dataset.open = String(lastColumn !== undefined && lastColumn !== '0px' && lastColumn !== '0')
     }
-    if (sidebar === undefined) return
+    if (sidebar === undefined) { sidebarScrollMemory.sync(); return }
     sidebar.dataset.dshMobileSidebar = 'true'
     toggle = firstByClassSuffix(sidebar, '_toggle') as HTMLButtonElement | undefined
     let candidate = toggle?.parentElement
@@ -1915,6 +1917,7 @@ export function installNativeMobileSurface(backServices: NativeMobileBackService
     // class describes its fade animation, not the drawer's logical state.
     if (frame !== undefined) sidebar.dataset.open = String(!classToken(sidebarRoot, '_collapsed'))
     backdrop.hidden = frame === undefined || !drawerScrimVisible(classToken(sidebarRoot, '_collapsed'), overlayQuery.matches)
+    sidebarScrollMemory.sync()
   }
   const schedule = (): void => { if (scheduled === 0) scheduled = requestAnimationFrame(sync) }
   const observer = new MutationObserver(schedule)
@@ -1970,6 +1973,7 @@ export function installNativeMobileSurface(backServices: NativeMobileBackService
   return () => {
     disposed = true
     stopStockBack()
+    sidebarScrollMemory.dispose()
     disposeTaskWatcher()
     mediaRequestGeneration += 1
     mediaPickerAbortController.abort()

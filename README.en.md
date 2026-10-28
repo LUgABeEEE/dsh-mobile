@@ -48,6 +48,8 @@ Mobile access uses a dedicated HTTPS origin and device pairing. The Android app 
 
 It also lets you customize the phone from a DSH conversation: `/mobile <what you want>`.
 
+The development version remembers the mobile sidebar's list position within the current page, restoring it after session switches and revealing the current session when no position is saved. Search lists keep separate positions; reloading clears memory. Sessions hidden behind DSH's **More** control are not automatically expanded.
+
 ## What it does
 
 - **Continue DSH work from a phone**: the same sessions, Workspaces, messages, and tools, in real time.

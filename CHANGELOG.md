@@ -2,6 +2,10 @@
 
 Notable changes are recorded here. GitHub Releases provide the downloadable packages and generated commit notes.
 
+## Unreleased
+
+- Remember the mobile sidebar's session-list position when closing and reopening the drawer. Restore a visible session anchor across row movement, keep search positions separate, and reveal the current session when no position is available. Memory stays in the current page; rows hidden behind DSH's reset **More** watermark are not automatically expanded.
+
 ## 0.7.0 - 2026-10-28
 
 - Distribute the iroh sidecar from this plugin. **Install official component** downloads the pinned `dsh-mobile-iroh 0.1.0-alpha.1` release per platform, verifies byte length and SHA-256, and promotes it into the plugin private directory with backup and rollback; a verified companion copy is reused without downloading during the transition, and switching the channel on alone never downloads. The panel names the download size, reports verification progress, and identifies the exact missing/invalid/offline failure instead of a generic not-ready message.
