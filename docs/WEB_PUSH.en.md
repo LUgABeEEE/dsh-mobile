@@ -2,7 +2,13 @@
 
 [简体中文](<WEB_PUSH.md>) · [Documentation](<README.md>)
 
-> **Development candidate, not a released feature.** The target is iOS/iPadOS 18.4+ Home Screen web apps using Declarative Web Push; availability is an explicit opt-in/configuration for capable iOS/iPadOS **Safari** Home Screen apps only. The author exercised the full acceptance matrix — per-category delivery, locked/all-closed states, Home Screen upgrades, warm/cold and expired-login taps, deleted-target handling, suppression, disable/logout/revocation, offline/VPN/TTL, host restart, and permission/reset recovery — on iPhone 17 Pro Max (iOS 27.0.1) during development; these are retrospective development observations without per-run build provenance, and iPad, other device/OS combinations and a focused re-check on the final head remain open. A source test, Chromium fixture or provider acceptance is not device evidence. Due intents whose gateway origin detaches around delivery now defer inside their original TTL and deliver after re-attach instead of being dropped, and a revoked device is never revived. A packed fixture proves server-side session absence on the tap path (authentication enforced before content, pairing renewal, push consent intact), while a genuinely persisted-then-deleted target remains unprovable: this DSH runtime exposes no public session delete, and deleting every id-named persisted artifact still left the session resolvable. A host push-key reset is registry-wide, no validated destructive repair exists for an old browser subscription, and a repair-required registration may hide the settings row instead of showing a repair label. Push opt-out still persists before logout completes.
+> **Web Push is an unreleased candidate** for capable iOS/iPadOS **18.4+ Safari Home Screen apps**. The author recorded single-iPhone development observations; iPad, other device/OS combinations and a final-head recheck remain open. See [verification status](<#verification-status>).
+
+## Using DSH Mobile on iPhone and iPad
+
+DSH Mobile runs as a plugin on your **computer**. On iPhone/iPad, open its dedicated Mobile Access page in **Safari**, pair with the computer, then optionally add it to the Home Screen as a web app (PWA). No native iOS app download is needed. Start with the [connection guide](<../README.en.md#connection-guide>); you can use DSH sessions and Workspaces without enabling notifications.
+
+Home Screen installation does not provide offline DSH: the computer, DSH and its Mobile Gateway must stay running, and the phone must be able to reach the gateway to use it. The **18.4+ target below applies to optional Web Push**, not to ordinary browser access; browser compatibility still depends on the DSH frontend.
 
 ## Requirements
 
@@ -11,16 +17,22 @@
 - A running DSH host and active Mobile Gateway for that exact origin. Public lifecycle contract evidence is currently pinned to DSH **0.2.1-rc.2**; the broader Mobile boot matrix is not a Web Push support claim. Missing required public DSH services make push unavailable without disabling ordinary Mobile access.
 - Outbound access to Apple's push infrastructure from the host and phone. No Apple developer membership, notification SaaS account or new public inbound port is required. This feature does not create a VPN, change certificates, open a firewall or configure a proxy.
 
-A publicly trusted private HTTPS hostname is architecturally eligible. The phone must still reach that origin to install, enable, authenticate and open a conversation. Delivery over a private/Tailscale origin is **unverified**; do not expose a private backend just to try push. Random tunnel hostnames are unsuitable for stable installation consent: an origin change never migrates authorization or subscriptions automatically.
+A publicly trusted private HTTPS hostname is architecturally eligible. The phone must still reach that origin to install, enable, authenticate and open a conversation. Delivery over a private/Tailscale origin is **unverified**; do not expose a private backend just to try push. Random tunnel hostnames are unsuitable for stable installation consent: an origin change never migrates authorization or subscriptions automatically. For persistent addresses, see [Cloudflare named tunnels](<CLOUDFLARE_TUNNEL.en.md>) or [your own HTTPS reverse proxy](<SELF_HOSTED_ORIGIN.en.md>); configuring an address alone does not prove push delivery.
 
 ## Enable explicitly
 
-1. Open and pair the dedicated DSH Mobile page on the intended HTTPS origin. Use Safari's **Add to Home Screen**, then launch that icon. Keep an existing installation until its upgrade behavior has been checked; do not clear its pairing or site data as a shortcut.
-2. In DSH **Settings → General**, find **Web push notifications**, separate from the Android **Task notifications** action.
+1. Open and pair the dedicated DSH Mobile page on the intended HTTPS origin. Use Safari's **Add to Home Screen**, then launch that icon rather than an ordinary tab. If the Home Screen app asks you to connect again, complete browser pairing with the computer's current code; do not assume Safari and the installed app share login state. Keep an existing installation until its upgrade behavior has been checked; do not clear its pairing or site data as a shortcut.
+2. **Inside the DSH page**, open **Settings → General** and find **Web push notifications**, separate from the Android **Task notifications** action. This is not the iPhone/iPad system Settings app.
 3. Select **Enable** and respond to the browser's permission prompt. Page load, reconnect and host restart never request permission or subscribe automatically. Enable completes only after the host saves consent.
 4. Choose the categories you want. **Send test** allows one request per installation per minute, with a 60-second TTL; its success means **accepted by the push provider**, not delivered, displayed, read or answered on the phone.
 
 The browser installation ID only distinguishes containers; it is not a credential. Another browser/profile or origin has separate consent. The host derives ownership from the authenticated paired device, not an ID supplied by the page.
+
+### Everyday notification expectations
+
+Push is best effort, not an alarm service. Host sleep/shutdown, disabled origin, phone connectivity, Focus settings and platform scheduling can delay or prevent delivery.
+
+Closing the page does **not** disable saved push consent. Use **Disable** to stop future eligible sends; explicit logout and device revocation have the separate effects listed [below](<#consent-logout-and-revocation>). A notification tap may require login and never answers or approves anything; **Send test** opens the app root, not a conversation.
 
 ## What can notify
 
@@ -70,8 +82,6 @@ The browser chooses warm versus cold navigation. Do not assume unsent drafts or 
 
 The sender accepts only validated Apple HTTPS push endpoints, rejects redirects and unsafe DNS destinations, and encrypts payloads with Web Push/VAPID. Subscription endpoints, keys and private notification state are credentials: do not paste them into issues or logs. A notification storage/network failure must not change a DSH answer, approval or turn result.
 
-Push is best effort, not an alarm service. Host sleep/shutdown, disabled origin, phone connectivity, Focus settings and platform scheduling can delay or prevent delivery.
-
 ## Troubleshooting and deliberate repair
 
 | State/problem | Next step |
@@ -82,7 +92,7 @@ Push is best effort, not an alarm service. Host sleep/shutdown, disabled origin,
 | Registration failed / stale settings | Refresh/reopen to read current state, then explicitly retry. Do not repeatedly resubmit an old request. |
 | Existing subscription uses another application key | Do not automatically unsubscribe it. After a host key reset, retrying Enable alone will not fix this conflict; identify its owner and arrange deliberate browser-side repair. |
 | Suspended / repair-required | Check host key/configuration and private-file access. Do not delete paired-device state or silently replace VAPID keys. |
-| Test accepted but no alert | Check phone permission/Focus/network and original freshness; provider acceptance is not a delivery receipt. |
+| Test accepted but no alert | Check phone permission/Focus/network, whether the host and gateway are running, and original freshness; provider acceptance is not a delivery receipt. |
 
 Lost/corrupt VAPID material with existing registrations fails closed. A host administrator may deliberately reset **notification state only** with `POST /api/mobile-access/push/reset` and JSON `{ "confirm": "reset-web-push" }` through the existing trusted local desktop-admin API. This is a destructive notification reset, not a phone endpoint or an automatic repair button: all browser push consents require explicit re-enrollment afterwards, while pairings remain intact. The reset is **host-registry-wide** — it clears registrations across attached devices and origins, not only the browser that later meets the conflict — so an existing subscription can keep ordinary re-enable failing; no validated destructive repair recipe is promised here. Keep the normal desktop Host/Origin/source protections; never expose this administration path publicly or manually remove paired-device files.
 
@@ -91,3 +101,7 @@ Lost/corrupt VAPID material with existing registrations fails closed. A host adm
 Android's native permission/SSE path and APK/signing remain unchanged. The independently maintained **dsh-ping** channel is not modified or automatically disabled; enabling both can produce separate alerts. Web Push adds no cross-channel deduplication or foreground suppression.
 
 Before calling this candidate iPhone-ready, record physical results for existing/new Home Screen identity; grant/denial/repair; hidden/closed/locked delivery of every category; ordinary forks and public owning-workflow blockers; no progress/round/Stop spam; localized generic content; warm/cold/expired-login taps; resolved/deleted sessions; draft/held-send effects; VPN connected/disconnected; offline past TTL; host restart; and permission/device revoke/logout. Automated fixture results and this checklist are not substitutes for those observations. See [contribution checks](<../CONTRIBUTING.md#select-behavior-checks>) for packed runtime validation.
+
+## Verification status
+
+> **Development candidate, not a released feature.** The target is iOS/iPadOS 18.4+ Home Screen web apps using Declarative Web Push; availability is an explicit opt-in/configuration for capable iOS/iPadOS **Safari** Home Screen apps only. The author exercised the full acceptance matrix — per-category delivery, locked/all-closed states, Home Screen upgrades, warm/cold and expired-login taps, deleted-target handling, suppression, disable/logout/revocation, offline/VPN/TTL, host restart, and permission/reset recovery — on iPhone 17 Pro Max (iOS 27.0.1) during development; these are retrospective development observations without per-run build provenance, and iPad, other device/OS combinations and a focused re-check on the final head remain open. A source test, Chromium fixture or provider acceptance is not device evidence. Due intents whose gateway origin detaches around delivery now defer inside their original TTL and deliver after re-attach instead of being dropped, and a revoked device is never revived. A packed fixture proves server-side session absence on the tap path (authentication enforced before content, pairing renewal, push consent intact), while a genuinely persisted-then-deleted target remains unprovable: this DSH runtime exposes no public session delete, and deleting every id-named persisted artifact still left the session resolvable. A host push-key reset is registry-wide, no validated destructive repair exists for an old browser subscription, and a repair-required registration may hide the settings row instead of showing a repair label. Push opt-out still persists before logout completes.
