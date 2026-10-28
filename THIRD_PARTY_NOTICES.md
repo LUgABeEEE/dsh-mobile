@@ -46,11 +46,12 @@ full:
 - **`r-efi`** offers `MIT OR Apache-2.0 OR LGPL-2.1-or-later`; the permissive option is
   taken, so LGPL-2.1 does not apply.
 
-So the complete inventory and texts exist; what remains is a **packaging step**, not an
-unknown: a native-enabled APK must carry this notice file (for example under
-`assets/`). The current candidate APK does **not** bundle it — verified by listing the
-APK archive, which contains no notice entry. Treating that as a release blocker is
-correct until the file is included.
+So the complete inventory and texts exist. The native-enabled APK now **bundles** this
+notice at `assets/THIRD_PARTY_NOTICES.txt` (2 905 107 bytes, copied from the published
+companion package); the packaged APK was verified to contain that entry. When
+`native/Cargo.lock` changes, regenerate the upstream notice and replace this asset so the
+shipped texts stay current. The ABI matrix and 32-bit compatibility channel are recorded
+in the release notes/report as a product decision.
 
 ## Notification identity hashing
 
