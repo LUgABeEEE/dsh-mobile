@@ -137,7 +137,7 @@ jobs:
             --verify-tag \
             --latest=false \
             --title "Android ${GITHUB_REF_NAME#android-v}" \
-            --notes "Android 0.7.0 adds experimental iroh transport. Choose the full -iroh.apk for arm64-v8a / x86_64, or the compatibility .apk for existing HTTPS channels (including 32-bit devices). The legacy update link serves the compatibility APK. Both use the same package and established signer; existing pairing data is retained. Install only one variant. Plugin and App versions are independent."
+            --notes "Android ${GITHUB_REF_NAME#android-v}. Choose the full -iroh.apk for experimental iroh transport on arm64-v8a / x86_64, or the compatibility .apk for existing HTTPS channels (including 32-bit devices). The legacy update link serves the compatibility APK. Both use the same package and established signer; existing pairing data is retained. Install only one variant. Plugin and App versions are independent."
       - name: Record descriptor promotion step
         run: |
           echo 'After downloading and verifying the published APK, copy dsh-mobile-android-release.json to apps/mobile/release.json in a separate reviewed commit. This workflow does not change the public App pointer.' >> "$GITHUB_STEP_SUMMARY"
