@@ -153,6 +153,12 @@ async function checkSidebarScrollMemory(frontend, sessions) {
     assert(before.top > 0, `${frontend}: retention test did not reach the lower list`)
     await row.tap()
     await phone.waitForFunction(id => document.querySelector('[data-conversation-session]')?.dataset.conversationSession === id, id)
+    // The dedicated shell closes on selection; stock DSH retains its drawer.
+    if (frontend === 'stock' && await sidebar().getAttribute('data-open') === 'true') {
+      // Tap outside the drawer, not its off-screen header toggle: Playwright
+      // would scroll that toggle into view and legitimately replace outer memory.
+      await phone.touchscreen.tap(phone.viewportSize().width - 8, 180)
+    }
     await phone.waitForFunction(() => document.querySelector('[data-dsh-mobile-sidebar]')?.dataset.open === 'false')
     // Do not use openDrawer(): that geometry helper deliberately resets the
     // outer scrollport and would conceal a broken retention implementation.
@@ -164,7 +170,16 @@ async function checkSidebarScrollMemory(frontend, sessions) {
       return row !== undefined && Math.abs(list.scrollTop - before.top) <= 2
         && Math.abs(root.scrollTop - before.outer) <= 2
         && Math.abs(row.getBoundingClientRect().top - list.getBoundingClientRect().top - before.offset) <= 2
-    }, { id, before }, { timeout: 5000 })
+    }, { id, before }, { timeout: 5000 }).catch(async error => {
+      const after = await phone.evaluate(id => {
+        const root = document.querySelector('[data-dsh-mobile-sidebar-root]')
+        const list = [...root.querySelectorAll('[class*="_regionArea"] [class]')].find(node => [...node.classList].some(token => token.endsWith('_list')))
+        const row = list && [...list.querySelectorAll('[data-row-key]')].find(node => node.dataset.rowKey === `session:${id}`)
+        return { top: list?.scrollTop, outer: root.scrollTop, offset: row && row.getBoundingClientRect().top - list.getBoundingClientRect().top,
+          rows: list && [...list.querySelectorAll('[data-row-key]')].map(row => row.dataset.rowKey) }
+      }, id)
+      throw new Error(`${frontend}: sidebar retention failed ${JSON.stringify({ before, after })}`, { cause: error })
+    })
     assert.equal(await phone.locator('[data-composer-input]').evaluate(node => node.contains(document.activeElement)), false, 'Session switching unexpectedly focused the composer')
   }
   record.checks.push(`${frontend}: lower-list position, visible keyed row and outer scroll survived three session switches without scrolling again`)
