@@ -160,6 +160,8 @@ Set-Location apps/mobile/android
 
 传 `-PirohNative=false` 可走免工具链的快速通道，构建的是原 HTTPS 外壳：没有 iroh 配对入口，`IrohNative` 会报告自身不可用。传输库生成在 `app/build/generated/iroh/jniLibs/` 下，永不提交。启用原生库的构建不改变包名与既定正式签名；实验阶段的独立 alpha 签名在这里不使用。
 
+原生构建还会从固定提交的官方 Maven 归档引入与 `native/Cargo.lock` 匹配的 JVM TLS 校验组件。必须保留其 JNI／Proguard 规则，仅打包 `.so` 不足以完成接入。APK 验证会检查 Debug 和压缩后的 Release 是否保留所需 JVM 类和原生入口名称。
+
 当前源码的 Debug 构建使用包名 `io.github.sayach.dshmobile.debug` 与 `-debug` 版本后缀，可与正式 App 并存，存储和配对彼此独立。它不会升级或迁移旧版无后缀 Debug 应用；切换包名时应保留旧应用和数据，不要为此卸载或清除。Release 构建继续使用 `io.github.sayach.dshmobile` 与既定正式签名。
 
 已核验的正式版本为 [Android 0.6.8](https://github.com/saya-ch/dsh-mobile/releases/tag/android-v0.6.8)，构建 84，SHA-256：`c3d1fe43c0a39619527949c37341baf3f0d54decb2ef27ee0f9b12ae022169e2`。下载的 APK 沿用正式发布签名及包名 `io.github.sayach.dshmobile`。旧版本历史集中在 [CHANGELOG](../../CHANGELOG.md)。

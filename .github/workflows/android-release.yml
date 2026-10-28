@@ -76,7 +76,9 @@ jobs:
         if: always()
         run: rm -f "$RUNNER_TEMP/dsh-mobile-release.jks"
       - name: Record Android runtime dependencies
-        run: bash ./gradlew --no-daemon :app:dependencies --configuration releaseRuntimeClasspath > "$GITHUB_WORKSPACE/dsh-mobile-android-v${GITHUB_REF_NAME#android-v}-dependencies.txt"
+        run: |
+          bash ./gradlew --no-daemon :app:dependencies --configuration releaseRuntimeClasspath -PirohNative=true > "$GITHUB_WORKSPACE/dsh-mobile-android-v${GITHUB_REF_NAME#android-v}-iroh-dependencies.txt"
+          bash ./gradlew --no-daemon :app:dependencies --configuration releaseRuntimeClasspath -PirohNative=false > "$GITHUB_WORKSPACE/dsh-mobile-android-v${GITHUB_REF_NAME#android-v}-dependencies.txt"
         working-directory: apps/mobile/android
       - name: Verify Android signature
         shell: bash

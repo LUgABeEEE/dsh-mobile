@@ -129,6 +129,13 @@ dependencies {
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.webkit:webkit:1.17.1")
     implementation("com.google.zxing:core:3.5.4")
+    if (irohNativeEnabled) {
+        val lockText = providers.fileContents(layout.projectDirectory.file("../../../../native/Cargo.lock")).asText.get()
+        val shim = Regex("(?m)^name = \"rustls-platform-verifier-android\"\\r?\\nversion = \"([^\"]+)\"")
+            .findAll(lockText).toList().singleOrNull()
+            ?: error("Cargo.lock must contain exactly one Android platform verifier version")
+        implementation("org.rustls:rustls-platform-verifier:${shim.groupValues[1]}")
+    }
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20260814")
 }

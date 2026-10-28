@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { copyFile, mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -82,6 +83,16 @@ export function verifyCompatibilityApkEntries(entries) {
   if (entries.some(entry => entry.startsWith('lib/'))) throw new Error('compatibility APK must not contain native libraries')
 }
 
+/** Native TLS needs its JVM verifier even when R8 cannot see the JNI references. */
+export function verifyNativeDex(bytes) {
+  const dex = bytes.toString('latin1')
+  for (const name of ['Lio/github/sayach/dshmobile/IrohNative;',
+    'Lorg/rustls/platformverifier/CertificateVerifier;', 'Lorg/rustls/platformverifier/VerificationResult;',
+    'nativeInitialize', 'nativeConnect', 'nativeClose', 'nativeStatus']) {
+    if (!dex.includes(name)) throw new Error(`APK is missing a JNI/TLS runtime entry: ${name}`)
+  }
+}
+
 function run(command, args, env = process.env, capture = false) {
   const result = spawnSync(command, args, { cwd: ROOT, env, encoding: 'utf8', stdio: capture ? 'pipe' : 'inherit' })
   if (result.error) throw result.error
@@ -103,7 +114,21 @@ async function main() {
     // Android builds already require a JDK; its archive reader avoids an owned ZIP parser.
     const entries = run('jar', ['tf', options.apk], process.env, true).split(/\r?\n/u).filter(Boolean)
     if (options.variant === 'compatibility') verifyCompatibilityApkEntries(entries)
-    else verifyApkEntries(entries, options.abis)
+    else {
+      verifyApkEntries(entries, options.abis)
+      const dexEntries = entries.filter(entry => /^classes(?:[1-9]\d*)?\.dex$/u.test(entry))
+      if (dexEntries.length === 0) throw new Error('APK has no DEX entries')
+      const temporary = await mkdtemp(join(tmpdir(), 'dsh-mobile-apk-dex-'))
+      try {
+        const result = spawnSync('jar', ['xf', options.apk, ...dexEntries], { cwd: temporary, encoding: 'utf8', windowsHide: true })
+        if (result.error) throw result.error
+        if (result.status !== 0) throw new Error('Cannot extract APK DEX for JNI/TLS verification')
+        verifyNativeDex(Buffer.concat(await Promise.all(dexEntries.map(entry => readFile(join(temporary, entry))))))
+      } finally {
+        if (dirname(temporary) !== resolve(tmpdir())) throw new Error('Unowned APK verification directory')
+        await rm(temporary, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 })
+      }
+    }
     if (entries.filter(entry => entry === 'assets/THIRD_PARTY_NOTICES.txt').length !== 1) {
       throw new Error('APK must contain its third-party notices')
     }

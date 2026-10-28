@@ -160,6 +160,8 @@ Set-Location apps/mobile/android
 
 Pass `-PirohNative=false` for a fast toolchain-free lane that builds the original HTTPS shell: the iroh pairing entry is absent and `IrohNative` reports itself unavailable. The transport libraries are generated under `app/build/generated/iroh/jniLibs/` and never committed. A native-enabled build does not change the package identity or the established signer; the independent alpha signer from the iroh experiment is not used here.
 
+Native builds also include the JVM TLS verifier matching `native/Cargo.lock`, from the revision-pinned official Maven archive. Preserve its JNI/Proguard rules: compiling and packaging the `.so` alone is insufficient. The APK verifier checks the retained JVM classes and native entry names in both Debug and minified Release builds.
+
 Current-source Debug builds use package `io.github.sayach.dshmobile.debug` with a `-debug` version suffix. They install beside the official App with separate storage and pairings. They do not upgrade or migrate an older unsuffixed Debug installation; preserve that app and its data rather than uninstalling or clearing it to switch packages. Release builds keep `io.github.sayach.dshmobile` and the established signer.
 
 The verified stable release is [Android 0.6.8](https://github.com/saya-ch/dsh-mobile/releases/tag/android-v0.6.8), build 84, SHA-256 `c3d1fe43c0a39619527949c37341baf3f0d54decb2ef27ee0f9b12ae022169e2`. The downloaded APK retains the established release signer and package `io.github.sayach.dshmobile`. Earlier release history belongs in [CHANGELOG](../../CHANGELOG.md).

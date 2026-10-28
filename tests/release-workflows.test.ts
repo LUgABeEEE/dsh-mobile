@@ -110,6 +110,8 @@ describe('independent plugin and Android release workflows', () => {
     expect(preserveCompatibility).toBeGreaterThan(rebuildCompatibility)
     expect(commands).toContain('--variant compatibility')
     expect(commands).toContain('for apk in dsh-mobile-android-v*.apk; do')
+    expect(commands).toContain('releaseRuntimeClasspath -PirohNative=true')
+    expect(commands).toContain('releaseRuntimeClasspath -PirohNative=false')
     const publication = release.jobs['github-release']!.steps.map(step => step.run ?? '').join('\n')
     expect(publication).toContain('legacy update link serves the compatibility APK')
   })

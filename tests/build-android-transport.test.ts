@@ -7,6 +7,7 @@ const transport = await import(new URL('../scripts/build-android-transport.mjs',
   parseOptions: (args: readonly string[]) => { abis: string[]; output: string; ndk?: string }
   verifyApkEntries: (entries: readonly string[], abis: readonly string[]) => void
   verifyCompatibilityApkEntries: (entries: readonly string[]) => void
+  verifyNativeDex: (bytes: Buffer) => void
 }
 
 function elf64(machine: number): Buffer {
@@ -46,6 +47,17 @@ describe('android transport build helpers', () => {
     expect(transport.inspectElf(elf64(183), 183)).toMatchObject({ machine: 183 })
     expect(() => transport.inspectElf(elf64(62), 183)).toThrow('differs from its APK ABI')
     expect(() => transport.inspectElf(Buffer.alloc(16), 183)).toThrow('little-endian ELF64')
+  })
+
+  it('rejects a full APK without the JVM TLS verifier or preserved JNI names', () => {
+    const names = ['Lio/github/sayach/dshmobile/IrohNative;',
+      'Lorg/rustls/platformverifier/CertificateVerifier;', 'Lorg/rustls/platformverifier/VerificationResult;',
+      'nativeInitialize', 'nativeConnect', 'nativeClose', 'nativeStatus']
+    expect(() => transport.verifyNativeDex(Buffer.from(names.join('\0')))).not.toThrow()
+    for (const missing of names) {
+      expect(() => transport.verifyNativeDex(Buffer.from(names.filter(name => name !== missing).join('\0'))))
+        .toThrow('APK is missing a JNI/TLS runtime entry')
+    }
   })
 
   it('rejects native leftovers in compatibility packages and unknown variants', () => {
