@@ -24,6 +24,8 @@ import android.provider.MediaStore
 import android.provider.Settings
 import android.text.TextUtils
 import android.text.InputType
+import android.text.InputFilter
+import android.text.method.PasswordTransformationMethod
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
@@ -130,6 +132,26 @@ class MainActivity : Activity() {
     private val sameHostProbeExecutor = java.util.concurrent.ThreadPoolExecutor(1, 1, 0L,
         java.util.concurrent.TimeUnit.MILLISECONDS, java.util.concurrent.ArrayBlockingQueue(1))
     private val connectionCancellationExecutor = Executors.newFixedThreadPool(2)
+    private val irohController by lazy {
+        IrohConnectionController(
+            native = object : IrohTransportNative {
+                override fun connect(requestId: Long, request: IrohConnectionRequest): String {
+                    IrohNative.initialize(applicationContext)
+                    return IrohNative.connect(requestId, request)
+                }
+                override fun close(requestId: Long) = IrohNative.close(requestId)
+                override fun status(requestId: Long) = IrohNative.status(requestId)
+            },
+            worker = restoreExecutor,
+            dispatch = { callback -> runOnUiThread(callback) },
+            onCleanupFailure = { android.util.Log.w("DSHMobile", "iroh transport cleanup failed") },
+        )
+    }
+    @Volatile private var activeIroh: IrohCarrierSession? = null
+    private var irohRequestId: Long? = null
+    private var irohCancellationRegistration: (() -> Unit)? = null
+    private var activityResumed = false
+    private class IrohCompatibilityFailure(val issue: CompatibilityIssue) : java.io.IOException("Unsupported mobile protocol")
     private val recoveryHandler = Handler(Looper.getMainLooper())
     private val restoreUiHandler = Handler(Looper.getMainLooper())
     private val connectionAttempts by lazy {
@@ -298,6 +320,10 @@ class MainActivity : Activity() {
         pendingDownload = pendingDownload?.let { it.copy(caCertificate = it.caCertificate?.copyOf()) },
     )
 
+    // minSdk 29 still needs the legacy dispatch: the predictive-back callback is
+    // registered only on API 33+ (see onCreate). AGP 9 lint promotes the override
+    // itself to an error, so the deliberate fallback is suppressed here.
+    @SuppressLint("GestureBackNavigation")
     @Deprecated("Activity back dispatch remains a fallback when the platform callback is not delivered.")
     override fun onBackPressed() {
         handleBack()
@@ -322,15 +348,19 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        activityResumed = true
         sameHostGate.resume()
         sameHostMonitor.start()
         nativeBridge?.onHostResumed()
         webView?.onResume()
         window.decorView.requestApplyInsets()
         if (deviceListVisible && showingSetup) refreshDeviceStatuses(pairedDeviceStore.load())
+        startIrohStatusMonitor()
     }
 
     override fun onPause() {
+        activityResumed = false
+        stopIrohStatusMonitor()
         draftTransfer?.abort()
         releaseCapturedDraft()
         sameHostMonitor.stop()
@@ -353,6 +383,8 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        stopIrohTransport()
+        irohController.close()
         withdrawConnectionAttempt()
         dismissDeviceUndo()
         stopDeviceListRefresh()
@@ -928,7 +960,7 @@ class MainActivity : Activity() {
         return row
     }
 
-    private fun PairedDeviceRecord.modeLabel(): String = when (mode) {
+    private fun PairedDeviceRecord.modeLabel(): String = if (iroh != null) getString(R.string.connection_mode_iroh) else when (mode) {
         AccessMode.LAN -> getString(R.string.connection_mode_lan)
         AccessMode.REMOTE -> getString(R.string.connection_mode_remote)
     }
@@ -937,6 +969,8 @@ class MainActivity : Activity() {
         val current = device.key == activeDeviceKey && webView != null
         val statusResource = when {
             current -> R.string.device_status_current
+            device.iroh != null && !hasIrohTransport(device.iroh) && device.status != PairedDeviceStatus.REVOKED
+                && device.status != PairedDeviceStatus.EXPIRED && device.status != PairedDeviceStatus.ADDRESS_CHANGED -> R.string.iroh_status_connect_to_check
             device.status == PairedDeviceStatus.REACHABLE -> R.string.device_status_reachable
             device.status == PairedDeviceStatus.REVOKED -> R.string.device_status_revoked
             device.status == PairedDeviceStatus.EXPIRED -> R.string.device_status_expired
@@ -950,7 +984,7 @@ class MainActivity : Activity() {
         } else {
             status
         }
-        val color = getColor(if (device.status == PairedDeviceStatus.REACHABLE || current) R.color.app_success else R.color.app_secondary)
+        val color = getColor(if (current || (device.status == PairedDeviceStatus.REACHABLE && device.iroh == null)) R.color.app_success else R.color.app_secondary)
         view.setTextColor(color)
         view.setCompoundDrawablesWithIntrinsicBounds(
             GradientDrawable().apply {
@@ -990,7 +1024,9 @@ class MainActivity : Activity() {
 
     private fun refreshDeviceStatuses(devices: List<PairedDeviceRecord>) {
         deviceListRefreshRunnable?.let(deviceStatusHandler::removeCallbacks)
-        deviceStatusPoller.refresh(devices)
+        // Listing computers must not silently open a tunnel to every paired iroh host.
+        deviceStatusPoller.refresh(devices.filter { it.iroh == null })
+        if (devices.none { it.iroh == null }) { deviceListRefreshRunnable = null; return }
         deviceListRefreshRunnable = Runnable {
             if (!isFinishing && !isDestroyed && deviceListVisible && showingSetup && pairedDeviceStore.load().isNotEmpty()) refreshDeviceStatuses(pairedDeviceStore.load())
         }.also { deviceStatusHandler.postDelayed(it, DEVICE_STATUS_REFRESH_MS) }
@@ -1035,7 +1071,7 @@ class MainActivity : Activity() {
             if (needsRepair) repairPairedDevice(device) else connectPairedDevice(device)
         })
         actions.add(getString(R.string.device_action_edit) to { editDeviceName(device) })
-        actions.add(getString(R.string.device_action_check) to check@ {
+        if (device.iroh == null) actions.add(getString(R.string.device_action_check) to check@ {
             if (withCredentialStorage { pairedDeviceStore.update(device.key, PairedDeviceStatusPolicy::beginCheck) } == null) return@check
             showDeviceList()
         })
@@ -1062,7 +1098,7 @@ class MainActivity : Activity() {
     private fun repairPairedDevice(device: PairedDeviceRecord) {
         activeDeviceKey = null
         accessMode = device.mode
-        if (device.mode == AccessMode.LAN) showSetup() else showRemoteSetup()
+        if (device.iroh != null) showIrohSetup() else if (device.mode == AccessMode.LAN) showSetup() else showRemoteSetup()
     }
 
     private fun editDeviceName(device: PairedDeviceRecord) {
@@ -1102,6 +1138,7 @@ class MainActivity : Activity() {
                 val legacyOrigin = preferences.getString(originPreference(device.mode), null)
                 if (withCredentialStorage { pairedDeviceStore.remove(device.key) } != true) return@setPositiveButton
                 if (activeDeviceKey == device.key) {
+                    stopIrohTransport()
                     activeDeviceKey = null
                     destroyWebView()
                 }
@@ -1268,6 +1305,7 @@ class MainActivity : Activity() {
     private fun connectPairedDevice(snapshot: PairedDeviceRecord) {
         if (!prepareCredentialStorage()) return
         val device = pairedDeviceStore.load().firstOrNull { it.key == snapshot.key } ?: return
+        if (device.iroh == null) stopIrohTransport()
         if (device.status == PairedDeviceStatus.REVOKED
             || device.status == PairedDeviceStatus.EXPIRED
             || device.status == PairedDeviceStatus.ADDRESS_CHANGED
@@ -1295,6 +1333,7 @@ class MainActivity : Activity() {
     }
 
     private fun showConnectionChoices() {
+        stopIrohTransport()
         withdrawConnectionAttempt()
         stopDeviceListRefresh()
         deviceListVisible = false
@@ -1339,6 +1378,14 @@ class MainActivity : Activity() {
             legacyCredentialForRestore(AccessMode.REMOTE)?.expiresAt?.let { it > System.currentTimeMillis() } == true,
             action = { openAccessMode(AccessMode.REMOTE, restoreSaved = pairedDeviceStore.load().isEmpty()) },
             configure = { openAccessMode(AccessMode.REMOTE, restoreSaved = false) },
+        ))
+        card.addView(spacer(12))
+        card.addView(accessChoice(
+            R.string.iroh_access_title,
+            R.string.iroh_access_description,
+            false,
+            action = { showIrohSetup() },
+            configure = { showIrohSetup() },
         ))
     }
 
@@ -1399,6 +1446,7 @@ class MainActivity : Activity() {
     }
 
     private fun showSetup() {
+        stopIrohTransport()
         cancelRestoreForConfiguration()
         stopDeviceListRefresh()
         invalidatePairingAttempts()
@@ -1467,7 +1515,142 @@ class MainActivity : Activity() {
         card.addView(discovery, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
     }
 
+    private fun showIrohSetup(prefilled: String = "", autoConnect: Boolean = false) {
+        stopIrohTransport()
+        withdrawConnectionAttempt()
+        stopDeviceListRefresh()
+        invalidateRestoreAttempts()
+        invalidatePairingAttempts()
+        deviceListVisible = false
+        showingSetup = true
+        accessMode = AccessMode.REMOTE
+        setupBackAction = ::showConnectionCenter
+        gatewayOrigin = null
+        retryUrl = null
+        destroyWebView()
+        cancelAutomaticRecovery()
+        failureDialog?.dismiss()
+        val card = createSetupCard(surface = false)
+        card.addView(textView(R.string.iroh_access_title, 30f, Typeface.BOLD))
+        card.addView(spacer(8))
+        card.addView(textView(R.string.iroh_pairing_help, 16f, Typeface.NORMAL, R.color.app_secondary))
+        card.addView(spacer(20))
+        card.addView(secondaryButton(R.string.scan_action, 52) { openScanner() })
+        card.addView(spacer(16))
+        card.addView(textView(R.string.iroh_pairing_label, 14f, Typeface.BOLD))
+        card.addView(spacer(8))
+        val input = field(R.string.iroh_pairing_hint, InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_VARIATION_PASSWORD,
+            EditorInfo.IME_ACTION_DONE, 96, R.string.iroh_pairing_label).apply {
+            isSingleLine = false
+            minLines = 3
+            maxLines = 4
+            isSaveEnabled = false
+            importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO
+            imeOptions = imeOptions or EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING
+            transformationMethod = PasswordTransformationMethod.getInstance()
+            filters = arrayOf(InputFilter.LengthFilter(IrohPairingDescriptor.MAX_BYTES))
+            setText(prefilled)
+        }
+        card.addView(input)
+        card.addView(spacer(12))
+        val status = textView(R.string.iroh_pairing_private, 14f, Typeface.NORMAL, R.color.app_secondary).apply {
+            accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
+        }
+        val connect = primaryButton(R.string.iroh_connect_action, 52) { }
+        fun submit() {
+            val descriptor = try { IrohPairingDescriptor.parse(input.text.toString().trim()) } catch (_: Exception) {
+                input.error = getString(R.string.iroh_pairing_invalid)
+                status.setTextColor(getColor(R.color.app_error))
+                status.setText(R.string.iroh_pairing_invalid)
+                input.requestFocus()
+                return
+            }
+            if (!prepareCredentialStorage()) return
+            input.error = null
+            connect.isEnabled = false
+            val attempt = startConnectionAttempt(AccessMode.REMOTE, onCancelled = { showIrohSetup() })
+            val generation = beginPairingAttempt() ?: run {
+                finishConnectionAttempt(attempt)
+                connect.isEnabled = true
+                return
+            }
+            fun failed() {
+                if (!connectionAttempts.isCurrent(attempt) || generation != pairingGeneration || isFinishing || isDestroyed) return
+                stopIrohTransport()
+                finishConnectionAttempt(attempt)
+                pairingAttemptGate.complete(generation)
+                // Pairing may have committed remotely; do not replay either one-time secret.
+                input.text.clear()
+                input.error = getString(R.string.iroh_pairing_retry_new)
+                status.setTextColor(getColor(R.color.app_error))
+                status.setText(R.string.iroh_pairing_retry_new)
+                connect.isEnabled = true
+            }
+            startIrohCarrier(descriptor.binding, descriptor.irohCode, attempt, onReady = { carrier ->
+                restoreExecutor.execute {
+                    val result = runCatching {
+                        check(descriptor.expiresAt > System.currentTimeMillis())
+                        NativeAuthClient.fetchMetadata(descriptor.binding.origin, attempt.cancellation,
+                            IrohHttpsTransport(carrier.endpoint), descriptor.caCertificate)?.let {
+                            VersionCompatibility.evaluate(BuildConfig.VERSION_NAME, it)
+                                ?.let { issue -> throw IrohCompatibilityFailure(issue) }
+                        }
+                        NativeAuthClient.pair(descriptor.binding.origin, descriptor.gatewayToken, descriptor.caCertificate,
+                            descriptor.instanceId, attempt.cancellation, IrohHttpsTransport(carrier.endpoint))
+                    }
+                    runOnUiThread {
+                        if (!connectionAttempts.isCurrent(attempt) || generation != pairingGeneration || isFinishing || isDestroyed) return@runOnUiThread
+                        val session = result.getOrNull()
+                        if (session == null) {
+                            failed()
+                            (result.exceptionOrNull() as? IrohCompatibilityFailure)?.let { showCompatibilityIssue(it.issue, status, connect) }
+                            return@runOnUiThread
+                        }
+                        val token = session.deviceToken
+                        val expires = session.deviceExpiresAt
+                        if (token == null || expires == null) { failed(); return@runOnUiThread }
+                        val existing = pairedDeviceStore.load().any { it.iroh?.endpointId == descriptor.binding.endpointId && it.instanceId == descriptor.instanceId }
+                        val credential = DeviceCredential(session.instanceId, token, expires, descriptor.caCertificate)
+                        val record = savePairedDevice(AccessMode.REMOTE, descriptor.binding.origin, session, credential)
+                            ?: run { failed(); return@runOnUiThread }
+                        input.text.clear()
+                        installNativeSession(descriptor.binding.origin, session,
+                            isCurrent = { connectionAttempts.isCurrent(attempt) && generation == pairingGeneration },
+                            onFailure = {
+                                stopIrohTransport()
+                                finishConnectionAttempt(attempt)
+                                pairingAttemptGate.complete(generation)
+                                showDeviceList()
+                                toastError(R.string.session_storage_failed)
+                            }) {
+                            pairingAttemptGate.complete(generation)
+                            if (existing) showBrowser(descriptor.binding.origin, descriptor.caCertificate)
+                            else {
+                                finishConnectionAttempt(attempt)
+                                showPairedDeviceNamePrompt(record) {
+                                    if (generation == pairingGeneration && !isFinishing && !isDestroyed) {
+                                        startConnectionAttempt(AccessMode.REMOTE)
+                                        showBrowser(descriptor.binding.origin, descriptor.caCertificate)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }, onFailure = { failed() })
+        }
+        connect.setOnClickListener { submit() }
+        card.addView(connect)
+        card.addView(spacer(8))
+        card.addView(status)
+        card.addView(spacer(16))
+        card.addView(secondaryButton(R.string.back_to_connections, 48) { showConnectionCenter() })
+        val formGeneration = pairingGeneration
+        if (autoConnect) input.post { if (!isFinishing && !isDestroyed && formGeneration == pairingGeneration) submit() }
+    }
+
     private fun showRemoteSetup() {
+        stopIrohTransport()
         cancelRestoreForConfiguration()
         stopDeviceListRefresh()
         invalidatePairingAttempts()
@@ -1540,7 +1723,108 @@ class MainActivity : Activity() {
     private fun isRemoteTunnelHost(host: String): Boolean = RemoteHostPolicy.isRemoteCandidate(host)
 
     private fun isOriginAllowedForAccessMode(origin: GatewayOrigin): Boolean =
-        RemoteHostPolicy.isAllowed(accessMode, origin.host)
+        isOriginAllowed(origin, accessMode)
+
+    private fun isOriginAllowed(origin: GatewayOrigin, mode: AccessMode): Boolean =
+        if (IrohDeviceBinding.isIrohHost(origin.host)) {
+            mode == AccessMode.REMOTE && activeIroh?.let { it.endpoint.origin == origin && irohController.owns(it.requestId) } == true
+        } else RemoteHostPolicy.isAllowed(mode, origin.host)
+
+    private fun hasIrohTransport(binding: IrohDeviceBinding): Boolean =
+        BuildConfig.IROH_NATIVE_ENABLED && activeIroh?.let { it.endpoint.origin == binding.origin && it.endpoint.peerId == binding.endpointId && irohController.owns(it.requestId) } == true
+
+    private fun transportFor(origin: GatewayOrigin): TransportEndpoint {
+        if (!IrohDeviceBinding.isIrohHost(origin.host)) return LocalTransport
+        val session = activeIroh?.takeIf { it.endpoint.origin == origin && irohController.owns(it.requestId) }
+            ?: throw NativeAuthFailure(NativeAuthFailureKind.NETWORK)
+        return IrohHttpsTransport(session.endpoint)
+    }
+
+    private fun stopIrohTransport() {
+        stopIrohStatusMonitor()
+        irohCancellationRegistration?.invoke()
+        irohCancellationRegistration = null
+        irohRequestId?.let { irohController.cancel(it) }
+        irohRequestId = null
+        activeIroh = null
+    }
+
+    private class IrohStatusOwner(val carrier: IrohCarrierSession, val browser: WebView, val documentGeneration: Int)
+
+    private val irohStatusMonitor by lazy {
+        IrohStatusMonitor<IrohStatusOwner>(
+            intervalMs = IROH_STATUS_POLL_MS,
+            schedule = { delay, task ->
+                restoreUiHandler.postDelayed(task, delay)
+                val remove: () -> Unit = { restoreUiHandler.removeCallbacks(task) }
+                remove
+            },
+            captureOwner = {
+                val carrier = activeIroh
+                val browser = webView
+                val generation = secureWebViewClient?.currentDocumentGeneration
+                if (!activityResumed || isFinishing || isDestroyed || carrier == null || browser == null
+                    || generation == null || gatewayOrigin != carrier.endpoint.origin) null
+                else IrohStatusOwner(carrier, browser, generation)
+            },
+            isCurrent = { owner ->
+                activityResumed && !isFinishing && !isDestroyed && activeIroh === owner.carrier
+                    && webView === owner.browser && gatewayOrigin == owner.carrier.endpoint.origin
+                    && secureWebViewClient?.currentDocumentGeneration == owner.documentGeneration
+            },
+            status = { owner -> irohController.status(owner.carrier.requestId) },
+            onTerminal = { owner, status ->
+                when (status) {
+                    IrohTransportStatus.REVOKED -> {
+                        val origin = owner.carrier.endpoint.origin
+                        stopIrohTransport()
+                        cancelAutomaticRecovery()
+                        handleDeviceRevoked()
+                        (application as MobileApplication).sessionCookieInstaller.clear(
+                            key = origin.host,
+                            cookies = nativeSessionCookieDeletions().map { NativeSessionCookieWrite(origin.serialized, it) },
+                            onFailure = {
+                                if (!isFinishing && !isDestroyed) toastError(R.string.session_storage_failed)
+                            },
+                        )
+                    }
+                    IrohTransportStatus.DISCONNECTED, IrohTransportStatus.INACTIVE -> {
+                        stopIrohTransport()
+                        showLoadFailure(LoadFailure.NETWORK)
+                    }
+                    IrohTransportStatus.READY -> Unit
+                }
+            },
+        )
+    }
+
+    private fun stopIrohStatusMonitor() = irohStatusMonitor.stop()
+
+    private fun startIrohStatusMonitor() = irohStatusMonitor.start()
+
+    private fun startIrohCarrier(
+        binding: IrohDeviceBinding,
+        code: String?,
+        attempt: ConnectionAttemptController.Attempt,
+        onReady: (IrohCarrierSession) -> Unit,
+        onFailure: () -> Unit,
+    ) {
+        if (!BuildConfig.IROH_NATIVE_ENABLED || !binding.isValid()) { onFailure(); return }
+        activeIroh = null
+        val request = IrohConnectionRequest(binding.endpointId, code,
+            Build.MODEL.filterNot(Char::isISOControl).take(64).ifBlank { "Android" }, File(filesDir, "iroh").absolutePath, binding.localPort)
+        val id = irohController.connect(request, { session ->
+            if (!connectionAttempts.isCurrent(attempt) || isFinishing || isDestroyed || session.endpoint.origin != binding.origin) {
+                irohController.cancel(session.requestId)
+                return@connect
+            }
+            activeIroh = session
+            onReady(session)
+        }, { if (connectionAttempts.isCurrent(attempt) && !isFinishing && !isDestroyed) onFailure() })
+        irohRequestId = id
+        irohCancellationRegistration?.invoke()
+        irohCancellationRegistration = attempt.cancellation.onCancel { irohController.cancel(id) }
+    }
 
     private fun warnIfTailscale(origin: GatewayOrigin) {
         if (!RemoteHostPolicy.needsTailscaleVpnNotice(origin.host)) return
@@ -2173,6 +2457,14 @@ class MainActivity : Activity() {
         if (resultCode != RESULT_OK) return
         val text = data?.getStringExtra(ScanActivity.EXTRA_QR_RESULT)?.trim().orEmpty()
         if (text.isEmpty()) return
+        if (BuildConfig.IROH_NATIVE_ENABLED && text.startsWith('{')) {
+            try { IrohPairingDescriptor.parse(text) } catch (_: Exception) {
+                toastError(R.string.iroh_pairing_invalid)
+                return
+            }
+            showIrohSetup(text, autoConnect = true)
+            return
+        }
         val target = PairingScanPolicy.parse(text, accessMode)
         if (target != null) {
             accessMode = target.mode
@@ -2207,7 +2499,10 @@ class MainActivity : Activity() {
         activate: Boolean = true,
     ): PairedDeviceRecord? {
         dismissDeviceUndo()
-        val key = "${mode.name.lowercase()}:${session.instanceId}"
+        val binding = activeIroh?.takeIf { it.endpoint.origin == origin && irohController.owns(it.requestId) }
+            ?.endpoint?.let { IrohDeviceBinding(it.peerId, it.localPort) }
+        if (IrohDeviceBinding.isIrohHost(origin.host) && binding == null) return null
+        val key = binding?.let { "iroh:${it.endpointId}:${session.instanceId}" } ?: "${mode.name.lowercase()}:${session.instanceId}"
         val existing = pairedDeviceStore.load().firstOrNull { it.key == key }
         val name = existing?.displayName ?: localizedDefaultDeviceName(mode)
         val token = session.deviceToken ?: credential.deviceToken
@@ -2226,6 +2521,7 @@ class MainActivity : Activity() {
                 lastReachableAt = now,
                 status = PairedDeviceStatus.REACHABLE,
                 installationId = session.installationId ?: existing?.takeIf { it.deviceToken == token }?.installationId,
+                iroh = binding,
         )
         if (withCredentialStorage { pairedDeviceStore.upsert(record) } == null) return null
         if (activate) activatePairedDevice(record)
@@ -2837,7 +3133,21 @@ class MainActivity : Activity() {
             onFailure(RestoreFailureDisposition.REQUIRE_USER_ACTION)
             return
         }
-        if (!RemoteHostPolicy.isAllowed(mode, preferredOrigin.host)) {
+        if (requestedDevice?.iroh != null && !hasIrohTransport(requestedDevice.iroh)) {
+            val transportAttempt = pendingConnection ?: startConnectionAttempt(mode,
+                message = getString(R.string.connecting_to_device, requestedDevice.displayName), preserveBrowser = preserveWebView)
+            val carrierReady = restoreAttemptGate.connectionCallback(generation, connectionAttempts, transportAttempt) {
+                restoreTrustedDevice(preferredOrigin, credential, mode, generation, deviceKey, preserveWebView, deferActivation, claimSuccess, onActivated, onAuthenticated, requestIsCurrent, allowOriginRediscovery, onSessionInstalled, onUnavailable, onFailure)
+            }
+            val carrierFailed = restoreAttemptGate.connectionCallback(generation, connectionAttempts, transportAttempt) {
+                // The caller owns retry or terminal UI; a carrier failure does not reset its deadline.
+                onFailure(RestoreFailureDisposition.RETRY_TRANSIENT)
+            }
+            startIrohCarrier(requestedDevice.iroh, null, transportAttempt,
+                onReady = { carrierReady.run() }, onFailure = carrierFailed::run)
+            return
+        }
+        if (!isOriginAllowed(preferredOrigin, mode)) {
             if (deviceKey != null) withCredentialStorage { pairedDeviceStore.update(deviceKey) {
                 if (it.status == PairedDeviceStatus.REVOKED) it else it.copy(status = PairedDeviceStatus.ADDRESS_CHANGED)
             }
@@ -2887,6 +3197,7 @@ class MainActivity : Activity() {
                         credential.caCertificate,
                         credential.instanceId,
                         cancellation = attempt.cancellation,
+                        transport = transportFor(origin),
                     ).also { session ->
                         if (session.instanceId != credential.instanceId ||
                             (onAuthenticated != null && (requestedDevice?.installationId == null ||
@@ -2935,6 +3246,10 @@ class MainActivity : Activity() {
                     }
                 }
                 if (renewed == null) {
+                    if (requestedDevice?.iroh != null && failureKind in setOf(NativeAuthFailureKind.NETWORK, NativeAuthFailureKind.TIMEOUT)) {
+                        // A dead QUIC carrier is recreated before the next bounded retry.
+                        stopIrohTransport()
+                    }
                     if (deviceKey != null) {
                         val status = when (failureKind) {
                             NativeAuthFailureKind.DEVICE_REVOKED -> PairedDeviceStatus.REVOKED
@@ -3415,6 +3730,7 @@ class MainActivity : Activity() {
         val initialUrl = requestedInitialUrl.takeIf { GatewayUrlPolicy.isSameOrigin(origin, it) }
             ?: origin.serialized
         retryUrl = initialUrl
+        startIrohStatusMonitor()
         if (stagedBrowser == null) browser.loadUrl(initialUrl)
         else { displayScale.onDocumentReady(); nativeBridge?.injectPage(); finishConnectionAttempt() }
     }
@@ -3730,6 +4046,7 @@ class MainActivity : Activity() {
     }
 
     private fun destroyWebView(changingConfigurations: Boolean = false, rendererGone: Boolean = false) {
+        stopIrohStatusMonitor()
         cancelPageSessionRenewal()
         invalidateWebFileChooser()
         cancelPendingWebBack()
@@ -3906,6 +4223,7 @@ class MainActivity : Activity() {
         const val SCAN_QR_REQUEST = 4106
         const val VOICE_PERMISSION_REQUEST = 4107
         const val DEVICE_STATUS_REFRESH_MS = 20_000L
+        const val IROH_STATUS_POLL_MS = 2_000L
         const val DEVICE_UNDO_TIMEOUT_MS = 6_000L
         const val LIVE_DOCUMENT_PROBE_TIMEOUT_MS = 2_000L
         const val MOBILE_BACK_TIMEOUT_MS = 1_500L

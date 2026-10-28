@@ -177,6 +177,24 @@ export type {
   RemoteProviderState,
   RemoteProviderStatus,
 } from './remote.js'
+export { IROH_COMPONENT_RELEASES, IROH_VERSION, IrohComponentManager } from './iroh-component.js'
+export type { IrohArtifact, IrohComponentManagerOptions, IrohComponentStatus } from './iroh-component.js'
+export { IrohController } from './iroh.js'
+export type { IrohControllerOptions, IrohState, IrohStatus } from './iroh.js'
+export { irohHostname, irohOrigin, validateIrohOrigin, DEFAULT_IROH_LOCAL_PORT } from './iroh-origin.js'
+export { IROH_LEAF_RENEW_BEFORE_DAYS, IROH_LEAF_VALIDITY_DAYS, ensureIrohTls, irohGatewayConfig, irohTlsPaths } from './iroh-tls.js'
+export type { IrohTlsCertificate, IrohTlsPaths } from './iroh-tls.js'
+export {
+  decodePairingDescriptor,
+  encodePairingDescriptor,
+  MAX_PAIRING_DESCRIPTOR_BYTES,
+  MAX_PAIRING_LIFETIME_MS,
+  PAIRING_DESCRIPTOR_LOCAL_PORT,
+  PAIRING_DESCRIPTOR_TYPE,
+  PAIRING_DESCRIPTOR_VERSION,
+  validatePairingDescriptor,
+} from './iroh-pairing.js'
+export type { IrohPairingDescriptor, PairingDescriptorField } from './iroh-pairing.js'
 export {
   TASK_EVENT_DEBOUNCE_MS,
   TaskEventHub,

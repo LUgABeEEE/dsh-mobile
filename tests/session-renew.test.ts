@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { apply, shouldRenewSession } from '../src/client.js'
+import { installMobileConnectionRecovery, shouldRenewAfterRejection } from '../src/client-recovery.js'
 import type { MobileConnectionState, MobileRecoveryBridge } from '../src/client-recovery.js'
 
 const releases: Array<() => void> = []
@@ -64,9 +65,12 @@ function fixture(bridge?: MobileRecoveryBridge, initial: MobileConnectionState =
   vi.stubGlobal('document', document)
   vi.stubGlobal('window', page)
   let remove: (() => void) | undefined
+  let rejected: ((status: number) => void) | undefined
   apply({
     effect(install, label) {
       if (label !== 'dsh-mobile: connection recovery') return
+      // The owner now takes an out-parameter for the rejection signal, because
+      // `ctx.effect` accepts only a void or disposer return.
       const cleanup = install()
       if (cleanup !== undefined) remove = cleanup
     },
@@ -81,6 +85,7 @@ function fixture(bridge?: MobileRecoveryBridge, initial: MobileConnectionState =
   disposers.push(dispose)
   return {
     page, document, connection, listeners, dispose,
+    rejected: (status: number) => { rejected?.(status) },
     setState(next: MobileConnectionState) {
       snapshot = next
       for (const listener of listeners) listener()
@@ -367,5 +372,168 @@ describe('production recovery effect ownership', () => {
     await disposal
     expect(invoke).not.toHaveBeenCalled()
     expect(mounted.connection.reconnect).not.toHaveBeenCalled()
+  })
+})
+
+describe('a rejected gateway request renews a Session the transport still calls connected', () => {
+  // Issue #298: DSH keeps Sessions in memory, so a Host restart kills every phone
+  // Session while the device credential survives. The live transport can keep
+  // reporting `connected`, so waiting for a disconnect never fires.
+  it('admits a 401/403 while the transport still looks connected', () => {
+    expect(shouldRenewAfterRejection(401, 'connected')).toBe(true)
+    expect(shouldRenewAfterRejection(403, 'connected')).toBe(true)
+    expect(shouldRenewAfterRejection(401, undefined)).toBe(true)
+    // A transport already known to be down renews through the disconnect path, so
+    // the rejection signal must not start a second attempt.
+    expect(shouldRenewAfterRejection(401, 'disconnected')).toBe(false)
+    expect(shouldRenewAfterRejection(401, 'connecting')).toBe(false)
+    // Only an authentication rejection is evidence of a dead Session.
+    expect(shouldRenewAfterRejection(500, 'connected')).toBe(false)
+    expect(shouldRenewAfterRejection(404, 'connected')).toBe(false)
+    expect(shouldRenewAfterRejection(200, 'connected')).toBe(false)
+  })
+
+  /** Mount the real recovery owner directly and hand back its rejection signal. */
+  function owner(bridge: MobileRecoveryBridge | undefined, initial: MobileConnectionState = 'connected') {
+    vi.useFakeTimers()
+    let snapshot: MobileConnectionState = initial
+    const listeners = new Set<() => void>()
+    const state = { getSnapshot: () => snapshot, subscribe: (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener) } } }
+    const reconnect = vi.fn()
+    const connection = { isLoopback: false, state, reconnect }
+    const document = Object.assign(new EventTarget(), { visibilityState: 'visible', cookie: 'dsh_ma_csrf=before' })
+    const page = Object.assign(new EventTarget(), { document, location: { origin: 'https://computer.example' }, __DSH_MOBILE_NATIVE__: bridge })
+    let rejected: ((status: number) => void) | undefined
+    let retry: (() => boolean) | undefined
+    const renewed = vi.fn()
+    // The owner only reads visibility, the origin and the native bridge, so the
+    // owned stub is cast at the boundary exactly like the existing fixture does.
+    const dispose = installMobileConnectionRecovery(
+      () => connection, page as unknown as Parameters<typeof installMobileConnectionRecovery>[1],
+      document as unknown as Document, (signal, manual) => { rejected = signal; retry = manual }, renewed,
+    )
+    disposers.push(async () => { await dispose?.() })
+    return {
+      connection, reconnect,
+      reject: (status: number) => rejected?.(status),
+      retry: () => retry?.() ?? false,
+      dispose, renewed,
+      setState(next: MobileConnectionState) { snapshot = next; for (const listener of listeners) listener() },
+    }
+  }
+
+  it('allows explicit retry after a transient failure and refreshes only after confirmed renewal', async () => {
+    const invoke = vi.fn<MobileRecoveryBridge['invoke']>()
+      .mockRejectedValueOnce(Object.assign(new Error('deadline'), { code: 'timeout' }))
+      .mockResolvedValue({ renewed: true })
+    const mounted = owner(native(invoke))
+    mounted.reject(401)
+    await flush()
+    expect(invoke).toHaveBeenCalledTimes(1)
+    expect(mounted.renewed).not.toHaveBeenCalled()
+    mounted.reject(401)
+    await flush()
+    expect(invoke).toHaveBeenCalledTimes(1)
+    expect(mounted.retry()).toBe(true)
+    expect(mounted.retry()).toBe(false)
+    await flush()
+    expect(invoke).toHaveBeenCalledTimes(2)
+    expect(mounted.renewed).toHaveBeenCalledTimes(1)
+    await mounted.dispose?.()
+    expect(mounted.retry()).toBe(false)
+  })
+
+  it.each(['device_revoked', 'device_expired', 'authentication_failed'])('does not rearm rejected credentials after %s', async code => {
+    const invoke = vi.fn<MobileRecoveryBridge['invoke']>()
+      .mockRejectedValue(Object.assign(new Error('credentials rejected'), { code }))
+    const mounted = owner(native(invoke))
+    mounted.reject(401)
+    await flush()
+    mounted.setState('connecting')
+    mounted.setState('connected')
+    mounted.reject(401)
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(mounted.retry()).toBe(false)
+    expect(invoke).toHaveBeenCalledTimes(1)
+    expect(mounted.renewed).not.toHaveBeenCalled()
+  })
+
+  it('keeps independently mounted recovery owners separate', async () => {
+    const firstInvoke = vi.fn(async () => ({ renewed: true }))
+    const secondInvoke = vi.fn(async () => ({ renewed: true }))
+    const first = owner(native(firstInvoke))
+    const second = owner(native(secondInvoke))
+    await first.dispose?.()
+    second.reject(401)
+    await flush()
+    expect(firstInvoke).not.toHaveBeenCalled()
+    expect(secondInvoke).toHaveBeenCalledTimes(1)
+    expect(second.renewed).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not request a renewal from a page with no native bridge', async () => {
+    // An ordinary browser must not promise automatic recovery it cannot perform.
+    const mounted = owner(undefined)
+    mounted.reject(401)
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(mounted.reconnect).not.toHaveBeenCalled()
+  })
+
+  it('renews once for a burst of rejections and reconnects after the result', async () => {
+    const invoke = vi.fn(async () => ({ renewed: true }))
+    const mounted = owner(native(invoke))
+    for (let attempt = 0; attempt < 5; attempt += 1) mounted.reject(401)
+    await vi.advanceTimersByTimeAsync(1000)
+    await flush()
+    expect(invoke).toHaveBeenCalledTimes(1)
+    expect(mounted.reconnect).toHaveBeenCalledTimes(1)
+  })
+
+  it('stops retrying after the App refuses to renew a revoked device', async () => {
+    // Revocation also surfaces as 401. The bridge refuses, and the page must not
+    // keep trying: an unattended retry loop on a revoked device is not recovery.
+    const invoke = vi.fn(async () => ({ renewed: false }))
+    const mounted = owner(native(invoke))
+    mounted.reject(401)
+    await vi.advanceTimersByTimeAsync(1000)
+    await flush()
+    mounted.reject(401)
+    mounted.reject(401)
+    await vi.advanceTimersByTimeAsync(60_000)
+    await flush()
+    expect(invoke).toHaveBeenCalledTimes(1)
+    expect(mounted.reconnect).not.toHaveBeenCalled()
+  })
+
+  it('allows a fresh attempt after the transport reconnects', async () => {
+    const invoke = vi.fn(async () => ({ renewed: true }))
+    const mounted = owner(native(invoke))
+    mounted.reject(401)
+    await vi.advanceTimersByTimeAsync(1000)
+    await flush()
+    expect(invoke).toHaveBeenCalledTimes(1)
+    // A real reconnect goes through a non-connected state first. Only that
+    // transition clears the evidence and re-arms the attempt: a page that stays
+    // `connected` while being rejected must not retry forever.
+    mounted.setState('connecting')
+    mounted.setState('connected')
+    mounted.reject(401)
+    await vi.advanceTimersByTimeAsync(1000)
+    await flush()
+    expect(invoke).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not re-arm while the transport keeps reporting connected', async () => {
+    // Guards the revoked-device case: repeated 401s on a still-connected page must
+    // not become an unattended retry loop.
+    const invoke = vi.fn(async () => ({ renewed: false }))
+    const mounted = owner(native(invoke))
+    for (let round = 0; round < 3; round += 1) {
+      mounted.reject(401)
+      mounted.setState('connected')
+      await vi.advanceTimersByTimeAsync(5000)
+      await flush()
+    }
+    expect(invoke).toHaveBeenCalledTimes(1)
   })
 })

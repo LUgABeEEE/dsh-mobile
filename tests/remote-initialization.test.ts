@@ -8,6 +8,8 @@ import { CpolarController } from '../src/cpolar.js'
 import { CloudflaredController } from '../src/cloudflared.js'
 import { FrpController } from '../src/frp.js'
 import { FrpConfigStore } from '../src/frp-config.js'
+import { IrohController } from '../src/iroh.js'
+import type { IrohComponentManager } from '../src/iroh-component.js'
 import { ManagedOriginController } from '../src/managed-origin.js'
 import { REMOTE_PROVIDERS, type RemoteProvider, type RemoteProviderController } from '../src/remote.js'
 
@@ -58,6 +60,18 @@ function controllerFixture(provider: RemoteProvider, store: JsonMobileAccessCont
       controller = new ManagedOriginController({ store, modeStore: { load: async () => ({ version: 1, mode: 'external' }), save: async () => {} }, external, managed })
       break
     }
+    case 'iroh':
+      controller = new IrohController({
+        store,
+        component: {
+          executable: undefined,
+          install: async () => { throw new Error('iroh_companion_missing') },
+          ensureAvailable: async () => { throw new Error('iroh_companion_missing') },
+        } as unknown as IrohComponentManager,
+        dataDirectory: join(root, 'iroh'),
+        createGateway: createGateway as never,
+      })
+      break
   }
   controllers.push(controller)
   return { controller, createGateway, children }

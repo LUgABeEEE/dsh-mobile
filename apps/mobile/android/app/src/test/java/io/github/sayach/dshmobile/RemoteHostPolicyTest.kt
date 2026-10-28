@@ -65,6 +65,15 @@ class RemoteHostPolicyTest {
     }
 
     @Test
+    fun loopbackNamesAreNeverRemoteCandidates() {
+        assertFalse(RemoteHostPolicy.isRemoteCandidate("localhost"))
+        assertFalse(RemoteHostPolicy.isRemoteCandidate("computer.localhost"))
+        assertFalse(RemoteHostPolicy.isRemoteCandidate("0123456789abcdef0123456789abcdef.0123456789abcdef0123456789abcdef.iroh.localhost"))
+        assertFalse(RemoteHostPolicy.isAllowed(AccessMode.REMOTE, "computer.localhost"))
+        assertTrue(RemoteHostPolicy.isAllowed(AccessMode.LAN, "computer.localhost"))
+    }
+
+    @Test
     fun warnsOnlyForTailscale() {
         assertTrue(RemoteHostPolicy.needsTailscaleVpnNotice("computer.tail1234.ts.net"))
         assertFalse(RemoteHostPolicy.needsTailscaleVpnNotice("example.cpolar.cn"))

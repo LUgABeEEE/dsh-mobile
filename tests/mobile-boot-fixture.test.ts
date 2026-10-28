@@ -30,7 +30,14 @@ interface OnboardingDialog {
   readonly buttons: readonly { readonly text: string; readonly ariaLabel?: string }[]
 }
 
-function onboardingPhone(dialogs: readonly OnboardingDialog[]) {
+/**
+ * Fake the shared fixture's `[role="dialog"][aria-modal="true"]` first() lookup.
+ * `hiddenModalsBefore` models elements that stay in the DOM ahead of the real
+ * onboarding while hidden, which is exactly what first() would return.
+ */
+function onboardingPhone(dialogs: readonly OnboardingDialog[], { hiddenModalsBefore = [] }: {
+  hiddenModalsBefore?: readonly OnboardingDialog[]
+} = {}) {
   let index = 0
   const clicked: string[] = []
   const waited: string[] = []
@@ -41,16 +48,19 @@ function onboardingPhone(dialogs: readonly OnboardingDialog[]) {
     clicked.push(selected.ariaLabel ?? selected.text)
     index += 1
   }
+  // first() resolves the earliest matching node in DOM order, so a persistent
+  // hidden modal wins over every later dialog and is never consumed.
+  const firstMatch = () => hiddenModalsBefore[0] ?? current()
   const dialog = {
     waitFor: async () => {},
-    count: async () => current() === undefined ? 0 : 1,
-    getAttribute: async () => current()?.label ?? null,
+    count: async () => firstMatch() === undefined ? 0 : 1,
+    getAttribute: async () => firstMatch()?.label ?? null,
     locator: () => ({
-      allTextContents: async () => current()?.buttons.map(button => button.text) ?? [],
+      allTextContents: async () => firstMatch()?.buttons.map(button => button.text) ?? [],
       nth: (button: number) => ({ click: () => click(button) }),
     }),
     getByRole: (_role: string, { name }: { name: RegExp }) => {
-      const matching = current()?.buttons.map((button, buttonIndex) => ({ button, buttonIndex }))
+      const matching = firstMatch()?.buttons.map((button, buttonIndex) => ({ button, buttonIndex }))
         .filter(({ button }) => name.test(button.ariaLabel ?? button.text)) ?? []
       return {
         count: async () => matching.length,
@@ -204,6 +214,30 @@ describe('owned Mobile development fixture', () => {
     ['Preview Notice', ['Approve']],
   ] as const)('refuses unrelated %s choices even when there is one button or a skip-like label', async (label, choices) => {
     const state = onboardingPhone([{ label, buttons: choices.map(text => ({ text })) }])
+    await expect(fixture.dismissOnboarding(state.phone)).rejects.toThrow('Unexpected initial DSH dialog choices')
+    expect(state.clicked).toEqual([])
+  })
+
+  // A hidden element that permanently carries role=dialog/aria-modal="true" is
+  // the product defect that broke the four DSH 0.2.x legs: the real onboarding
+  // follows it in DOM order, so first() lands on an element the user cannot
+  // see. The fixture must keep reporting that, not learn to skip hidden nodes,
+  // or the next component would reintroduce it silently. The owner fixed the
+  // QR viewer to declare its dialog role only while open (see
+  // tests/client-lifecycle.test.ts); this case guards the fixture's refusal.
+  it('refuses a hidden role=dialog element ahead of the real onboarding instead of skipping it', async () => {
+    const state = onboardingPhone([{ label: 'Preview Notice', buttons: [{ text: 'Continue' }] }], {
+      hiddenModalsBefore: [{ label: 'Enlarge the QR code', buttons: [{ text: '×' }] }],
+    })
+    await expect(fixture.dismissOnboarding(state.phone)).rejects.toThrow('Unexpected initial DSH dialog choices')
+    expect(state.clicked).toEqual([])
+    expect(state.waited).toEqual([])
+  })
+
+  it('still refuses a visible unknown dialog when a hidden modal is also present', async () => {
+    const state = onboardingPhone([{ label: 'Permission required', buttons: [{ text: 'Approve' }] }], {
+      hiddenModalsBefore: [{ label: 'Enlarge the QR code', buttons: [{ text: '×' }] }],
+    })
     await expect(fixture.dismissOnboarding(state.phone)).rejects.toThrow('Unexpected initial DSH dialog choices')
     expect(state.clicked).toEqual([])
   })

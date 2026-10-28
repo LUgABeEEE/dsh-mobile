@@ -1,6 +1,6 @@
 {
   "name": "dsh-mobile",
-  "version": "0.6.18",
+  "version": "0.7.0",
   "private": false,
   "description": "DeepSeek Harness 移动端适配与安全访问插件，支持局域网、远程连接、Android App 和手机浏览器。",
   "type": "module",
@@ -60,6 +60,8 @@
     "docs/SELF_HOSTED_ORIGIN.en.md",
     "docs/CADDY_MANAGED.md",
     "docs/CADDY_MANAGED.en.md",
+    "docs/IROH.md",
+    "docs/IROH.en.md",
     "docs/CLIENT_MODULES.md",
     "docs/CLIENT_MODULES.en.md",
     "docs/TRUSTED_NETWORKS.md",
@@ -75,7 +77,10 @@
     "LICENSE",
     "FUNNEL_THIRD_PARTY_LICENSES.txt",
     "SECURITY.md",
-    "THIRD_PARTY_NOTICES.md"
+    "THIRD_PARTY_NOTICES.md",
+    "native/iroh-host/NOTICE.dsh-mobile-iroh",
+    "native/iroh-host/LICENSE.dsh-mobile-iroh",
+    "native/iroh-host/LICENSE.dsh-tether"
   ],
   "dsh": {
     "bundle": {
@@ -96,6 +101,7 @@
   "scripts": {
     "build": "tsdown && node ./scripts/check-client-bundle.mjs",
     "build:funnel-host": "node ./scripts/build-funnel-host.mjs",
+    "build:iroh-host": "node ./scripts/build-iroh-host.mjs",
     "check:funnel-licenses": "node ./scripts/funnel-third-party-licenses.mjs",
     "check:funnel-licenses:full": "node ./scripts/funnel-third-party-licenses.mjs --full-check",
     "check:mobile-release": "node ./scripts/check-mobile-release.mjs",
@@ -111,6 +117,7 @@
     "smoke:cpolar-config": "node ./scripts/smoke-cpolar-config.mjs",
     "smoke:mobile-sidebar": "node ./scripts/smoke-mobile-sidebar.mjs",
     "smoke:custom-assets": "node ./scripts/smoke-mobile-custom-assets.mjs",
+    "smoke:session-restart": "node ./scripts/smoke-session-restart.mjs",
     "smoke:blob-media": "node ./scripts/smoke-blob-media.mjs",
     "smoke:question-fixes": "node ./scripts/smoke-question-fixes.mjs",
     "smoke:native-layout": "node ./scripts/smoke-native-mobile-layout.mjs",
@@ -147,7 +154,10 @@
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "prepack": "npm run check:version && npm run check:docs && npm run check:funnel-licenses && npm run build",
-    "verify": "npm run check:version && npm run check:docs && npm run check:companion-package && npm run check:funnel-licenses && npm run check:mobile-release && npm run typecheck && npm run test && npm run build && npm pack --dry-run"
+    "verify": "npm run check:version && npm run check:docs && npm run check:companion-package && npm run check:funnel-licenses && npm run check:mobile-release && npm run typecheck && npm run test && npm run build && npm pack --dry-run",
+    "smoke:plugin-portal-layers": "node ./scripts/smoke-plugin-portal-layers.mjs",
+    "smoke:opaque-chrome": "node ./scripts/smoke-opaque-chrome.mjs",
+    "smoke:rightbar-fullscreen": "node ./scripts/smoke-rightbar-fullscreen.mjs"
   },
   "engines": {
     "node": "^22.19.0 || >=24.0.0"
@@ -233,13 +243,12 @@
     "@deepseek-ai/dsh-session": "0.1.7-rc.2",
     "@deepseek-ai/dsh-timeout": "0.1.7-rc.2",
     "@deepseek-ai/dsh-typert-protocol": "0.1.7-rc.2",
-    "@types/js-yaml": "^4.0.9",
     "@types/node": "^26.5.1",
     "@types/qrcode": "^1.5.5",
     "@types/react": "~18.3.1",
     "@types/ws": "8.18.2",
     "core-js": "^3.50.0",
-    "js-yaml": "^4.3.2",
+    "js-yaml": "^5.4.2",
     "playwright": "1.63.0",
     "react": "^18.2.0",
     "tsdown": "^0.23.0",

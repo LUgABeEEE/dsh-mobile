@@ -16,9 +16,42 @@ The optional [cloudflared](https://github.com/cloudflare/cloudflared) client is 
 
 The optional managed Caddy component is not included in the npm package or Android App. Since plugin 0.6.9, users on Windows/Linux x64 can explicitly confirm an on-demand download of the fixed [DSH Mobile component distribution](https://github.com/saya-ch/dsh-mobile/releases/tag/caddy-component-2.11.7-tencentcloud-0.4.3-r1); its source, exact size and SHA-256 are pinned in the plugin. This distribution builds [Caddy v2.11.7](https://github.com/caddyserver/caddy/blob/v2.11.7/LICENSE), under Apache License 2.0, with [caddy-dns/tencentcloud v0.4.3](https://github.com/caddy-dns/tencentcloud/blob/v0.4.3/LICENSE), under the MIT License. The component release supplies each platform's exact embedded dependency manifest, Go build metadata and complete third-party license/notice texts as separate assets. It is a DSH Mobile build, not an upstream Caddy release or a dynamically generated download. Existing user-managed proxies are separate from this optional component.
 
+The experimental Rust transport is adapted from [dsh-mobile-iroh](https://github.com/saya-ch/dsh-mobile-iroh), copyright 2026 Guangqi Zhang, under the MIT License, and the host baseline preserves zexadev's MIT-licensed dsh-tether attribution. The source notices and complete licenses are retained under `native/iroh-host/` and included with the npm package. The optional sidecar is not bundled: explicit installation reuses a verified companion copy or downloads the size- and SHA-256-pinned companion release payload. Enabling the channel alone does not download it.
+
 The npm package declares direct runtime dependencies on [Schemastery](https://github.com/shigma/schemastery) `^3.18.1`, [@noble/hashes](https://github.com/paulmillr/noble-hashes) `1.8.0`, [bonjour-service](https://github.com/onlxltd/bonjour-service) `1.4.4`, [eventsource-parser](https://github.com/rexxars/eventsource-parser) `3.1.0`, [qrcode](https://github.com/soldair/node-qrcode) `^1.5.4`, [selfsigned](https://github.com/jfromaniello/selfsigned) `^5.5.0`, and [ws](https://github.com/websockets/ws) `8.22.0`. These packages are distributed under the MIT License; the release checkout's exact transitive versions appear in the attached CycloneDX npm SBOM.
 
 The Android App runtime contains [Kotlin standard library](https://github.com/JetBrains/kotlin) `2.1.0`, [kotlinx.coroutines](https://github.com/Kotlin/kotlinx.coroutines) `1.6.4`, [JetBrains annotations](https://github.com/JetBrains/java-annotations) `13.0`, [AndroidX Core](https://developer.android.com/jetpack/androidx/releases/core) `1.15.0`, [AndroidX WebKit](https://developer.android.com/jetpack/androidx/releases/webkit) `1.17.1`, their AndroidX transitive components, [Guava listenablefuture](https://github.com/google/guava) `1.0`, and [ZXing Core](https://github.com/zxing/zxing) `3.5.4`. These runtime libraries are distributed under the Apache License 2.0; the exact resolved tree is attached to each release as `dsh-mobile-android-v<version>-dependencies.txt`.
+
+The full Android APK packages `libdsh_mobile_iroh_android_transport.so` for arm64-v8a and x86_64, from `native/iroh-android-transport` and `native/iroh-core`. It includes the matching `org.rustls:rustls-platform-verifier` JVM component from an immutable official Maven archive, selecting its version from the Android shim entry in `native/Cargo.lock`. These transport sources retain their MIT license; the surrounding Android shell remains Apache-2.0. The compatibility APK uses `-PirohNative=false` and contains neither native libraries nor the JVM verifier dependency; it retains installation support for 32-bit devices. Both builds include the third-party notices asset.
+
+### Rust workspace dependency metadata
+
+The inventory made with `cargo metadata --locked --manifest-path native/Cargo.toml` describes the whole Rust workspace, including target-specific and development dependencies. It is not an inventory of code linked into either Android ABI, nor a complete set of license/notice texts for distribution. The exact versions remain in `native/Cargo.lock`.
+
+Before publishing a native-enabled APK, identify the dependencies actually shipped for each target, retain the applicable license and notice texts with the distribution, and verify any source-availability obligations. The source MIT notices retained here do not by themselves complete that release check.
+
+#### Where the complete license texts live
+
+The upstream `dsh-mobile-iroh` companion package ships a generated
+`native/THIRD_PARTY_NOTICES.txt` (~2.9 MB). It lists each dependency's declared
+license, crates.io source and the full reproduced license text, and its header states
+it covers build-time dependencies for the Windows x64, Linux x64, Android arm64 and
+Android x64 targets. The two entries that need more than a one-line note are present in
+full:
+
+- **`attohttpc` 0.30.1** and **`option-ext` 0.2.0** — complete Mozilla Public License
+  2.0 text. MPL-2.0 is file-level copyleft: static linking and distribution inside a
+  larger work is permitted, the MPL-covered source stays available under MPL-2.0 from
+  the sources named there, and no DSH Mobile source file is derived from them.
+- **`r-efi`** offers `MIT OR Apache-2.0 OR LGPL-2.1-or-later`; the permissive option is
+  taken, so LGPL-2.1 does not apply.
+
+Both APK variants bundle this notice at `assets/THIRD_PARTY_NOTICES.txt`, based on
+the published companion package with both transport source licenses and the MIT
+text for Windows build dependency `winapi-util` added from their sources. `node scripts/check-iroh-notices.mjs`
+checks coverage of each Android ABI's normal/build graph. When `native/Cargo.lock`
+changes, regenerate the notice and replace this asset so the shipped texts stay current. See the [iroh
+guide](docs/IROH.en.md) for the full and compatibility APK requirements.
 
 ## Notification identity hashing
 

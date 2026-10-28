@@ -38,6 +38,11 @@ internal class NativeSessionCookieInstaller<K : Any, C : Any>(
         }
     }
 
+    /** Expire cookies without a currency check; used for revocation cleanup. */
+    fun clear(key: K, cookies: List<C>, onFailure: () -> Unit, complete: () -> Unit = {}) {
+        install(key, cookies, { true }, onFailure, complete)
+    }
+
     private fun installNext(work: Work<K, C>, index: Int) {
         if (!work.started) {
             if (!work.isCurrent()) {

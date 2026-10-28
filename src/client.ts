@@ -22,6 +22,7 @@ import { EXTENSION_RECOVERY_STYLES, installExtensionRecoveryControl } from './ex
 import { invokeBoundNativeCapability } from './native-capability.js'
 import { pickBrowserFiles } from './browser-file-picker.js'
 import { createMobileAssetLoadReporter, ownsMobileCustomization, readMobileAssetText, type MobileAssetLoadFailure } from './mobile-custom-assets.js'
+import { installCustomizationNotice } from './mobile-customization-notice.js'
 import { EXTENSION_LIMITS, LEGACY_CUSTOM_ASSET_LIMIT } from './extension-limits.js'
 import { installMobileConnectionRecovery, type MobileConnectionState } from './client-recovery.js'
 import { installMobileUiLocalePersistence } from './mobile-ui-locale.js'
@@ -41,11 +42,11 @@ export type { MobileControlLocale } from './client-messages.js'
  * host falls back to the built-in provider, so a missing name would silently
  * render another provider's wording instead of failing loudly.
  */
-export type MobileRemoteProvider = 'tailscale' | 'cpolar' | 'cloudflared' | 'frp' | 'origin'
+export type MobileRemoteProvider = 'tailscale' | 'cpolar' | 'cloudflared' | 'frp' | 'origin' | 'iroh'
 
 /** Map a host-reported provider onto the UI union, defaulting to the built-in one. */
 export function parseMobileRemoteProvider(value: unknown): MobileRemoteProvider {
-  return value === 'cpolar' || value === 'cloudflared' || value === 'frp' || value === 'origin'
+  return value === 'cpolar' || value === 'cloudflared' || value === 'frp' || value === 'origin' || value === 'iroh'
     ? value
     : 'tailscale'
 }
@@ -767,6 +768,23 @@ const REMOTE_ERROR_MESSAGE_KEYS: Readonly<Record<string, string>> = {
   frp_discovery_invalid: 'frpDiscoveryInvalid',
   frp_stopped: 'frpStopped',
   frp_exited: 'frpExited',
+  iroh_companion_missing: 'irohCompanionMissing',
+  iroh_data_directory_invalid: 'irohDataDirectoryInvalid',
+  iroh_sidecar_invalid: 'irohSidecarInvalid',
+  iroh_download_failed: 'irohDownloadFailed',
+  iroh_download_size_mismatch: 'irohDownloadFailed',
+  iroh_download_hash_mismatch: 'irohSidecarInvalid',
+  iroh_download_timeout: 'irohTimeout',
+  iroh_platform_unsupported: 'irohPlatformUnsupported',
+  iroh_identity_failed: 'irohIdentityFailed',
+  iroh_identity_timeout: 'irohIdentityFailed',
+  iroh_identity_invalid: 'irohIdentityFailed',
+  iroh_launch_failed: 'irohLaunchFailed',
+  iroh_start_timeout: 'irohTimeout',
+  iroh_start_failed: 'irohLaunchFailed',
+  iroh_exited: 'irohExited',
+  iroh_not_ready: 'irohNotReady',
+  iroh_pairing_failed: 'irohPairingFailed',
   frp_server_address_invalid: 'frpServerAddressInvalid',
   frp_server_port_invalid: 'frpServerPortInvalid',
   frp_token_invalid: 'frpTokenInvalid',
@@ -846,7 +864,7 @@ export function localizedDiagnosticEntryCopy(
   if (templates === undefined) return serverCopy
   const providerNames: Record<string, string> = {
     tailscale: 'Tailscale Funnel', cpolar: 'cpolar', cloudflared: 'cloudflared',
-    frp: t('frpName'), origin: t('originName'),
+    frp: t('frpName'), origin: t('originName'), iroh: t('irohName'),
   }
   const providerId = typeof facts.provider === 'string' ? facts.provider : ''
   const controllerCode = typeof facts.controllerCode === 'string' ? facts.controllerCode : ''
@@ -1138,7 +1156,13 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
   const originChoiceName = element('strong'); originChoiceName.textContent = t('originName')
   const originChoiceDescription = element('span', 'dsh-mobile-control__provider-description'); originChoiceDescription.textContent = t('originDescription')
   originChoiceTop.append(originChoiceName); originChoice.append(originChoiceTop, originChoiceDescription)
-  selfHostedBody.append(frpChoice, originChoice); selfHosted.append(selfHostedSummary, selfHostedBody)
+  const irohChoice = element('button', 'dsh-mobile-control__provider is-iroh'); irohChoice.type = 'button'; irohChoice.setAttribute('aria-pressed', 'false')
+  const irohChoiceTop = element('span', 'dsh-mobile-control__provider-top')
+  const irohChoiceName = element('strong'); irohChoiceName.textContent = t('irohName')
+  const irohChoiceBadge = element('span', 'dsh-mobile-control__provider-badge is-iroh'); irohChoiceBadge.textContent = t('irohExperimental')
+  const irohChoiceDescription = element('span', 'dsh-mobile-control__provider-description'); irohChoiceDescription.textContent = t('irohDescription')
+  irohChoiceTop.append(irohChoiceName, irohChoiceBadge); irohChoice.append(irohChoiceTop, irohChoiceDescription)
+  selfHostedBody.append(frpChoice, originChoice, irohChoice); selfHosted.append(selfHostedSummary, selfHostedBody)
   providerSection.append(providerHeading, providerInfo, providerChoices, selfHosted)
   const frpSetup = element('section', 'dsh-mobile-control__frp-setup'); frpSetup.hidden = true
   const frpSetupTitle = element('h3', 'dsh-mobile-control__section-title'); frpSetupTitle.textContent = t('prepareFrp')
@@ -1355,7 +1379,54 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
   const providerSetupMeta = element('div', 'dsh-mobile-control__stage-meta'); providerSetupMeta.append(providerSetupName, remoteStateBadge)
   providerSetupHeader.append(providerSetupHeading, providerSetupMeta)
   const providerSetupBody = element('div', 'dsh-mobile-control__provider-setup-body')
-  providerSetupBody.append(cpolarSetup, cloudflaredSetup, frpSetup, originSetup, tailscaleInfo)
+  const irohSetup = element('section', 'dsh-mobile-control__frp-setup'); irohSetup.hidden = true
+  const irohSetupTitle = element('h3', 'dsh-mobile-control__section-title'); irohSetupTitle.textContent = t('prepareIroh')
+  const irohPhaseNote = element('p', 'dsh-mobile-control__component-note'); irohPhaseNote.textContent = t('irohPhaseNote')
+  const irohComponentStatus = element('p', 'dsh-mobile-control__component-status'); irohComponentStatus.textContent = t('checkingComponent'); irohComponentStatus.setAttribute('role', 'status'); irohComponentStatus.setAttribute('aria-live', 'polite')
+  const irohInstall = element('button', 'dsh-mobile-control__primary'); irohInstall.type = 'button'; irohInstall.textContent = t('installOfficial')
+  const irohInstallProgress = element('progress', 'dsh-mobile-control__progress'); irohInstallProgress.hidden = true; irohInstallProgress.setAttribute('aria-hidden', 'true')
+  const irohPairing = element('div', 'dsh-mobile-control__ws-paths')
+  const irohPairingTitle = element('p', 'dsh-mobile-control__component-status'); irohPairingTitle.textContent = t('irohPairingTitle')
+  const irohPair = element('button', 'dsh-mobile-control__primary'); irohPair.type = 'button'; irohPair.textContent = t('generateIrohQr')
+  const irohQr = element('div', 'dsh-mobile-control__qr is-expandable'); irohQr.hidden = true
+  const irohPairStatus = element('p', 'dsh-mobile-control__component-status')
+  const irohCopyDescriptor = element('button', 'dsh-mobile-control__secondary'); irohCopyDescriptor.type = 'button'; irohCopyDescriptor.textContent = t('copyPairLink'); irohCopyDescriptor.hidden = true
+  irohPairing.append(irohPairingTitle, irohPair, irohQr, irohPairStatus, irohCopyDescriptor)
+  const irohDetails = element('details', 'dsh-mobile-control__details')
+  const irohDetailsSummary = element('summary'); irohDetailsSummary.textContent = t('componentDetails')
+  const irohDetailsBody = element('div', 'dsh-mobile-control__details-body')
+  const irohDetailsText = element('p'); irohDetailsText.textContent = t('irohComponentNote')
+  const irohInstallNote = element('p'); irohInstallNote.textContent = t('irohInstallNote')
+  const irohStorage = element('code', 'dsh-mobile-control__storage'); irohStorage.textContent = t('pluginPrivateDirectory')
+  const irohOfficial = element('a', 'dsh-mobile-control__text-link'); irohOfficial.href = 'https://www.npmjs.com/package/dsh-mobile-iroh'; irohOfficial.target = '_blank'; irohOfficial.rel = 'noopener noreferrer'; irohOfficial.textContent = t('officialDownload')
+  irohDetailsBody.append(irohDetailsText, irohInstallNote, irohStorage, irohOfficial); irohDetails.append(irohDetailsSummary, irohDetailsBody)
+  irohSetup.append(irohSetupTitle, irohPhaseNote, irohComponentStatus, irohInstall, irohInstallProgress, irohPairing, irohDetails)
+  providerSetupBody.append(cpolarSetup, cloudflaredSetup, frpSetup, originSetup, irohSetup, tailscaleInfo)
+  // Fullscreen viewer for the dense iroh pairing QR: the encoded descriptor
+  // is far too small to scan reliably at inline size.
+  const irohQrZoom = element('div', 'dsh-mobile-control__qr-zoom'); irohQrZoom.hidden = true
+  const irohQrZoomImage = element('img', 'dsh-mobile-control__qr-zoom-image'); irohQrZoomImage.alt = t('pairingQr')
+  const irohQrZoomClose = element('button', 'dsh-mobile-control__qr-zoom-close'); irohQrZoomClose.type = 'button'; irohQrZoomClose.textContent = '×'; irohQrZoomClose.setAttribute('aria-label', t('closeEnlargedQr'))
+  // The viewer is mounted with the rest of the control root, so its dialog
+  // semantics may only exist while it is actually open. A hidden element that
+  // permanently claims role=dialog/aria-modal makes every consumer of the
+  // current-modal query (this plugin, third-party scripts, mobile fixtures)
+  // observe a modal that the user cannot see. The attributes are added on open
+  // and withdrawn on close, including the reset path below.
+  const setIrohQrZoomOpen = (open: boolean): void => {
+    if (open) {
+      irohQrZoom.setAttribute('role', 'dialog')
+      irohQrZoom.setAttribute('aria-modal', 'true')
+      irohQrZoom.setAttribute('aria-label', t('enlargeQr'))
+    } else {
+      irohQrZoom.removeAttribute('role')
+      irohQrZoom.removeAttribute('aria-modal')
+      irohQrZoom.removeAttribute('aria-label')
+    }
+    irohQrZoom.hidden = !open
+  }
+  irohQrZoom.append(irohQrZoomImage, irohQrZoomClose)
+  root.append(irohQrZoom)
   const remoteAccess = element('div', 'dsh-mobile-control__access'); remoteAccess.hidden = true
   const remoteAccessLabel = element('span', 'dsh-mobile-control__access-label'); remoteAccessLabel.textContent = t('remoteAddress')
   const remoteAccessLink = element('a', 'dsh-mobile-control__access-link'); remoteAccessLink.target = '_blank'; remoteAccessLink.rel = 'noreferrer'; remoteAccess.append(remoteAccessLabel, remoteAccessLink)
@@ -1382,6 +1453,8 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
   const remotePairLink = element('p', 'dsh-mobile-control__status'); remotePairLink.hidden = true
   let activeRemotePairUrl = ''
   let activeRemotePairExpiresAt = 0
+  let activeIrohDescriptor = ''
+  let activeIrohQrSvg = ''
   remoteActions.append(remoteToggle, remoteLogin, remoteReconnect, remotePair, remoteCopyLink)
   const remoteManageRow = element('div', 'dsh-mobile-control__manage-row')
   const remoteDevices = element('button', 'dsh-mobile-control__manage'); remoteDevices.type = 'button'; remoteDevices.textContent = t('manageRemoteDevices'); remoteDevices.disabled = true
@@ -1611,6 +1684,9 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
   let latestRemoteState: Record<string, unknown> = {}
   let frpInstalled = false
   let frpConfigured = false
+  let irohInstalled = false
+  /** True while a companion checksum verification is in flight; polls must not wipe its progress. */
+  let irohVerifying = false
   let frpLayoutInitialized = false
   let frpDownloadSize = '14.0'
   let configuredFrpServer = ''
@@ -1863,6 +1939,7 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
     const cloudflared = remoteProvider === 'cloudflared'
     const frp = remoteProvider === 'frp'
     const origin = remoteProvider === 'origin'
+    const iroh = remoteProvider === 'iroh'
     // Current-connection copy follows the controller, never the unsaved form mode.
     const managedOrigin = origin && data.originMode === 'managed'
     const tailscale = remoteProvider === 'tailscale'
@@ -1880,17 +1957,20 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
     cloudflaredChoice.tabIndex = cloudflared ? 0 : -1
     frpChoice.setAttribute('aria-pressed', String(frp))
     originChoice.setAttribute('aria-pressed', String(origin))
-    providerSetupName.textContent = cpolar ? 'cpolar' : cloudflared ? 'cloudflared' : frp ? t('frpName') : origin ? t(managedOrigin ? 'caddyName' : 'originName') : 'Tailscale Funnel'
+    irohChoice.setAttribute('aria-pressed', String(iroh))
+    providerSetupName.textContent = cpolar ? 'cpolar' : cloudflared ? 'cloudflared' : frp ? t('frpName') : origin ? t(managedOrigin ? 'caddyName' : 'originName') : iroh ? t('irohName') : 'Tailscale Funnel'
     tailscaleChoice.disabled = remoteProviderBusy
     cpolarChoice.disabled = remoteProviderBusy
     cloudflaredChoice.disabled = remoteProviderBusy
     frpChoice.disabled = remoteProviderBusy
     originChoice.disabled = remoteProviderBusy
+    irohChoice.disabled = remoteProviderBusy
     cpolarSetup.hidden = !cpolar
     cloudflaredSetup.hidden = !cloudflared
     frpSetup.hidden = !frp
     originSetup.hidden = !origin
-    if (frp || origin) selfHosted.open = true
+    irohSetup.hidden = !iroh
+    if (frp || origin || iroh) selfHosted.open = true
     tailscaleInfo.hidden = !tailscale
     remoteReset.textContent = tailscale ? t('resetRemoteLogin') : t('resetRemoteDevices')
     const providers = data.providers !== null && typeof data.providers === 'object' ? data.providers as Record<string, unknown> : {}
@@ -2105,6 +2185,44 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
       frpVpsGroup.open = !frpConfigured
       frpLayoutInitialized = true
     }
+    const irohProvider = providers.iroh !== null && typeof providers.iroh === 'object' ? providers.iroh as Record<string, unknown> : {}
+    const irohComponent = irohProvider.component !== null && typeof irohProvider.component === 'object'
+      ? irohProvider.component as Record<string, unknown>
+      : {}
+    irohInstalled = irohComponent.installed === true
+    const irohSupported = irohComponent.supported !== false
+    const irohComponentError = typeof irohComponent.errorCode === 'string' ? irohComponent.errorCode : ''
+    const irohVersion = typeof irohComponent.version === 'string' ? irohComponent.version : ''
+    const irohDownloadBytes = typeof irohComponent.downloadBytes === 'number' ? irohComponent.downloadBytes : 0
+    const irohStoragePath = typeof irohComponent.storagePath === 'string' ? irohComponent.storagePath : `DSH Mobile ${t('pluginPrivateDirectory')}`
+    irohInstall.hidden = irohInstalled || !irohSupported
+    if (irohVerifying) {
+      // A poll that lands mid-verification must not wipe the in-flight
+      // progress: the checksum check is one quick round trip, so the bar
+      // stays indeterminate until this flag clears.
+      irohInstallProgress.hidden = false
+      irohInstall.disabled = true
+      irohInstall.textContent = t('installingIroh')
+      irohInstall.setAttribute('aria-busy', 'true')
+      irohComponentStatus.textContent = t('installingIroh')
+    } else {
+      irohInstallProgress.hidden = true
+      irohInstall.setAttribute('aria-busy', 'false')
+      irohInstall.disabled = remoteProviderBusy
+      irohInstall.textContent = irohDownloadBytes > 0
+        ? t('installWithSize', { size: formatMegabytes(irohDownloadBytes) })
+        : t('installOfficial')
+      irohComponentStatus.textContent = !irohSupported
+        ? t('irohPlatformUnsupported')
+          : irohInstalled ? t('installed') + (irohVersion === '' ? '' : ` · ${irohVersion}`)
+          // A sidecar that exists but failed verification must not be
+          // reported as merely absent: that sends the user to install over
+          // something broken without naming it.
+          : irohComponentError === 'irohSidecarInvalid' ? t('irohSidecarInvalid')
+            : t('irohUnavailable')
+    }
+    irohStorage.textContent = irohStoragePath
+    irohStorage.title = irohStoragePath
     const originProvider = providers.origin !== null && typeof providers.origin === 'object' ? providers.origin as Record<string, unknown> : {}
     const originConfiguration = originProvider.configuration !== null && typeof originProvider.configuration === 'object'
       ? originProvider.configuration as Record<string, unknown> : {}
@@ -2200,14 +2318,14 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
       off: t('remoteOff'),
       unavailable: cpolar ? t('remoteUnavailableCpolar')
         : cloudflared ? t('remoteUnavailableCloudflared')
-          : frp ? t('remoteUnavailableFrp') : origin ? t('originUnavailable') : t('remoteUnavailableTailscale'),
+          : frp ? t('remoteUnavailableFrp') : origin ? t('originUnavailable') : iroh ? t('irohUnavailable') : t('remoteUnavailableTailscale'),
       starting: cpolar ? t('remoteStartingCpolar')
         : cloudflared ? t('remoteStartingCloudflared')
-          : frp ? t('remoteStartingFrp') : origin ? t('originStarting') : t('remoteStartingTailscale'),
+          : frp ? t('remoteStartingFrp') : origin ? t('originStarting') : iroh ? t('irohStarting') : t('remoteStartingTailscale'),
       'needs-login': t('remoteNeedsLogin'),
       connecting: cpolar ? t('remoteConnectingCpolar')
         : cloudflared ? t('remoteConnectingCloudflared')
-          : frp ? t('remoteConnectingFrp') : t('remoteConnectingTailscale'),
+          : frp ? t('remoteConnectingFrp') : iroh ? t('irohConnecting') : t('remoteConnectingTailscale'),
       ready: origin ? t(managedOrigin ? 'caddyVerified' : 'originReady') : t('remoteReady'),
       error: t('remoteError'),
     }
@@ -2227,7 +2345,7 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
     const originPrepared = data.originMode === 'managed' ? caddySupported && caddyInstalled && caddyConfiguration.configured === true : originConfigured && !caddyModeManagedSelected
     const providerPrepared = cpolar ? cpolarInstalled && cpolarConfigured
       : cloudflared ? cloudflaredInstalled
-        : frp ? frpInstalled && frpConfigured : origin ? originPrepared : true
+        : frp ? frpInstalled && frpConfigured : origin ? originPrepared : iroh ? irohInstalled : true
     remoteToggle.disabled = remoteProviderBusy || (!providerPrepared && !(origin && remoteRunning))
     remoteLogin.hidden = !tailscale || state !== 'needs-login' || remoteLoginUrl === ''
     remoteReconnect.hidden = needsFunnelSetup || (state !== 'error' && state !== 'unavailable')
@@ -2236,6 +2354,25 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
     remotePair.disabled = !remoteReady || remoteProviderBusy
     remoteCopyLink.disabled = !remoteReady || remoteProviderBusy
     remoteDevices.disabled = !remoteReady || remoteProviderBusy
+    // The generic pair link points at the selected provider's origin. Under
+    // iroh that origin only resolves inside the iroh transport while the app
+    // expects the pairing descriptor above, so the generic pair actions would
+    // only strand a scanner: hide them while iroh owns the remote slot.
+    remotePair.hidden = iroh
+    remoteCopyLink.hidden = iroh
+    if (iroh) {
+      remoteQr.hidden = true
+      remotePairLink.hidden = true
+    }
+    irohPair.disabled = !remoteReady || !iroh || remoteProviderBusy
+    if ((!iroh || !remoteReady) && activeIrohDescriptor !== '') {
+      activeIrohDescriptor = ''
+      activeIrohQrSvg = ''
+      showQr('', irohQr)
+      setIrohQrZoomOpen(false)
+      irohCopyDescriptor.hidden = true
+      irohPairStatus.textContent = ''
+    }
     if (origin) { remoteReconnect.disabled = remoteProviderBusy || remoteReconnectBusy; remoteReset.disabled = remoteProviderBusy }
     else remoteReset.disabled = false
     if (!remoteReady) {
@@ -2296,9 +2433,10 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
     cloudflaredChoice.disabled = true
     frpChoice.disabled = true
     originChoice.disabled = true
+    irohChoice.disabled = true
     remoteStatus.textContent = provider === 'cpolar' ? t('switchingCpolar')
       : provider === 'cloudflared' ? t('switchingCloudflared')
-        : provider === 'frp' ? t('switchingFrp') : provider === 'origin' ? t('switchingOrigin') : t('switchingTailscale')
+        : provider === 'frp' ? t('switchingFrp') : provider === 'origin' ? t('switchingOrigin') : provider === 'iroh' ? t('switchingIroh') : t('switchingTailscale')
     void controlRequestJson('/api/mobile-access/remote/provider', { method: 'POST', body: JSON.stringify({ provider }) })
       .then(renderRemote, error => { remoteFailureText = remoteFailureTextFor(error, 'requestFailed'); remoteStatus.textContent = remoteFailureText })
       .finally(() => { remoteProviderBusy = false; loadRemote() })
@@ -2308,6 +2446,86 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
   cloudflaredChoice.addEventListener('click', () => { chooseRemoteProvider('cloudflared') })
   frpChoice.addEventListener('click', () => { chooseRemoteProvider('frp') })
   originChoice.addEventListener('click', () => { chooseRemoteProvider('origin') })
+  irohChoice.addEventListener('click', () => { chooseRemoteProvider('iroh') })
+  irohInstall.addEventListener('click', () => {
+    if (remoteProviderBusy) return
+    const accepted = window.confirm(t('irohInstallConfirm'))
+    if (!accepted) return
+    remoteProviderBusy = true
+    irohVerifying = true
+    irohInstall.disabled = true
+    irohInstall.textContent = t('installingIroh')
+    irohInstall.setAttribute('aria-busy', 'true')
+    irohInstallProgress.hidden = false
+    irohComponentStatus.textContent = t('installingIroh')
+    remoteStatus.textContent = t('installingIroh')
+    void controlRequestJson('/api/mobile-access/remote/iroh/component/install', { method: 'POST', body: JSON.stringify({ confirm: true }) }, LONG_CONTROL_REQUEST_TIMEOUT_MS)
+      .then(renderRemote, error => {
+        remoteFailureText = remoteFailureTextFor(error, 'installFailed')
+        remoteStatus.textContent = remoteFailureText
+        // Keep the failure next to the button too: the shared status line
+        // sits far above this section.
+        irohComponentStatus.textContent = remoteFailureText
+      })
+      .finally(() => { remoteProviderBusy = false; irohVerifying = false; loadRemote() })
+  })
+  const openIrohQrZoom = (): void => {
+    if (activeIrohQrSvg === '' || irohQr.hidden) return
+    irohQrZoomImage.src = `data:image/svg+xml;base64,${btoa(activeIrohQrSvg)}`
+    setIrohQrZoomOpen(true)
+    irohQrZoomClose.focus()
+  }
+  const closeIrohQrZoom = (): void => {
+    setIrohQrZoomOpen(false)
+    if (!irohQr.hidden) irohQr.focus()
+  }
+  irohQr.setAttribute('role', 'button')
+  irohQr.setAttribute('tabindex', '0')
+  irohQr.setAttribute('aria-label', t('enlargeQr'))
+  irohQr.addEventListener('click', openIrohQrZoom)
+  irohQr.addEventListener('keydown', event => {
+    if (event.key !== 'Enter' && event.key !== ' ') return
+    event.preventDefault()
+    openIrohQrZoom()
+  })
+  irohQrZoom.addEventListener('click', closeIrohQrZoom)
+  irohQrZoomClose.addEventListener('click', closeIrohQrZoom)
+  irohQrZoom.addEventListener('keydown', event => {
+    if (event.key !== 'Escape') return
+    closeIrohQrZoom()
+  })
+  const openIrohPairing = (): Promise<void> => controlRequestJson('/api/mobile-access/remote/iroh/pairing/begin', { method: 'POST', body: '{}' }).then(async data => {
+    const record = data as Record<string, unknown>
+    const qrSvg = typeof record.qrSvg === 'string' ? record.qrSvg : ''
+    const code = typeof record.irohCode === 'string' ? record.irohCode : ''
+    showQr(qrSvg, irohQr)
+    if (qrSvg === '' || code === '') { activeIrohQrSvg = ''; irohPairStatus.textContent = t('keyGenerationFailed'); return }
+    activeIrohQrSvg = qrSvg
+    // The QR and the copy action share the same one-time window. Re-copying
+    // cannot invalidate a code the phone may already be scanning.
+    const fields = ['version', 'type', 'endpointId', 'origin', 'localPort', 'irohCode', 'gatewayToken', 'caCertificate', 'instanceId', 'expiresAt']
+    const descriptor: Record<string, unknown> = {}
+    for (const field of fields) descriptor[field] = record[field]
+    activeIrohDescriptor = JSON.stringify(descriptor)
+    irohCopyDescriptor.hidden = false
+    irohPairStatus.textContent = t('irohPairingReady', { code })
+  })
+  irohPair.addEventListener('click', () => {
+    if (remoteProviderBusy) return
+    remoteProviderBusy = true
+    irohPair.disabled = true
+    irohPairStatus.textContent = t('loadingRemoteStatus')
+    void openIrohPairing()
+      .catch(error => { remoteFailureText = remoteFailureTextFor(error, 'requestFailed'); irohPairStatus.textContent = remoteFailureText })
+      .finally(() => { remoteProviderBusy = false; loadRemote() })
+  })
+  irohCopyDescriptor.addEventListener('click', () => {
+    if (activeIrohDescriptor === '') return
+    void navigator.clipboard.writeText(activeIrohDescriptor).then(
+      () => { irohPairStatus.textContent = t('linkCopied') },
+      () => { irohPairStatus.textContent = t('remoteQrReady') },
+    )
+  })
   cloudflaredInstall.addEventListener('click', () => {
     if (remoteProviderBusy) return
     const accepted = window.confirm(t('installConfirmCloudflared', { size: cloudflaredDownloadSize }))
@@ -3119,7 +3337,7 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
     remoteSetupRetry.disabled = true
     remoteStatus.textContent = remoteProvider === 'cpolar' ? t('reconnectingCpolar')
       : remoteProvider === 'cloudflared' ? t('reconnectingCloudflared')
-        : remoteProvider === 'frp' ? t('reconnectingFrp') : remoteProvider === 'origin' ? t('reconnectingOrigin') : t('reconnectingTailscale')
+        : remoteProvider === 'frp' ? t('reconnectingFrp') : remoteProvider === 'origin' ? t('reconnectingOrigin') : remoteProvider === 'iroh' ? t('reconnectingIroh') : t('reconnectingTailscale')
     void controlRequestJson('/api/mobile-access/remote/reconnect', { method: 'POST', body: '{}' })
       .then(renderRemote, error => { remoteFailureText = remoteFailureTextFor(error, 'requestFailed'); remoteStatus.textContent = remoteFailureText })
       .finally(() => {
@@ -3213,7 +3431,7 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
     const prompt = remoteProvider === 'cpolar'
       ? t('resetCpolarConfirm')
       : remoteProvider === 'cloudflared' ? t('resetCloudflaredConfirm')
-        : remoteProvider === 'frp' ? t('resetFrpConfirm') : remoteProvider === 'origin' ? t('resetOriginConfirm') : t('resetTailscaleConfirm')
+        : remoteProvider === 'frp' ? t('resetFrpConfirm') : remoteProvider === 'origin' ? t('resetOriginConfirm') : remoteProvider === 'iroh' ? t('resetIrohConfirm') : t('resetTailscaleConfirm')
     if (!window.confirm(prompt)) return
     void controlRequestJson('/api/mobile-access/remote/reset', { method: 'POST', body: JSON.stringify({ confirm: true }) })
       .then(renderRemote, error => { remoteFailureText = remoteFailureTextFor(error, 'requestFailed'); remoteStatus.textContent = remoteFailureText })
@@ -3961,10 +4179,39 @@ export class PerIdActivationLifecycle<T> {
   }
 }
 
-/** Install authenticated mobile customization refresh, retaining loaded legacy assets through temporary failures. */
-export function installCustomAssets(): () => void {
+/**
+ * Install authenticated customization refresh, retaining assets through temporary failures.
+ * @param recovery - optional instance-owned authentication feedback and refresh registration.
+ * @returns synchronous teardown for the customization UI and refresh admission.
+ */
+export function installCustomAssets(recovery?: {
+  readonly rejected: (status: number) => void
+  readonly retry: () => boolean
+  readonly registerRefresh: (refresh: () => void) => () => void
+}): () => void {
   const reporter = createMobileAssetLoadReporter(selectedMobileControlLocale)
+  let refreshNow = (): void => { /* Assigned before the first resource result. */ }
   const customizationOwner = ownsMobileCustomization(document.querySelector('meta[name="dsh-mobile-gateway"][content="authenticated"]') !== null, window.__DSH_MOBILE_FRONTEND__)
+  // A silent failure leaves the user thinking a third-party plugin broke, so the
+  // channel that failed is also shown on screen (issue #298). The action only
+  // claims a recovery when this page can actually request one.
+  const removeNotice = customizationOwner
+    ? installCustomizationNotice(document, {
+      locale: () => {
+        const locale = selectedMobileControlLocale()
+        return locale === 'zh' || locale === 'it' ? locale : 'en'
+      },
+      reconnect: () => {
+        // With a native bridge the recovery owner renews and reconnects; without
+        // one there is nothing this page can do, so do not promise it.
+        const attempted = recovery?.retry() ?? false
+        refreshNow()
+        return attempted
+      },
+      subscribe: listener => reporter.subscribe(listener),
+      message: reason => reporter.message(reason),
+    })
+    : () => {}
   const legacyStyle = element('style'); legacyStyle.dataset.plugin = 'dsh-mobile-custom'; document.head.append(legacyStyle)
   const legacyCssState = { etag: '', modified: '' }
   const previous = window.dshMobile
@@ -3996,7 +4243,12 @@ export function installCustomAssets(): () => void {
     if (reason === 'authentication_required') events?.setEnabled(false)
   }
   const unavailable = (response: Response, signal: AbortSignal, fallback: MobileAssetLoadFailure): void => {
-    failed(response.status === 401 || response.status === 403 ? 'authentication_required' : fallback, signal)
+    const rejectedAuth = response.status === 401 || response.status === 403
+    failed(rejectedAuth ? 'authentication_required' : fallback, signal)
+    // Issue #298: a rejected authenticated request means the Session is gone even
+    // if the live transport still reports `connected`. Ask the single recovery
+    // owner for one renewal instead of waiting for a disconnect that may not come.
+    if (rejectedAuth && !disposed && !signal.aborted) recovery?.rejected(response.status)
     void response.body?.cancel().catch((error: unknown) => {
       // Unread rejected bodies are disposed without replacing the reported HTTP failure.
       void error
@@ -4391,6 +4643,8 @@ export function installCustomAssets(): () => void {
       events?.setEnabled(true)
     }
   })
+  refreshNow = () => { stopRefresh.refresh() }
+  const unregisterRefresh = recovery?.registerRefresh(refreshNow)
   const stopEvents = startExtensionChangeStream(
     () => { stopRefresh.refresh() },
     undefined,
@@ -4418,7 +4672,7 @@ export function installCustomAssets(): () => void {
     false,
   )
   events = stopEvents
-  return () => { disposed = true; reporter.dispose(); stopNativeBack(); stopEvents(); stopRefresh(); started = false; legacyDispose?.(); legacyDispose = undefined; legacyRoot?.remove(); legacyRoot = undefined; legacyStyle.remove(); activations.dispose(); for (const node of styleNodes.values()) node.remove(); styleNodes.clear(); const layer = document.querySelector('[data-dsh-mobile-extension-layer]'); layer?.remove(); for (const host of document.querySelectorAll('[data-dsh-mobile-surface-host]')) host.remove(); if (previous === undefined) delete window.dshMobile; else window.dshMobile = previous }
+return () => { disposed = true; unregisterRefresh?.(); removeNotice(); reporter.dispose(); stopNativeBack(); stopEvents(); stopRefresh(); started = false; legacyDispose?.(); legacyDispose = undefined; legacyRoot?.remove(); legacyRoot = undefined; legacyStyle.remove(); activations.dispose(); for (const node of styleNodes.values()) node.remove(); styleNodes.clear(); const layer = document.querySelector('[data-dsh-mobile-extension-layer]'); layer?.remove(); for (const host of document.querySelectorAll('[data-dsh-mobile-surface-host]')) host.remove(); if (previous === undefined) delete window.dshMobile; else window.dshMobile = previous }
 }
 
 interface LegacyCssState { etag: string; modified: string }
@@ -4463,12 +4717,12 @@ export const CONTROL_STYLES = `
 /* The cloudflared setup section deliberately reuses this card, so
    .dsh-mobile-control__cloudflared-setup is a DOM hook for targeting rather than a
    style rule of its own. */
-.dsh-mobile-control__cpolar-setup{margin:0 0 12px;padding:12px;border:1px solid var(--dsw-alias-border-l2,#dbe1e8);border-radius:13px;background:var(--dsw-alias-bg-layer-2,#fff)}.dsh-mobile-control__cpolar-setup[hidden],.dsh-mobile-control__cpolar-account[hidden],.dsh-mobile-control__details[hidden],.dsh-mobile-control__view.is-remote .dsh-mobile-control__actions[hidden],.dsh-mobile-control__danger[hidden]{display:none}.dsh-mobile-control__component-status,.dsh-mobile-control__component-note{margin:0 0 10px;color:var(--dsw-alias-label-secondary,#606873);font-size:11px;line-height:1.55}.dsh-mobile-control__cpolar-setup>.dsh-mobile-control__primary{width:100%;min-height:44px;padding:9px 12px;border-radius:10px;font:600 12px/1.3 system-ui;cursor:pointer}.dsh-mobile-control__cpolar-account{margin-top:10px}.dsh-mobile-control__link-row{display:flex;flex-wrap:wrap;gap:6px 12px;margin:0 0 10px}.dsh-mobile-control__text-link{color:var(--dsw-alias-label-primary-bluish,#2563eb);font-size:11px;text-decoration:none}.dsh-mobile-control__text-link:hover{text-decoration:underline}.dsh-mobile-control__token-label{display:flex;flex-direction:column;gap:5px;margin:0 0 8px;color:var(--dsw-alias-label-secondary,#606873);font-size:11px}.dsh-mobile-control__token{box-sizing:border-box;width:100%;min-height:44px;padding:9px 10px;border:1px solid var(--dsw-alias-border-l3,#cfd5dd);border-radius:10px;background:var(--dsw-alias-bg-layer-3,var(--dsw-alias-bg-layer-2,#fff));color:var(--dsw-alias-label-primary,#16181d);font:16px/1.4 system-ui}.dsh-mobile-control__cpolar-connect{display:flex;align-items:center;justify-content:center;box-sizing:border-box;width:100%;min-height:44px;padding:10px 14px;border-radius:12px;font:650 13px/1.2 system-ui;cursor:pointer;transition:background-color 160ms ease,border-color 160ms ease,opacity 160ms ease}.dsh-mobile-control__cpolar-connect:hover:not(:disabled){border-color:#1d4ed8;background:#1d4ed8}.dsh-mobile-control__cpolar-connect:active:not(:disabled){border-color:#1e40af;background:#1e40af}.dsh-mobile-control__cpolar-connect:disabled{cursor:wait;opacity:.55}.dsh-mobile-control__details{margin:10px 0 0;border-top:1px solid var(--dsw-alias-border-l2,#e1e5eb);padding-top:9px}.dsh-mobile-control__details>summary{min-height:36px;color:var(--dsw-alias-label-secondary,#606873);font-size:11px;line-height:30px;cursor:pointer}.dsh-mobile-control__details-body{display:flex;flex-wrap:wrap;align-items:center;gap:7px 12px;padding:4px 0}.dsh-mobile-control__details-body p{flex:1 0 100%;margin:0;color:var(--dsw-alias-label-secondary,#606873);font-size:11px;line-height:1.5}.dsh-mobile-control__storage{display:block;flex:1 0 100%;max-width:100%;overflow:hidden;padding:7px 8px;border-radius:8px;background:var(--dsw-alias-bg-layer-1,#f3f5f8);color:var(--dsw-alias-label-secondary,#475569);font:11px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace;text-overflow:ellipsis;white-space:nowrap}.dsh-mobile-control__danger{flex:1 0 100%;min-height:44px;margin-top:3px;padding:7px 10px;border:1px solid var(--dsw-alias-state-error-primary,#dc2626);border-radius:9px;background:transparent;color:var(--dsw-alias-label-primary,#dc2626);font:12px/1.3 system-ui;cursor:pointer}
+.dsh-mobile-control__cpolar-setup{margin:0 0 12px;padding:12px;border:1px solid var(--dsw-alias-border-l2,#dbe1e8);border-radius:13px;background:var(--dsw-alias-bg-layer-2,#fff)}.dsh-mobile-control__cpolar-setup[hidden],.dsh-mobile-control__cpolar-account[hidden],.dsh-mobile-control__details[hidden],.dsh-mobile-control__view.is-remote .dsh-mobile-control__actions[hidden],.dsh-mobile-control__danger[hidden]{display:none}.dsh-mobile-control__component-status,.dsh-mobile-control__component-note{margin:0 0 10px;color:var(--dsw-alias-label-secondary,#606873);font-size:11px;line-height:1.55}.dsh-mobile-control__progress{box-sizing:border-box;width:100%;height:6px;margin:0 0 10px}.dsh-mobile-control__progress[hidden]{display:none}.dsh-mobile-control__cpolar-setup>.dsh-mobile-control__primary{width:100%;min-height:44px;padding:9px 12px;border-radius:10px;font:600 12px/1.3 system-ui;cursor:pointer}.dsh-mobile-control__cpolar-account{margin-top:10px}.dsh-mobile-control__link-row{display:flex;flex-wrap:wrap;gap:6px 12px;margin:0 0 10px}.dsh-mobile-control__text-link{color:var(--dsw-alias-label-primary-bluish,#2563eb);font-size:11px;text-decoration:none}.dsh-mobile-control__text-link:hover{text-decoration:underline}.dsh-mobile-control__token-label{display:flex;flex-direction:column;gap:5px;margin:0 0 8px;color:var(--dsw-alias-label-secondary,#606873);font-size:11px}.dsh-mobile-control__token{box-sizing:border-box;width:100%;min-height:44px;padding:9px 10px;border:1px solid var(--dsw-alias-border-l3,#cfd5dd);border-radius:10px;background:var(--dsw-alias-bg-layer-3,var(--dsw-alias-bg-layer-2,#fff));color:var(--dsw-alias-label-primary,#16181d);font:16px/1.4 system-ui}.dsh-mobile-control__cpolar-connect{display:flex;align-items:center;justify-content:center;box-sizing:border-box;width:100%;min-height:44px;padding:10px 14px;border-radius:12px;font:650 13px/1.2 system-ui;cursor:pointer;transition:background-color 160ms ease,border-color 160ms ease,opacity 160ms ease}.dsh-mobile-control__cpolar-connect:hover:not(:disabled){border-color:#1d4ed8;background:#1d4ed8}.dsh-mobile-control__cpolar-connect:active:not(:disabled){border-color:#1e40af;background:#1e40af}.dsh-mobile-control__cpolar-connect:disabled{cursor:wait;opacity:.55}.dsh-mobile-control__details{margin:10px 0 0;border-top:1px solid var(--dsw-alias-border-l2,#e1e5eb);padding-top:9px}.dsh-mobile-control__details>summary{min-height:36px;color:var(--dsw-alias-label-secondary,#606873);font-size:11px;line-height:30px;cursor:pointer}.dsh-mobile-control__details-body{display:flex;flex-wrap:wrap;align-items:center;gap:7px 12px;padding:4px 0}.dsh-mobile-control__details-body p{flex:1 0 100%;margin:0;color:var(--dsw-alias-label-secondary,#606873);font-size:11px;line-height:1.5}.dsh-mobile-control__storage{display:block;flex:1 0 100%;max-width:100%;overflow:hidden;padding:7px 8px;border-radius:8px;background:var(--dsw-alias-bg-layer-1,#f3f5f8);color:var(--dsw-alias-label-secondary,#475569);font:11px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace;text-overflow:ellipsis;white-space:nowrap}.dsh-mobile-control__danger{flex:1 0 100%;min-height:44px;margin-top:3px;padding:7px 10px;border:1px solid var(--dsw-alias-state-error-primary,#dc2626);border-radius:9px;background:transparent;color:var(--dsw-alias-label-primary,#dc2626);font:12px/1.3 system-ui;cursor:pointer}
 .dsh-mobile-control__danger:hover:not(:disabled),.dsh-mobile-control__device-revoke:hover{background:var(--dsw-alias-interactive-bg-hover-danger,rgb(220 38 38 / 8%))}
 .dsh-mobile-control__frp-setup{margin:0;padding:12px;border:1px solid var(--dsw-alias-border-l2,#dbe1e8);border-radius:13px;background:var(--dsw-alias-bg-layer-2,#fff)}.dsh-mobile-control__frp-setup[hidden]{display:none}.dsh-mobile-control__frp-step{padding:11px 0}.dsh-mobile-control__frp-step + .dsh-mobile-control__frp-step{border-top:1px solid var(--dsw-alias-border-l2,#e1e5eb)}.dsh-mobile-control__frp-step>strong{display:block;margin-bottom:3px;font-size:12px;line-height:1.4}.dsh-mobile-control__frp-step>p{margin:0 0 9px;color:var(--dsw-alias-label-secondary,#606873);font-size:11px;line-height:1.5}.dsh-mobile-control__frp-changes{margin:0 0 9px;padding:0;list-style:none;color:var(--dsw-alias-label-secondary,#606873);font-size:11px;line-height:1.5}.dsh-mobile-control__frp-changes li{position:relative;margin:0;padding-left:12px}.dsh-mobile-control__frp-changes li+li{margin-top:5px}.dsh-mobile-control__frp-changes li::before{content:"•";position:absolute;left:2px;color:var(--dsw-alias-label-tertiary,#98a1ad)}.dsh-mobile-control__frp-step>.dsh-mobile-control__frp-requirement{padding:8px 9px;border-radius:9px;background:var(--dsw-alias-bg-layer-1,#f3f5f8);color:var(--dsw-alias-label-primary,#384152);font-size:11px}.dsh-mobile-control__frp-fields{display:grid;grid-template-columns:minmax(0,1fr) 96px;gap:8px}.dsh-mobile-control__frp-fields>.dsh-mobile-control__field:nth-child(5),.dsh-mobile-control__frp-fields>.dsh-mobile-control__field:nth-child(6){grid-column:1/-1}.dsh-mobile-control__frp-fields>.dsh-mobile-control__field[hidden]{display:none}.dsh-mobile-control__frp-fields select{box-sizing:border-box;width:100%;min-height:44px;padding:9px 32px 9px 10px;border:1px solid var(--dsw-alias-border-l3,#cfd5dd);border-radius:10px;background:var(--dsw-alias-bg-layer-2,#fff);color:var(--dsw-alias-label-primary,#16181d);font:14px/1.4 system-ui}.dsh-mobile-control__frp-fields select:disabled{cursor:not-allowed;opacity:.55}.dsh-mobile-control__frp-hint{margin:0;color:var(--dsw-alias-label-secondary,#606873);font-size:11px;line-height:1.5}.dsh-mobile-control__field{display:flex;min-width:0;flex-direction:column;gap:5px;color:var(--dsw-alias-label-secondary,#606873);font-size:11px}.dsh-mobile-control__field:nth-child(3),.dsh-mobile-control__field:nth-child(4){grid-column:1/-1}.dsh-mobile-control__field input{box-sizing:border-box;width:100%;min-height:44px;padding:9px 10px;border:1px solid var(--dsw-alias-border-l3,#cfd5dd);border-radius:10px;background:var(--dsw-alias-bg-layer-2,#fff);color:var(--dsw-alias-label-primary,#16181d);font:16px/1.4 system-ui}.dsh-mobile-control__frp-action{box-sizing:border-box;width:100%;min-height:44px;padding:9px 12px;border-radius:10px;font:650 12px/1.3 system-ui;cursor:pointer}.dsh-mobile-control__frp-action:disabled{cursor:not-allowed;opacity:.5}.dsh-mobile-control__remote-workspace{margin:0;padding:12px;border:1px solid var(--dsw-alias-border-l2,#dbe1e8);border-radius:15px;background:var(--dsw-alias-bg-layer-1,#f7f8fa)}.dsh-mobile-control__stage-header{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:9px}.dsh-mobile-control__stage-header .dsh-mobile-control__section-title{margin:0}.dsh-mobile-control__stage-meta{display:flex;min-width:0;align-items:center;justify-content:flex-end;gap:5px}.dsh-mobile-control__stage-value{max-width:115px;overflow:hidden;color:var(--dsw-alias-label-primary,#16181d);font:650 11px/1.3 system-ui;text-overflow:ellipsis;white-space:nowrap}.dsh-mobile-control__state-badge{flex:none;padding:3px 7px;border-radius:999px;background:var(--dsw-alias-bg-layer-2,#fff);color:var(--dsw-alias-label-secondary,#606873);font:650 11px/1.25 system-ui}.dsh-mobile-control__state-badge.is-ready{background:var(--dsw-alias-state-success-tertiary,#e6f7f0);color:var(--dsw-alias-label-primary,#087454)}.dsh-mobile-control__state-badge.is-busy{background:var(--dsw-alias-state-business-tertiary,#e8f0ff);color:var(--dsw-alias-label-primary,#1d4ed8)}.dsh-mobile-control__state-badge.is-attention{background:var(--dsw-alias-state-warn-tertiary,#fff4dc);color:var(--dsw-alias-label-primary,#935100)}.dsh-mobile-control__remote-workspace>.dsh-mobile-control__status{box-sizing:border-box;margin:0 0 10px;padding:9px 10px;border-radius:10px;background:var(--dsw-alias-bg-layer-2,#fff);font-size:11px;line-height:1.45}.dsh-mobile-control__provider-setup-body{margin:0 0 10px}.dsh-mobile-control__provider-setup-body>.dsh-mobile-control__cpolar-setup{margin:0}.dsh-mobile-control__provider-setup-body>.dsh-mobile-control__cpolar-setup>.dsh-mobile-control__section-title,.dsh-mobile-control__provider-setup-body>.dsh-mobile-control__frp-setup>.dsh-mobile-control__section-title{display:none}.dsh-mobile-control__provider-setup-body>.dsh-mobile-control__details{margin:0;padding:9px 10px;border:1px solid var(--dsw-alias-border-l2,#dbe1e8);border-radius:11px;background:var(--dsw-alias-bg-layer-2,#fff)}.dsh-mobile-control__remote-workspace>.dsh-mobile-control__actions{margin-top:2px}.dsh-mobile-control__remote-workspace>.dsh-mobile-control__qr{margin:10px 0 0}.dsh-mobile-control__remote-workspace>.dsh-mobile-control__manage-row{margin-top:10px;padding-top:10px;border-top:1px solid var(--dsw-alias-border-l2,#e1e5eb)}
 .dsh-mobile-control__frp-overview{display:grid;grid-template-columns:32px minmax(0,1fr);align-items:center;gap:10px;margin:0 0 10px;padding:10px;border:1px solid var(--dsw-alias-state-success-primary,#a9dfc9);border-radius:11px;background:var(--dsw-alias-state-success-tertiary,#edf9f4)}.dsh-mobile-control__frp-overview[hidden]{display:none}.dsh-mobile-control__frp-overview-mark{display:grid;width:32px;height:32px;place-items:center;border-radius:50%;background:#087454;color:#fff;font:700 15px/1 system-ui}.dsh-mobile-control__frp-overview-body{display:flex;min-width:0;flex-direction:column;gap:2px}.dsh-mobile-control__frp-overview-body strong{color:var(--dsw-alias-label-primary,#075d46);font-size:12px;line-height:1.35}.dsh-mobile-control__frp-overview-body span{overflow:hidden;color:var(--dsw-alias-label-secondary,#357061);font:11px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace;text-overflow:ellipsis;white-space:nowrap}.dsh-mobile-control__frp-group{margin:8px 0 0;overflow:hidden;border:1px solid var(--dsw-alias-border-l2,#dbe1e8);border-radius:11px;background:var(--dsw-alias-bg-layer-1,#f8fafc)}.dsh-mobile-control__frp-group>summary{box-sizing:border-box;min-height:44px;padding:12px 34px 10px 12px;color:var(--dsw-alias-label-primary,#16181d);font:650 12px/1.4 system-ui;cursor:pointer}.dsh-mobile-control__frp-group[open]>summary{border-bottom:1px solid var(--dsw-alias-border-l2,#e1e5eb);background:var(--dsw-alias-bg-layer-2,#fff)}.dsh-mobile-control__frp-group>.dsh-mobile-control__frp-step{padding:12px}.dsh-mobile-control__frp-group>.dsh-mobile-control__frp-step>strong:first-child{display:none}.dsh-mobile-control__frp-group .dsh-mobile-control__frp-step{border-top:0}.dsh-mobile-control__frp-setup>.dsh-mobile-control__frp-step{margin-bottom:8px;padding:10px;border:1px solid var(--dsw-alias-border-l2,#dbe1e8);border-radius:11px;background:var(--dsw-alias-bg-layer-1,#f8fafc)}.dsh-mobile-control__tunnel{margin:0 0 10px}.dsh-mobile-control__tunnel[hidden]{display:none}
 .dsh-mobile-control__lan-setup{box-sizing:border-box;margin:0 0 12px;padding:14px;border:1px solid #6f96db;border-radius:15px;background:var(--dsw-alias-bg-layer-1,#f5f8ff)}.dsh-mobile-control__lan-setup[hidden],.dsh-mobile-control__lan-setup-form[hidden]{display:none}.dsh-mobile-control__lan-setup>.dsh-mobile-control__section-title{margin-bottom:5px}.dsh-mobile-control__lan-setup>.dsh-mobile-control__intro{margin-bottom:12px}.dsh-mobile-control__lan-setup-form{display:grid;gap:9px}.dsh-mobile-control__lan-setup .dsh-mobile-control__field select{box-sizing:border-box;width:100%;min-height:44px;padding:9px 32px 9px 10px;border:1px solid var(--dsw-alias-border-l3,#cfd5dd);border-radius:10px;background:var(--dsw-alias-bg-layer-2,#fff);color:var(--dsw-alias-label-primary,#16181d);font:14px/1.4 system-ui}.dsh-mobile-control__lan-setup .dsh-mobile-control__component-note{margin:0}.dsh-mobile-control__lan-setup-actions{display:grid;grid-template-columns:1fr 1.35fr;gap:8px}.dsh-mobile-control__lan-setup-actions button{box-sizing:border-box;min-width:0;min-height:44px;padding:9px 10px;border-radius:10px;font:650 12px/1.3 system-ui;cursor:pointer}.dsh-mobile-control__lan-setup-actions button:disabled{cursor:wait;opacity:.55}.dsh-mobile-control__lan-setup>.dsh-mobile-control__status{margin:10px 0 0;line-height:1.5}.dsh-mobile-control__lan-setup>.dsh-mobile-control__status:empty{display:none}
-.dsh-mobile-control__access{display:flex;align-items:baseline;gap:6px;min-width:0;margin:0 0 12px}.dsh-mobile-control__access[hidden]{display:none}.dsh-mobile-control__access-label{flex:none;color:var(--dsw-alias-label-secondary,#606873);white-space:nowrap}.dsh-mobile-control__access-label::after{content:"："}.dsh-mobile-control__access-link{min-width:0;overflow:hidden;color:var(--dsw-alias-label-primary-bluish,#2563eb);text-decoration:none;text-overflow:ellipsis;white-space:nowrap}.dsh-mobile-control__access-link:hover{text-decoration:underline}.dsh-mobile-control__qr{display:flex;justify-content:center;margin:0 0 12px}.dsh-mobile-control__qr[hidden]{display:none}.dsh-mobile-control__qr img{border-radius:12px;background:#fff;padding:8px}
+.dsh-mobile-control__access{display:flex;align-items:baseline;gap:6px;min-width:0;margin:0 0 12px}.dsh-mobile-control__access[hidden]{display:none}.dsh-mobile-control__access-label{flex:none;color:var(--dsw-alias-label-secondary,#606873);white-space:nowrap}.dsh-mobile-control__access-label::after{content:"："}.dsh-mobile-control__access-link{min-width:0;overflow:hidden;color:var(--dsw-alias-label-primary-bluish,#2563eb);text-decoration:none;text-overflow:ellipsis;white-space:nowrap}.dsh-mobile-control__access-link:hover{text-decoration:underline}.dsh-mobile-control__qr{display:flex;justify-content:center;margin:0 0 12px}.dsh-mobile-control__qr[hidden]{display:none}.dsh-mobile-control__qr img{border-radius:12px;background:#fff;padding:8px}.dsh-mobile-control__qr.is-expandable{cursor:zoom-in}.dsh-mobile-control__qr.is-expandable:focus-visible{outline:3px solid var(--dsw-alias-state-business-primary,#2563eb);outline-offset:2px;border-radius:12px}.dsh-mobile-control__qr-zoom{position:fixed;inset:0;z-index:1001;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.72)}.dsh-mobile-control__qr-zoom[hidden]{display:none}.dsh-mobile-control__qr-zoom-image{width:min(84vw,360px);height:min(84vw,360px);border-radius:12px;background:#fff;padding:12px}.dsh-mobile-control__qr-zoom-close{position:absolute;top:12px;right:16px;min-width:44px;min-height:44px;border-radius:999px;border:1px solid var(--dsw-alias-border-l2,#dbe1e8);background:var(--dsw-alias-bg-layer-2,#fff);color:var(--dsw-alias-label-primary,#16181d);font:600 18px/1 system-ui;cursor:pointer}
 .dsh-mobile-control__status{margin:0 0 14px;overflow-wrap:anywhere;color:var(--dsw-alias-label-secondary,#606873)}.dsh-mobile-control__status::before{display:inline-block;width:8px;height:8px;margin-right:7px;border-radius:50%;background:var(--dsw-alias-label-tertiary,#98a1ad);content:""}.dsh-mobile-control__status.is-running::before{background:var(--dsw-alias-state-success-primary,#16a36a)}.dsh-mobile-control__status.is-key{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;word-break:break-all}
 .dsh-mobile-control__guide{margin:0 0 14px;padding:12px;border:1px solid #6f96db;border-radius:12px;background:var(--dsw-alias-bg-layer-1,#eff6ff)}.dsh-mobile-control__guide[hidden]{display:none}.dsh-mobile-control__guide-title{margin:0;color:var(--dsw-alias-label-primary,#172554);font:650 13px/1.45 system-ui}.dsh-mobile-control__guide-summary,.dsh-mobile-control__guide-note{margin:4px 0 0;color:var(--dsw-alias-label-secondary,#475569);font-size:12px;line-height:1.5}.dsh-mobile-control__guide-steps{margin:8px 0 0;padding-left:20px;color:var(--dsw-alias-label-primary,#1e293b);font-size:12px;line-height:1.6}.dsh-mobile-control__guide-note{color:var(--dsw-alias-label-secondary,#64748b)}.dsh-mobile-control__guide-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}.dsh-mobile-control__guide-actions button{min-width:0;min-height:44px;padding:8px;border-radius:10px;font:12px/1.25 system-ui;cursor:pointer}.dsh-mobile-control__guide-actions button:disabled{cursor:not-allowed;opacity:.45}
 .dsh-mobile-control__extensions{margin:0 0 12px;color:var(--dsw-alias-label-secondary,#606873);font-size:12px}
@@ -4496,6 +4750,9 @@ export const CONTROL_STYLES = `
 
 /** Mount the desktop control or mobile feature enhancements. */
 export function apply(ctx: ClientContext): void {
+  let gatewayRejectionSink: ((status: number) => void) | undefined
+  let retryRecovery: (() => boolean) | undefined
+  let refreshCustomization: (() => void) | undefined
   ctx.effect(() => installMobileUiLocalePersistence(document, window), 'dsh-mobile: browser UI locale persistence')
 
   ctx.effect(() => {
@@ -4507,7 +4764,17 @@ export function apply(ctx: ClientContext): void {
   ctx.effect(() => {
     const gatewayPage = document.querySelector('meta[name="dsh-mobile-gateway"][content="authenticated"]') !== null
     if (!ownsMobileCustomization(gatewayPage, window.__DSH_MOBILE_FRONTEND__)) return
-    return installMobileConnectionRecovery(() => ctx.get('connection'), window, document)
+    let ownedRejection: ((status: number) => void) | undefined
+    const recovery = installMobileConnectionRecovery(
+      () => ctx.get('connection'), window, document,
+      (rejected, retry) => { ownedRejection = rejected; gatewayRejectionSink = rejected; retryRecovery = retry },
+      () => { refreshCustomization?.() },
+    )
+    if (recovery === undefined) { gatewayRejectionSink = undefined; retryRecovery = undefined; return }
+    return () => {
+      if (gatewayRejectionSink === ownedRejection) { gatewayRejectionSink = undefined; retryRecovery = undefined }
+      return recovery()
+    }
   }, 'dsh-mobile: connection recovery')
 
   ctx.effect(() => {
@@ -4518,7 +4785,14 @@ export function apply(ctx: ClientContext): void {
       : NATIVE_MOBILE_STYLES
     style.textContent += CLIENT_MODULE_STYLES
     document.head.append(style)
-    const removeCustom = !desktopAdmin || gatewayCustomization ? installCustomAssets() : () => undefined
+    const removeCustom = !desktopAdmin || gatewayCustomization ? installCustomAssets({
+      rejected: status => { gatewayRejectionSink?.(status) },
+      retry: () => retryRecovery?.() ?? false,
+      registerRefresh: refresh => {
+        refreshCustomization = refresh
+        return () => { if (refreshCustomization === refresh) refreshCustomization = undefined }
+      },
+    }) : () => undefined
     const removeVoiceSession = installVoiceSession(!desktopAdmin)
     const removeDraftTransfer = !desktopAdmin && document.querySelector('meta[name="dsh-mobile-gateway"][content="authenticated"]') !== null
       ? installDraftTransfer(ctx, window, document) : () => undefined

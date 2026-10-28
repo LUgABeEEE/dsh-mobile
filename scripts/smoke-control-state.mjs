@@ -348,7 +348,8 @@ try {
       await page.locator('.dsh-mobile-control__provider.is-frp').click()
       await settle(`${prefix}/remote/provider`, previous)
       const field = name => page.locator(`#dsh-mobile-frp-${name}`)
-      const configure = page.locator('.dsh-mobile-control__frp-setup .dsh-mobile-control__primary').last()
+      const configure = page.locator('button[aria-describedby="dsh-mobile-frp-action-hint"]')
+      assert.equal(await configure.count(), 1, 'FRP configure action must be uniquely identifiable')
       const postPath = `${prefix}/remote/frp/configure`
       await field('serverAddress').fill('https://frp.example.com:7000')
       await field('serverPort').fill('0')
@@ -447,14 +448,14 @@ try {
     assert.match(await hint.textContent(), /remote operation is in progress/u)
     assert.equal(await provider.isDisabled(), true)
     assert.equal(await install.isDisabled(), true)
-    assert.equal(await page.locator('.dsh-mobile-control__frp-setup .dsh-mobile-control__primary').last().isDisabled(), true)
+    assert.equal(await page.locator('button[aria-describedby="dsh-mobile-frp-action-hint"]').isDisabled(), true)
     refresh.release()
     await settle(remotePath, refreshConsumed)
     await waitUntil(async () => ({ provider: await provider.isEnabled(), install: await install.isEnabled() }),
       enabled => enabled.provider && enabled.install, 'FRP provider refresh idle controls')
     assert.equal(await hint.isVisible(), true)
     assert.match(await hint.textContent(), /Install.*frpc/u)
-    assert.equal(await page.locator('.dsh-mobile-control__frp-setup .dsh-mobile-control__primary').last().isDisabled(), true)
+    assert.equal(await page.locator('button[aria-describedby="dsh-mobile-frp-action-hint"]').isDisabled(), true)
   })
   cases++
   for (const language of ['en', 'it', 'zh']) {
