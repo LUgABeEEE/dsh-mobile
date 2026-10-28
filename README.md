@@ -37,9 +37,9 @@
 > **版本说明**：自插件 **0.6.2** 起，Android App 与插件独立编号、独立发布，版本号无需一致；插件升级不代表 App 需要同步升级。[兼容说明](#兼容性)。
 
 <p align="center">
-  <a href="https://github.com/saya-ch/dsh-mobile/releases/download/android-v0.6.8/dsh-mobile-android-v0.6.8.apk"><img src="https://raw.githubusercontent.com/saya-ch/dsh-mobile/main/assets/brand/app-icon-rounded.svg" alt="DSH Mobile 安卓应用图标" width="72" height="72"></a><br>
-  <a href="https://github.com/saya-ch/dsh-mobile/releases/download/android-v0.6.8/dsh-mobile-android-v0.6.8.apk"><strong>下载 Android App 0.6.8</strong></a><br>
-  <sub><a href="https://github.com/saya-ch/dsh-mobile/releases/tag/android-v0.6.8">版本说明与校验文件</a></sub>
+  <a href="https://github.com/saya-ch/dsh-mobile/releases/download/android-v0.7.0/dsh-mobile-android-v0.7.0.apk"><img src="https://raw.githubusercontent.com/saya-ch/dsh-mobile/main/assets/brand/app-icon-rounded.svg" alt="DSH Mobile 安卓应用图标" width="72" height="72"></a><br>
+  <a href="https://github.com/saya-ch/dsh-mobile/releases/download/android-v0.7.0/dsh-mobile-android-v0.7.0.apk"><strong>下载 Android App 0.7.0（兼容版）</strong></a><br>
+  <sub><a href="https://github.com/saya-ch/dsh-mobile/releases/download/android-v0.7.0/dsh-mobile-android-v0.7.0-iroh.apk">64 位完整版（含实验性 iroh）</a> · <a href="https://github.com/saya-ch/dsh-mobile/releases/tag/android-v0.7.0">版本说明与校验文件</a></sub>
 </p>
 
 DSH Mobile 是一个 DeepSeek Harness 插件，让手机浏览器或 Android App 通过局域网，或可选的 Tailscale Funnel、cpolar、cloudflared、自建 FRP 或自有反向代理远程通道连接电脑，继续使用同一份会话、工作区、消息和工具。电脑端分别启停局域网与远程访问、分别管理配对授权；Android App 统一显示已配对电脑。插件不修改 DeepSeek Harness 源码。
@@ -410,6 +410,7 @@ flowchart LR
 | 自建 FRP | 支持（按需下载） | 支持（按需下载） | 支持（按需下载） | 支持（按需下载） |
 | 自有反向代理 | 支持（纯配置） | 支持（纯配置） | 支持（纯配置） | 支持（纯配置） |
 | 托管 Caddy | 支持（按需下载） | 支持（按需下载） | 不支持 | 不支持 |
+| iroh（实验性） | 支持（按需下载） | 支持（按需下载） | 不支持 | 不支持 |
 
 macOS 上局域网、cloudflared、自建 FRP 与自有反向代理可用；Funnel 与 cpolar 暂未提供 macOS 组件。诊断页的防火墙检查目前仅覆盖 Windows，其他系统显示“不适用”。
 
@@ -423,6 +424,7 @@ macOS 上局域网、cloudflared、自建 FRP 与自有反向代理可用；Funn
 | `0.6.16` | `0.2.1-rc.2` 的相册选择、纯文本草稿经公开 DSH 输入接口传输、真实 mux 恢复与跨客户端待答问题；CI 另覆盖 `0.1.7-alpha.2`、`0.1.7-rc.1`、`0.1.7-rc.2`、`0.2.0-rc.1`、`0.2.0-rc.2`、`0.2.1-alpha.2`、`0.2.1-alpha.3` |
 | `0.6.17` | `0.2.0-rc.2`、`0.2.1-rc.2` 的 15 项真实打包 Chromium 目录选择检查、旧 WebView 缺失 API 模拟与工作区 mux 读取；发布后装入官方 Desktop `0.2.1-rc.2` 并核对包内文件一致 |
 | `0.6.18` | `0.2.1-rc.2` 上的 18 项真实打包 Chromium 目录选择检查，含紧凑布局、目录创建和取消；本机官方 Desktop `0.2.1-rc.3` 已装入候选并启用局域网与 Cloudflare 网关 |
+| `0.7.0` | 8 个 DSH 版本（`0.1.7-alpha.2`–`0.2.1-rc.2`）的打包浏览器 CI；Windows/Linux Gateway 与 iroh Host、Android 双 ABI 和兼容版包检查。设备与网络范围见 [iroh 说明](docs/IROH.md) |
 
 <details>
 <summary>历史版本验证记录</summary>
