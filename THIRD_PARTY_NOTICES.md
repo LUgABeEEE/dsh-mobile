@@ -47,8 +47,8 @@ full:
   taken, so LGPL-2.1 does not apply.
 
 Both APK variants bundle this notice at `assets/THIRD_PARTY_NOTICES.txt`, based on
-the published companion package with the MIT text for Windows build dependency
-`winapi-util` added from its crate source. `node scripts/check-iroh-notices.mjs`
+the published companion package with both transport source licenses and the MIT
+text for Windows build dependency `winapi-util` added from their sources. `node scripts/check-iroh-notices.mjs`
 checks coverage of each Android ABI's normal/build graph. When `native/Cargo.lock`
 changes, regenerate the notice and replace this asset so the shipped texts stay current. See the [iroh
 guide](docs/IROH.en.md) for the full and compatibility APK requirements.

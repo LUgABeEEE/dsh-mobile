@@ -5,6 +5,12 @@ import { fileURLToPath } from 'node:url'
 
 const root = fileURLToPath(new URL('../', import.meta.url))
 const text = readFileSync(new URL('../apps/mobile/android/app/src/main/assets/THIRD_PARTY_NOTICES.txt', import.meta.url), 'utf8')
+for (const name of ['LICENSE.dsh-mobile-iroh', 'LICENSE.dsh-tether']) {
+  const license = readFileSync(new URL(`../native/iroh-host/${name}`, import.meta.url), 'utf8')
+  if (!text.replaceAll('\r\n', '\n').includes(license.replaceAll('\r\n', '\n').trim())) {
+    throw new Error(`APK notices must retain the complete source license: ${name}`)
+  }
+}
 const covered = new Set([...text.matchAll(/^========== (.+) ==========\r?$/gm)].map(match => match[1]))
 const workspace = new Set(['dsh-mobile-iroh-host', 'dsh-mobile-iroh-core', 'dsh-mobile-iroh-android-transport'])
 for (const target of ['aarch64-linux-android', 'x86_64-linux-android']) {
