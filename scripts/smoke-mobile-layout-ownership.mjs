@@ -51,8 +51,13 @@ display:flex!important;flex-direction:column!important;grid-template-rows:none!i
 const views = [
   { width: 375, height: 844 },
   { width: 390, height: 844 },
+  { width: 719, height: 844 },
   { width: 720, height: 844 },
+  { width: 721, height: 844 },
   { width: 844, height: 390 },
+  { width: 899, height: 844 },
+  { width: 900, height: 844 },
+  { width: 901, height: 844 },
   { width: 1100, height: 844 },
 ]
 const themes = {
@@ -69,7 +74,7 @@ function fixture(open, wide) {
 <div class="Conversation_fixture_body"><div class="Conversation_fixture_scrollBody"><div data-slot="conversation.session"><div class="Conversation_fixture_viewArea"><div data-slot="conversation.view"><div class="Trajectory_fixture_root"><div class="Trajectory_fixture_ledger"><div class="Trajectory_fixture_viewport">${rows}</div></div></div></div></div></div></div></div>
 </div></div></div></div></main>
 <button class="dshm-scrim" data-open="${open && !wide}" aria-label="Close panels" type="button"></button>
-<aside class="dshm-drawer" data-pane="sidebar" data-open="${open}"><div id="sidebar-root"><button id="sidebar-action" type="button">Close sidebar</button></div></aside>
+<aside class="dshm-drawer" data-pane="sidebar" data-open="${open}"${open ? '' : ' data-sidebar-collapsed=""'}><div id="sidebar-root"><button id="sidebar-action" type="button">Close sidebar</button></div></aside>
 <aside class="dshm-details" data-open="false" inert></aside><div class="dshm-overlay"></div>
 </div></div></div></body></html>`
 }
@@ -219,7 +224,14 @@ try {
           assert.equal(boxes['.dshm-main'].x, sidebarWidth, `${key}: main was not placed after the sidebar`)
           assert.equal(boxes['.dshm-main'].width, view.width - sidebarWidth, `${key}: main column lost available width`)
         } else {
-          assert.equal(boxes['.dshm-main'].width, view.width, `${key}: narrow conversation width`)
+          if (!open) {
+            // Folded icon rail is a persistent column on narrow viewports too;
+            // it must never cover the first 56px of the main content (#306).
+            assert.equal(boxes['.dshm-main'].x, 56, `${key}: folded icon rail covered the main content`)
+            assert.equal(boxes['.dshm-main'].width, view.width - 56, `${key}: main column lost folded-rail width`)
+          } else {
+            assert.equal(boxes['.dshm-main'].width, view.width, `${key}: narrow conversation width`)
+          }
           if (open) {
             const hit = await page.locator('#trace-action').evaluate(node => {
               const rect = node.getBoundingClientRect()
