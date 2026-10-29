@@ -41,4 +41,21 @@ Before a component release, verify first use with the exact catalog-pinned execu
 | `iroh_start_timeout` | Inspect iroh errors in the DSH log and network connectivity, and verify that the pinned component runs; repeated pairing is not a substitute for process diagnosis |
 | Channel `ready` but no phone connects | Check that the App is the full build, the device supports a packaged ABI and the descriptor is fresh. Computer readiness does not establish phone connectivity; a relay-service connection alone does not establish that data uses the relay |
 
+## VPN, proxies and network environments
+
+iroh prefers direct connections with relay fallback and depends on UDP and DNS discovery. The following environment factors **can** interfere; they are common troubleshooting directions, not confirmed failure mechanisms, and do not mean every VPN, proxy or network must fail:
+
+- **Global VPN/TUN** (system-level virtual adapters) may take over UDP and DNS so that neither direct nor relay handshakes complete. One user on Win11 + WSL2 mirrored networking over mobile data reported ~6 s to connect after disabling the global VPN, and recovery after excluding the official DSH app from the VPN. This is community evidence, not a statement about every VPN/network combination or both ABIs.
+- **DNS policy** (fake-IP, filtering): discovery depends on DNS resolution; fake-IP modes may resolve discovery domains to a proxy virtual IP.
+- **Loopback entry**: the app reaches the local gateway via `*.iroh.localhost`; this loopback address should not be handed to a remote proxy/DNS.
+
+Things to try (voluntary, subject to your own security policy):
+
+1. Add the official DSH app (package `io.github.sayach.dshmobile`) to a per-app bypass/exclusion list in your VPN/proxy client; debug builds and the standalone experimental app use different package names — configure the one you actually installed.
+2. If your client supports per-domain rules, set discovery/relay domains to direct. Clash Meta example (illustrative; use your client's syntax): `DOMAIN-SUFFIX,iroh.link,DIRECT`; with fake-ip, add `+.iroh.link` to `fake-ip-filter`. Domain rules only cover client-side resolution — they **cannot** cover all direct peer IPs, relay services and loopback paths, and must not be summarized as "no UDP means it can never work".
+3. `*.iroh.localhost` is the app's local entry point and must not be sent to a remote proxy/DNS.
+4. Always-on/lockdown VPN policies may not allow per-app bypass; this plugin will not bypass system security policy, disable certificate verification, or force network switches.
+
+A native "detect VPN and warn" is only an optional follow-up; the current version has no such feature, and whether to run a VPN remains the user's decision.
+
 Chinese version: [IROH.md](IROH.md).
