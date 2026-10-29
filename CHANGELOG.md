@@ -2,7 +2,7 @@
 
 Notable changes are recorded here. GitHub Releases provide the downloadable packages and generated commit notes.
 
-## 0.8.0 - 2026-10-29
+## 0.8.0 - 2026-10-30
 
 - **iPhone / iPad Web Push:** add opt-in notifications for capable Safari Home Screen web apps on trusted HTTPS, targeting iOS/iPadOS 18.4+. Choose Questions, Plans, Approvals, Responses, Goals and Failures in **DSH Settings → General → Web push notifications**, and send a test without submitting a model request. No native iOS app, service worker or notification SaaS account is required. Thanks @chintoleung for [#297](https://github.com/saya-ch/dsh-mobile/pull/297).
 - Add a complete Safari pairing → Add to Home Screen → notification setup guide in Chinese and English. Explain separate Home Screen login state and generating a fresh pairing code without clearing existing data. Thanks @chintoleung for [#302](https://github.com/saya-ch/dsh-mobile/pull/302).
@@ -16,7 +16,7 @@ Notable changes are recorded here. GitHub Releases provide the downloadable pack
 - Upgrade React development tooling to 19 while retaining the host-provided React runtime, with no second copy bundled. Thanks Dependabot for [#140](https://github.com/saya-ch/dsh-mobile/pull/140).
 - Restore the explicit contributor credit for @qzyqmzn's [#284](https://github.com/saya-ch/dsh-mobile/pull/284), which introduced the integrated iroh transport in 0.7.0.
 
-## Android 0.7.1 - 2026-10-29
+## Android 0.7.1 - 2026-10-30
 
 - Update the build toolchain to AGP 9.4.1 / Gradle 9.8.2 and WebKit integration to 1.18.0, retaining `core-ktx` 1.15.0 for compileSdk 36. Thanks Dependabot for [#304](https://github.com/saya-ch/dsh-mobile/pull/304).
 - Keep the compatibility and full iroh APK variants, the established application ID and signer, and existing pairing data. This is App build 86; plugin 0.8.0's iOS Web Push does not require an Android update.

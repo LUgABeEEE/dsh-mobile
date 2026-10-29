@@ -259,7 +259,7 @@ export async function pairMobilePage(phone, pairUrl, logs, {
   await phone.locator('#pair-form button').waitFor({ state: 'visible', timeout: CLIENT_TIMEOUT_MS })
   await beforeSubmit?.(phone)
   await phone.locator('#pair-form button').click()
-  await phone.waitForURL(url => url.pathname === '/', { timeout: 15_000 })
+  await phone.waitForURL(url => url.pathname === '/', { timeout: 15_000, waitUntil: 'commit' })
   const result = await phone.waitForFunction(() => {
     const root = document.querySelector('#root')
     const boot = document.querySelector('[data-dsh-boot]')
@@ -278,6 +278,9 @@ export async function pairMobilePage(phone, pairUrl, logs, {
 
 /** Open upstream Settings in the supplied sidebar; activation can also inspect the real hit target. */
 export async function openMobileSettings(phone, { sidebar, activate = button => button.click() } = {}) {
+  // DSH can restore its General settings after reload; do not click a launcher
+  // behind that already-open modal. Subsequent checks still exercise its controls.
+  if (await phone.locator('.dsh-mobile-settings_row').first().isVisible()) return
   const drawer = sidebar ?? phone.locator('.dshm-drawer')
   if (sidebar === undefined && await drawer.getAttribute('data-open') !== 'true') await drawer.locator('button[data-dsh-mobile-toggle]').click()
   const direct = drawer.locator('button:has([data-slot="settings.trigger"])')

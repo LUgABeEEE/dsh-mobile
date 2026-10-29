@@ -182,10 +182,10 @@ async function sidebarRetentionDiagnostics(frontend, id) {
 async function checkSidebarScrollMemory(frontend, sessions) {
   // Sessions are newest-first; use older rows in a short, supported viewport.
   await phone.setViewportSize({ width: 659, height: 393 })
-  // Stock may reset its More watermark after the dedicated checks consume the
-  // completed-turn attention flags. Stay within its default five mounted rows;
-  // persistence of expanded groups is explicitly outside this adapter's scope.
-  const targets = frontend === 'stock' ? [sessions[8], sessions[7], sessions[8]] : [sessions[1], sessions[2], sessions[1]]
+  // Both layouts can keep older rows behind More. Exercise the lower part of
+  // the default five rows; preserving or forcing group expansion is not part
+  // of the scroll adapter. Positive scroll/anchor assertions below still apply.
+  const targets = [sessions[8], sessions[7], sessions[8]]
   for (const id of targets) {
     await openDrawer()
     const row = await revealSessionRow(id)
