@@ -118,6 +118,8 @@ async function revealSessionRow(sessionId) {
     const region = document.querySelector('[data-dsh-mobile-sidebar-root] [class*="_regionArea"]')
     const list = [...region.querySelectorAll('[class]')].find(node => [...node.classList].some(token => token.endsWith('_list')))
     if (list === undefined || getComputedStyle(list).overflowY !== 'auto') throw new Error('Actual Workspace scroll owner missing')
+    // This helper deliberately navigates away from the restored position.
+    list.dispatchEvent(new WheelEvent('wheel', { bubbles: true }))
     list.dataset.sidebarFixtureScroller = 'true'; list.scrollTop = 0
   })
   const row = sidebar().locator(`[data-row-key="session:${sessionId}"]`)
@@ -132,6 +134,59 @@ async function revealSessionRow(sessionId) {
     if (!moved) break
   }
   throw new Error('Actual Workspace virtual list did not reveal the requested owned Session')
+}
+
+async function checkSidebarScrollMemory(frontend, sessions) {
+  // Sessions are newest-first; use older rows in a short, supported viewport.
+  await phone.setViewportSize({ width: 659, height: 393 })
+  // Stock may reset its More watermark after the dedicated checks consume the
+  // completed-turn attention flags. Stay within its default five mounted rows;
+  // persistence of expanded groups is explicitly outside this adapter's scope.
+  const targets = frontend === 'stock' ? [sessions[8], sessions[7], sessions[8]] : [sessions[1], sessions[2], sessions[1]]
+  for (const id of targets) {
+    await openDrawer()
+    const row = await revealSessionRow(id)
+    await row.scrollIntoViewIfNeeded()
+    await frames(phone)
+    const before = await phone.evaluate(id => {
+      const root = document.querySelector('[data-dsh-mobile-sidebar-root]')
+      const list = [...root.querySelectorAll('[class*="_regionArea"] [class]')].find(node => [...node.classList].some(token => token.endsWith('_list')))
+      const row = [...list.querySelectorAll('[data-row-key]')].find(node => node.dataset.rowKey === `session:${id}`)
+      return { top: list.scrollTop, outer: root.scrollTop, offset: row.getBoundingClientRect().top - list.getBoundingClientRect().top }
+    }, id)
+    assert(before.top > 0, `${frontend}: retention test did not reach the lower list`)
+    await row.tap()
+    await phone.waitForFunction(id => document.querySelector('[data-conversation-session]')?.dataset.conversationSession === id, id)
+    // The dedicated shell closes on selection; stock DSH retains its drawer.
+    if (frontend === 'stock' && await sidebar().getAttribute('data-open') === 'true') {
+      // Tap outside the drawer, not its off-screen header toggle: Playwright
+      // would scroll that toggle into view and legitimately replace outer memory.
+      await phone.touchscreen.tap(phone.viewportSize().width - 8, 180)
+    }
+    await phone.waitForFunction(() => document.querySelector('[data-dsh-mobile-sidebar]')?.dataset.open === 'false')
+    // Do not use openDrawer(): that geometry helper deliberately resets the
+    // outer scrollport and would conceal a broken retention implementation.
+    await sidebar().locator('[data-dsh-mobile-toggle]').tap()
+    await phone.waitForFunction(({ id, before }) => {
+      const root = document.querySelector('[data-dsh-mobile-sidebar-root]')
+      const list = [...root.querySelectorAll('[class*="_regionArea"] [class]')].find(node => [...node.classList].some(token => token.endsWith('_list')))
+      const row = list && [...list.querySelectorAll('[data-row-key]')].find(node => node.dataset.rowKey === `session:${id}`)
+      return row !== undefined && Math.abs(list.scrollTop - before.top) <= 2
+        && Math.abs(root.scrollTop - before.outer) <= 2
+        && Math.abs(row.getBoundingClientRect().top - list.getBoundingClientRect().top - before.offset) <= 2
+    }, { id, before }, { timeout: 5000 }).catch(async error => {
+      const after = await phone.evaluate(id => {
+        const root = document.querySelector('[data-dsh-mobile-sidebar-root]')
+        const list = [...root.querySelectorAll('[class*="_regionArea"] [class]')].find(node => [...node.classList].some(token => token.endsWith('_list')))
+        const row = list && [...list.querySelectorAll('[data-row-key]')].find(node => node.dataset.rowKey === `session:${id}`)
+        return { top: list?.scrollTop, outer: root.scrollTop, offset: row && row.getBoundingClientRect().top - list.getBoundingClientRect().top,
+          rows: list && [...list.querySelectorAll('[data-row-key]')].map(row => row.dataset.rowKey) }
+      }, id)
+      throw new Error(`${frontend}: sidebar retention failed ${JSON.stringify({ before, after })}`, { cause: error })
+    })
+    assert.equal(await phone.locator('[data-composer-input]').evaluate(node => node.contains(document.activeElement)), false, 'Session switching unexpectedly focused the composer')
+  }
+  record.checks.push(`${frontend}: lower-list position, visible keyed row and outer scroll survived three session switches without scrolling again`)
 }
 
 async function geometry(label) {
@@ -333,6 +388,9 @@ try {
         record.checks.push(`dedicated: closed rail ${width}px reserves ${offset}px`)
       }
     }
+    // Both sides of the 0.7.1 merge are retained: the closed-rail breakpoint
+    // sweep above and the scroll-retention check this PR adds.
+    if (!negative) await checkSidebarScrollMemory(frontend, sessions)
     for (const viewport of [{ width: 393, height: 659 }, { width: 369, height: 800 }, { width: 659, height: 393 }]) {
       await phone.setViewportSize(viewport)
       for (const large of [false, true]) {
