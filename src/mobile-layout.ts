@@ -597,6 +597,13 @@ body:has(.dshm-shell) :is(input,textarea,[contenteditable=true],[contenteditable
 .dshm-drawer{position:static;grid-area:1/1;box-shadow:none}
 .dshm-drawer[data-open=true]{width:340px;box-shadow:none}
 .dshm-drawer[data-open=false]{width:56px}
+/* A plugin dialog mounted inside the composer's isolated stacking context (e.g.
+   the dsh-context /context modal in conversation.input.overlay) is scoped below
+   the static navigation column, so a viewport-centred dialog lost its left edge
+   behind the opaque drawer. Lift the conversation column only while such a
+   dialog is open: the scrim < drawer < details order stays untouched, and the
+   static drawer keeps its own layer for the portal checks. */
+.dshm-shell:has(.lc-modal-backdrop) .dshm-main{z-index:71}
 }
 @media(prefers-reduced-motion:reduce){.dshm-drawer,.dshm-details,.dshm-scrim,.dshm-drawer>*,.dshm-main{transition:none!important}}
 `

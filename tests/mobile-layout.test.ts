@@ -758,6 +758,19 @@ describe('dedicated mobile layout boot', () => {
     expect(nav).toContain('background-image:linear-gradient(var(--dsw-alias-bg-base')
   })
 
+  it('lifts an open plugin dialog above the static navigation column', () => {
+    // A dialog mounted inside the composer's isolated stacking context only
+    // paints above the drawer while the conversation column outranks it;
+    // otherwise the drawer hides the dialog's left edge. The lift is scoped to
+    // an open dialog so the scrim < drawer < details order is untouched.
+    const wide = MOBILE_LAYOUT_STYLES.slice(MOBILE_LAYOUT_STYLES.indexOf('@media(min-width:900px)'),
+      MOBILE_LAYOUT_STYLES.indexOf('@media(prefers-reduced-motion'))
+    expect(wide).toContain('.dshm-shell:has(.lc-modal-backdrop) .dshm-main{z-index:71}')
+    // The drawer keeps both its layer and its static wide layout.
+    expect(MOBILE_LAYOUT_STYLES).toContain('.dshm-drawer{position:fixed;z-index:70')
+    expect(wide).toContain('.dshm-drawer{position:static')
+  })
+
   it('sets a minimum editable font while preserving the content-font preference', () => {
     // Stock menus portal into document.body (model picker search, trigger
     // menus), outside .dshm-shell, so the 16px floor must scope from the body
