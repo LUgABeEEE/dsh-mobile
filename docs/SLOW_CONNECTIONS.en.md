@@ -84,9 +84,9 @@ Settings and defaults were checked against DSH 0.2.0-rc.2: [API gateway configur
 
 ## Optional WebSocket compression
 
-DSH Mobile 0.5.4 can compress selected live-connection paths. This suits limited bandwidth, metered links, or large Session data, trading extra CPU and memory use for reduced transfer volume. The path list is empty by default, retaining the existing uncompressed relay.
+DSH Mobile 0.5.4 can compress selected live-connection paths. This suits limited bandwidth, metered links, or large Session data, trading extra CPU and memory use for reduced transfer volume. The main live path (`/api/remote.mux`) is compressed by default; set `paths: []` to return to the uncompressed relay.
 
-Add the following property to the existing `config` of the current `mobile-access` entry. This is a **configuration fragment, not a complete profile patch**. Keep the entry's existing interface, certificate, pairing-state, and management settings; do not replace the whole `config` with the fragment.
+It is enabled by default; to state or adjust it explicitly, add the following property to the existing `config` of the current `mobile-access` entry. This is a **configuration fragment, not a complete profile patch**. Keep the entry's existing interface, certificate, pairing-state, and management settings; do not replace the whole `config` with the fragment.
 
 ```yaml
 websocketCompression:

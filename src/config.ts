@@ -185,7 +185,7 @@ export const Config: z<PluginConfig> = z.object({
   mobileCompatibilityFile: z.string().hidden(),
   excludedClientModules: z.array(String).default([]),
   websocketCompression: z.object({
-    paths: z.array(String).default([]),
+    paths: z.array(String).default(['/api/remote.mux']),
     maxMessageBytes: z.natural(),
     maxQueuedBytes: z.natural(),
     thresholdBytes: z.natural(),
@@ -227,6 +227,9 @@ function integer(value: unknown, name: string, fallback: number, minimum: number
   return resolved
 }
 
+/** Live paths the mobile gateway compresses by default; an explicit `paths: []` opts out. */
+export const DEFAULT_WEBSOCKET_COMPRESSION_PATHS = Object.freeze(['/api/remote.mux'])
+
 function parseWebSocketCompression(raw: unknown): ResolvedWebSocketCompressionConfig {
   if (raw !== undefined && (typeof raw !== 'object' || raw === null || Array.isArray(raw))) {
     throw new Error('websocketCompression must be an object')
@@ -236,7 +239,7 @@ function parseWebSocketCompression(raw: unknown): ResolvedWebSocketCompressionCo
   const maxQueuedBytes = integer(value.maxQueuedBytes, 'websocketCompression.maxQueuedBytes', 64 * 1024 * 1024, 1024, 256 * 1024 * 1024)
   if (maxQueuedBytes < maxMessageBytes + 14) throw new Error('websocketCompression.maxQueuedBytes must cover maxMessageBytes and the frame header')
   return Object.freeze({
-    paths: Object.freeze(normalizeWebSocketPaths(value.paths ?? [])),
+    paths: Object.freeze(normalizeWebSocketPaths(value.paths ?? DEFAULT_WEBSOCKET_COMPRESSION_PATHS)),
     maxMessageBytes,
     maxQueuedBytes,
     thresholdBytes: integer(value.thresholdBytes, 'websocketCompression.thresholdBytes', 1024, 0, maxMessageBytes),
