@@ -40,6 +40,8 @@ These numbers are not an authority this project invented. Where they conflict, t
 
 Replace `plugin-panel` with your own root class. `data-mobile="1"` only appears in the narrow tier, so no rule below can reach a desktop render. The switch itself (container query or measured width) is in the [adaptation guide](MOBILE_PLUGIN_ADAPTATION.en.md#adapt-to-available-space).
 
+The attribute name is the plugin's own convention — the guide's script example uses `data-narrow`. The name does not matter; what matters is that the whole narrow tier hangs off **one** switch, and that the value never appears on a desktop render.
+
 ```css
 /* Type follows the shell setting; without the variable it stays inherited, so the desktop is unchanged. */
 .plugin-panel[data-mobile="1"] { font-size: var(--dsh-content-font-size, inherit); }

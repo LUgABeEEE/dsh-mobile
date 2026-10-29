@@ -40,6 +40,8 @@ L1 在桌面浏览器把宽度调到 390px 就能验；L2 必须在**面板宽�
 
 把 `plugin-panel` 换成你自己的根类名即可；`data-mobile="1"` 只在窄档出现，因此桌面渲染不会命中这里任何一条规则。开关本身（容器查询或实测宽度）见[适配指南](MOBILE_PLUGIN_ADAPTATION.md#按可用空间适配)。
 
+属性名是插件自己的约定，指南的脚本示例用的是 `data-narrow`；叫什么不重要，重要的是**整档样式只挂在同一个开关上**，并且桌面上不出现该值。
+
 ```css
 /* 字号跟随外壳设置；没有该变量时保持继承，不影响桌面。 */
 .plugin-panel[data-mobile="1"] { font-size: var(--dsh-content-font-size, inherit); }
