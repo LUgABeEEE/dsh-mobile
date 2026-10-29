@@ -120,6 +120,8 @@ websocketCompression:
 
 网关自有静态资源（`/mobile-access/compat.js`、`mobile-layout.js`、自定义 CSS/JS）使用带引号的内容 ETag 和 `Cache-Control: private, no-cache`。浏览器可保存正文，但每次复用前必须重新校验；网关先检查设备授权和当前资源，再处理 GET/HEAD 条件请求，内容未变时返回 `304`，文件改动后返回新正文。实际缓存复用仍取决于浏览器行为。
 
+兼容性 bundle 例外：启动文档按内容哈希引用它（`/mobile-access/compat-<sha256>.js`），该路径以 `private, max-age=31536000, immutable` 下发，正文与路径中的摘要不一致时返回 `404`，因此不会在同一个 URL 下发出两份不同的字节。不带修订的 `/mobile-access/compat.js` 继续保留给已交付的文档，语义仍是条件校验。桌面 Chromium 上，不带修订的 `compat.js` 每次加载都要一次往返（`304`），改为内容寻址后该往返被省掉；这一改变与客户端是否复用缓存无关地回到「按 URL 命中」。
+
 移动启动 HTML 包含绑定当前认证 Session 的页面标识，保持 `no-store`，不复用其他页面或 Session 的启动文档；配对页和 API 响应也保持 `no-store`。网关对上游静态资源做流式 gzip 时，可保留合法上游 ETag 的弱校验形式，并维护 `Vary: Accept-Encoding`；不会把原始内容的长度或范围元信息当作压缩内容的元信息，也不会缓存失败响应或为 API 请求新增缓存。
 
 可压缩的文本响应都走这条流式管道：静态资源、HTML 文档和 `/api/` 的 JSON 都会在手机声明 `Accept-Encoding: gzip` 时压缩，并维护 `Vary`。`/plugins/`、`/assets/` 下的静态资源**沿用原有判定，行为不变**（包括上游原本就会压缩的路径）。静态路径之外，`text/event-stream` 保持不压缩，否则逐帧事件会被 gzip 块缓冲；声明长度小于 1KB 或没有声明长度的响应也保持原样，压缩开销大于收益或可能被逐段消费。范围请求、已编码响应和 304 仍按原规则处理，不带 `Accept-Encoding` 的客户端收到的字节与以前一致。

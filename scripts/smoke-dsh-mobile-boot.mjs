@@ -24,6 +24,8 @@ const compressedWebSocket = process.argv.includes('--compressed-websocket')
 const blockedCompatibility = process.argv.includes('--negative-control-compat')
 const legacyWebView = blockedCompatibility || process.argv.includes('--legacy-webview')
 const compatibilityPath = '/mobile-access/compat.js'
+// The gateway requests the bundle by content revision; both forms must be accepted.
+const compatibilityPathPattern = /^\/mobile-access\/compat(?:-[a-f\d]{64})?\.js$/u
 const compatibilityError = /AbortSignal\.any|throwIfAborted|AbortSignal getters|Promise\.withResolvers|Iterator.*(?:not defined|not a constructor|not a function)|Object\.hasOwn|(?:findLastIndex|findLast|toSorted|toReversed|structuredClone|\.at).*?(?:not defined|not a function)/u
 const excludedClientModules = process.env.DSH_BOOT_SMOKE_EXCLUDED_MODULES?.split(',').map(id => id.trim()).filter(Boolean) ?? []
 const startedAt = Date.now()
@@ -163,7 +165,7 @@ async function inspectBrowser(baseUrl, logs, directoryRoot) {
       await phone.routeWebSocket('**/api/remote.mux', socket => { socket.close() })
     }
     if (blockedCompatibility) {
-      await phone.route(`**${compatibilityPath}`, async route => {
+      await phone.route('**/mobile-access/compat*.js', async route => {
         compatibilityIntercepted = true
         await route.abort('blockedbyclient')
       })
@@ -209,8 +211,8 @@ async function inspectBrowser(baseUrl, logs, directoryRoot) {
         || Object.values(features.restored).some(value => value !== 'function')) {
         throw new Error(`Legacy WebView compatibility did not restore the missing APIs: ${JSON.stringify(features)}`)
       }
-      const compatibilityResponse = responses.find(response => response.path === compatibilityPath && response.type === 'script')
-      if (features.scripts[0] !== compatibilityPath || compatibilityResponse?.status !== 200
+      const compatibilityResponse = responses.find(response => compatibilityPathPattern.test(response.path) && response.type === 'script')
+      if (!compatibilityPathPattern.test(features.scripts[0] ?? '') || compatibilityResponse?.status !== 200
         || !compatibilityResponse.contentType?.startsWith('text/javascript')) {
         throw new Error(`Legacy WebView did not load the authenticated compatibility script before DSH: ${JSON.stringify({ features, compatibilityResponse })}`)
       }
