@@ -2151,20 +2151,27 @@ export class MobileAccessGateway {
         // its own validator: one shared ETag would let a cache answer `304` for bytes
         // it never stored in the encoding the client asked for.
         const etag = compressed ? `"${digest}-gzip"` : `"${digest}"`
-        const payload = compressed ? await gzipBuffer(body) : body
         const responseHeaders: Record<string, string | number> = { ETag: etag }
         if (mtime !== undefined) responseHeaders['Last-Modified'] = mtime.toUTCString()
         if (compressible) responseHeaders.Vary = 'Accept-Encoding'
-        if (compressed) responseHeaders['Content-Encoding'] = 'gzip'
         setSecurityHeaders(response, this.tlsEnabled)
         response.setHeader('Cache-Control', 'private, no-cache')
         if (matchesIfNoneMatch(headerValue(request.headers, 'if-none-match'), etag)) {
+          // A 304 confirms the representation the client already holds, so it carries
+          // only the validators and `Vary`: `Content-Encoding`/`Content-Type` describe
+          // a body this response does not send, and the stored 200 already has them.
           response.writeHead(304, responseHeaders)
           response.end()
           return
         }
+        // Compress only for a body response: a revalidation above must not pay for
+        // bytes it discards.
+        operation.signal.throwIfAborted()
+        const payload = compressed ? await gzipBuffer(body) : body
+        operation.signal.throwIfAborted()
         response.writeHead(200, {
           ...responseHeaders,
+          ...compressed ? { 'Content-Encoding': 'gzip' } : {},
           'Content-Type': customAsset.contentType,
           'Content-Length': payload.byteLength,
         })

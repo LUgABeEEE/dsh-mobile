@@ -902,6 +902,59 @@ describe('HTTP gateway', () => {
     expect(small.headers['content-length']).toBe(String(small.rawBody.byteLength))
   })
 
+  it('keeps a 304 to validators and Vary, and does not compress a body it discards', async () => {
+    const inner = await upstream()
+    const directory = await mkdtemp(join(tmpdir(), 'dsh-mobile-owned-gzip-304-'))
+    cleanups.push(() => rm(directory, { recursive: true, force: true }))
+    const mobileCompatibilityFile = join(directory, 'mobile-compat.js')
+    const repeated = 'globalThis.__compatibilityProbe = true;\n'.repeat(64)
+    await writeFile(mobileCompatibilityFile, repeated, 'utf8')
+    const instance = await gateway(inner.port, { mobileCompatibilityFile })
+    const paired = await pair(instance)
+    const headers = { ...browserHeaders(instance), cookie: `${SESSION_COOKIE}=${paired.session}` }
+
+    const compressed = await request(instance.address().port, '/mobile-access/compat.js', {
+      headers: { ...headers, 'accept-encoding': 'gzip' },
+    })
+    expect(compressed.status).toBe(200)
+    expect(compressed.headers['content-encoding']).toBe('gzip')
+
+    const revalidated = await request(instance.address().port, '/mobile-access/compat.js', {
+      headers: { ...headers, 'accept-encoding': 'gzip', 'if-none-match': String(compressed.headers.etag) },
+    })
+    expect(revalidated.status).toBe(304)
+    expect(revalidated.body).toBe('')
+    // Validators and the negotiation key stay; representation metadata for a body
+    // this response does not carry does not.
+    expect(revalidated.headers.etag).toBe(compressed.headers.etag)
+    expect(revalidated.headers.vary).toBe('Accept-Encoding')
+    expect(revalidated.headers['cache-control']).toBe('private, no-cache')
+    expect(revalidated.headers['content-encoding']).toBeUndefined()
+    expect(revalidated.headers['content-type']).toBeUndefined()
+    expect(revalidated.headers['content-length']).toBeUndefined()
+
+    // The identity representation revalidates separately and also omits the body headers.
+    const identity = await request(instance.address().port, '/mobile-access/compat.js', { headers })
+    expect(identity.status).toBe(200)
+    expect(identity.headers['content-encoding']).toBeUndefined()
+    const identityRevalidated = await request(instance.address().port, '/mobile-access/compat.js', {
+      headers: { ...headers, 'if-none-match': String(identity.headers.etag) },
+    })
+    expect(identityRevalidated.status).toBe(304)
+    expect(identityRevalidated.headers.etag).toBe(identity.headers.etag)
+    expect(identityRevalidated.headers['content-encoding']).toBeUndefined()
+
+    // A HEAD still reports the representation it would send, without a body.
+    const head = await request(instance.address().port, '/mobile-access/compat.js', {
+      method: 'HEAD',
+      headers: { ...headers, 'accept-encoding': 'gzip' },
+    })
+    expect(head.status).toBe(200)
+    expect(head.headers['content-encoding']).toBe('gzip')
+    expect(head.headers['content-length']).toBe(compressed.headers['content-length'])
+    expect(head.body).toBe('')
+  })
+
   it.each([
     ['/mobile-access/custom.css', 'customCssFile'],
     ['/mobile-access/custom.js', 'customScriptFile'],
