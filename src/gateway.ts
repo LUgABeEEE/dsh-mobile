@@ -43,7 +43,7 @@ import { UpstreamAuthRecorder, type UpstreamAuthEntry, type UpstreamAuthOutcome 
 export type { UpstreamAuthEntry } from './upstream-auth-log.js'
 import { ClientModulePreferenceStore, parseExcludedClientModules, type ClientModuleEntry, type ClientModulePreferenceView } from './client-module-preferences.js'
 import { renderClientModuleRecoveryPage } from './client-module-recovery.js'
-import { ensureMobileCompatibility, ensureMobileGatewayMarker, MOBILE_COMPAT_PATH } from './mobile-compat-bootstrap.js'
+import { ensureMobileCompatibility, ensureMobileGatewayMarker, MOBILE_COMPAT_PATH, mobileCompatibilityRevision, mobileCompatibilityRevisionPath } from './mobile-compat-bootstrap.js'
 import { LEGACY_CUSTOM_ASSET_LIMIT } from './extension-limits.js'
 import { matchesIfNoneMatch, weakenEntityTag } from './http-cache.js'
 import { createMobileGraphEventTransform } from './mobile-graph-events.js'
@@ -126,6 +126,14 @@ const DISCOVERY_INTERVAL_MS = 3_000
 const MDNS_SERVICE_TYPE = 'dsh-mobile'
 const MOBILE_LAYOUT_MODULE = '@deepseek-ai/dsh-client-ui-layout'
 const MOBILE_LAYOUT_PATH = `${AUTH_PREFIX}/mobile-layout.js`
+/** One gateway-served static asset; `digest` marks a content-addressed path. */
+type OwnedStaticAsset = {
+  readonly file: string
+  readonly contentType: string
+  readonly fallback?: string | undefined
+  /** Content-addressed path: serve `immutable`, and only while the body still matches. */
+  readonly digest?: string | undefined
+}
 const MOBILE_BOOT_BATCH_PREFIX = `${AUTH_PREFIX}/mobile-boot/`
 const MOBILE_DOCUMENT_VIEW_HEADER = 'x-dsh-mobile-view'
 const MAX_MOBILE_BOOT_BATCH_BYTES = 32 * 1024 * 1024
@@ -750,7 +758,7 @@ function rewriteMobileApplicationPreloads(html: string, replacements: ReadonlyMa
 
 function rewriteMobileIndexWithBatch(
   html: string,
-  options: { readonly sizes?: ReadonlyMap<string, number>; readonly passThrough?: ReadonlySet<string>; readonly excludedClientModules?: readonly string[]; readonly csrfCookie?: string; readonly viewId?: string } = {},
+  options: { readonly sizes?: ReadonlyMap<string, number>; readonly passThrough?: ReadonlySet<string>; readonly excludedClientModules?: readonly string[]; readonly csrfCookie?: string; readonly viewId?: string; readonly compatPath?: string } = {},
 ): RewrittenMobileIndex {
   const plan = parseMobileBootPlan(html, options.excludedClientModules)
   const projected = projectMobileBootGraph(plan, options)
@@ -758,7 +766,7 @@ function rewriteMobileIndexWithBatch(
   const replacement = `${MOBILE_GATEWAY_REACHABILITY_BOOTSTRAP}${transportBootstrap}${mobileCsrfFetchBootstrap(options.csrfCookie ?? CSRF_COOKIE)}window.__DSH_MOBILE_FRONTEND__="dedicated";${plan.assignment}${JSON.stringify(plan.parsed)};`
   const rewritten = `${html.slice(0, plan.replaceStart)}${replacement}${html.slice(plan.replaceEnd)}`
   return Object.freeze({
-    html: ensureMobileGatewayMarker(ensureMobileViewport(ensureMobileCompatibility(rewriteMobileApplicationPreloads(rewritten, projected.preloadReplacements)))),
+    html: ensureMobileGatewayMarker(ensureMobileViewport(ensureMobileCompatibility(rewriteMobileApplicationPreloads(rewritten, projected.preloadReplacements), options.compatPath))),
     batches: projected.batches,
     graphTransport: projected.graphTransport,
   })
@@ -2009,7 +2017,8 @@ export class MobileAccessGateway {
     const clientModules = target.decodedPathname === `${AUTH_PREFIX}/client-modules`
     const requestedExtension = extensionTarget(target.decodedPathname)
     const requestedMobileBootBatch = mobileBootBatchKey(target.decodedPathname)
-    const customAsset = (request.method === 'GET' || request.method === 'HEAD')
+    const requestedCompatRevision = mobileCompatibilityRevision(target.decodedPathname)
+    const customAsset: OwnedStaticAsset | undefined = (request.method === 'GET' || request.method === 'HEAD')
       ? target.decodedPathname === `${AUTH_PREFIX}/custom.css`
         ? {
             file: this.config.customCssFile,
@@ -2034,7 +2043,14 @@ export class MobileAccessGateway {
                   contentType: 'text/javascript; charset=utf-8',
                   fallback: undefined,
                 }
-              : undefined
+              : requestedCompatRevision === undefined
+                ? undefined
+                : {
+                    file: this.config.mobileCompatibilityFile,
+                    contentType: 'text/javascript; charset=utf-8',
+                    fallback: undefined,
+                    digest: requestedCompatRevision,
+                  }
       : undefined
     if (customAsset === undefined && requestedMobileBootBatch === undefined && !computerImages && !computerImage && !workspaceDirectories && !clientModules
       && extensionTarget(target.decodedPathname) === undefined
@@ -2138,22 +2154,50 @@ export class MobileAccessGateway {
         }
         if (body.byteLength > LEGACY_CUSTOM_ASSET_LIMIT) throw new HttpError(413, 'payload_too_large')
         operation.signal.throwIfAborted()
-        const etag = `"${createHash('sha256').update(body).digest('hex')}"`
+        // Owned assets are the per-load scripts and styles the gateway serves itself
+        // (`compat.js`, `mobile-layout.js`, custom CSS/JS). They carry `no-cache`, so a
+        // client that cannot be relied on to revalidate them pays for the whole body on
+        // every page load; compressing the wire format is the one lever that also pays
+        // off for a client that never sends a conditional request.
+        const compressible = isCompressibleContentType(customAsset.contentType)
+          && body.byteLength >= MIN_COMPRESSIBLE_BYTES
+        const compressed = compressible && acceptsGzip(request.headers['accept-encoding'])
+        const digest = createHash('sha256').update(body).digest('hex')
+        // A revisioned path promises the exact bytes it names. Serving a changed body
+        // there would let an `immutable` cache hold two different resources under one
+        // URL, so a stale revision is refused rather than answered.
+        if (customAsset.digest !== undefined && customAsset.digest !== digest) throw new HttpError(404, 'not_found')
+        // A gzip body is a different representation of the same resource, so it needs
+        // its own validator: one shared ETag would let a cache answer `304` for bytes
+        // it never stored in the encoding the client asked for.
+        const etag = compressed ? `"${digest}-gzip"` : `"${digest}"`
         const responseHeaders: Record<string, string | number> = { ETag: etag }
         if (mtime !== undefined) responseHeaders['Last-Modified'] = mtime.toUTCString()
+        if (compressible) responseHeaders.Vary = 'Accept-Encoding'
         setSecurityHeaders(response, this.tlsEnabled)
-        response.setHeader('Cache-Control', 'private, no-cache')
+        response.setHeader('Cache-Control', customAsset.digest === undefined
+          ? 'private, no-cache'
+          : 'private, max-age=31536000, immutable')
         if (matchesIfNoneMatch(headerValue(request.headers, 'if-none-match'), etag)) {
+          // A 304 confirms the representation the client already holds, so it carries
+          // only the validators and `Vary`: `Content-Encoding`/`Content-Type` describe
+          // a body this response does not send, and the stored 200 already has them.
           response.writeHead(304, responseHeaders)
           response.end()
           return
         }
+        // Compress only for a body response: a revalidation above must not pay for
+        // bytes it discards.
+        operation.signal.throwIfAborted()
+        const payload = compressed ? await gzipBuffer(body) : body
+        operation.signal.throwIfAborted()
         response.writeHead(200, {
           ...responseHeaders,
+          ...compressed ? { 'Content-Encoding': 'gzip' } : {},
           'Content-Type': customAsset.contentType,
-          'Content-Length': body.byteLength,
+          'Content-Length': payload.byteLength,
         })
-        if (request.method === 'HEAD') response.end(); else response.end(body)
+        if (request.method === 'HEAD') response.end(); else response.end(payload)
         return
       } finally {
         operation.release()
@@ -2854,7 +2898,8 @@ export class MobileAccessGateway {
           const cookies = browserAuthCookies(request.headers.cookie)
           const csrfCookie = this.tlsEnabled && cookies.has(HOST_SESSION_COOKIE) ? HOST_CSRF_COOKIE : CSRF_COOKIE
           const viewId = randomBytes(16).toString('hex')
-          const rewritten = rewriteMobileIndexWithBatch(html, { ...options, csrfCookie, viewId })
+          const compatPath = await this.mobileCompatibilityUrl(operation.signal)
+          const rewritten = rewriteMobileIndexWithBatch(html, { ...options, csrfCookie, viewId, compatPath })
           operation.signal.throwIfAborted()
           for (const batch of rewritten.batches) this.rememberMobileBootBatch(batch)
           if (rewritten.graphTransport) this.rememberMobileDocumentView(viewId, authorization, excludedClientModules)
@@ -3090,6 +3135,29 @@ export class MobileAccessGateway {
       signal?.removeEventListener('abort', abort)
       upstreamRequest?.destroy()
       await upstreamClosed
+    }
+  }
+
+  /**
+   * Name the compatibility bundle by content, so a reload asks for it by revision.
+   *
+   * The digest is computed from the bytes on every page load rather than memoised on
+   * a modification-time signature: an edit that keeps the length and restores the
+   * timestamp (a build step preserving mtime, a same-size patch) is invisible to such
+   * a signature, and the document would then name a revision the route refuses with
+   * `404` — losing the shim exactly on the old WebViews it exists for. Hashing the
+   * ~78 KB bundle costs far less than the page load it belongs to.
+   *
+   * A missing bundle keeps the plain path, where the route reports the usual `503`
+   * instead of handing the document a URL that cannot exist.
+   */
+  private async mobileCompatibilityUrl(signal: AbortSignal): Promise<string> {
+    try {
+      const body = await readFile(this.config.mobileCompatibilityFile, { signal })
+      return mobileCompatibilityRevisionPath(createHash('sha256').update(body).digest('hex'))
+    } catch (error) {
+      if (signal.aborted) throw error
+      return MOBILE_COMPAT_PATH
     }
   }
 

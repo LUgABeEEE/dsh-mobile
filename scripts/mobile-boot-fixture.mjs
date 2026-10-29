@@ -83,8 +83,17 @@ export async function within(promise, timeoutMs, failure) {
   } finally { clearTimeout(timer) }
 }
 
-/** Install the actual npm tarball and reject source or unrelated runtime fallbacks. */
-export async function createMobileProfile(root, { tarball, dshBin, excludedClientModules = [], compressedWebSocket = false, missingCompanion = false, extraPatches = [], hostExecution, packageStoreDirectory, packageImportMethod }) {
+/**
+ * Install the actual npm tarball and reject source or unrelated runtime fallbacks.
+ *
+ * `websocketCompressionPaths` states the live-path policy explicitly: omit it for the
+ * plugin's own default, `[]` for the uncompressed relay, or a path list. The boolean
+ * `compressedWebSocket` is kept for the existing callers that predate the default.
+ */
+export async function createMobileProfile(root, {
+  tarball, dshBin, excludedClientModules = [], compressedWebSocket = false, missingCompanion = false,
+  extraPatches = [], hostExecution, packageStoreDirectory, packageImportMethod, websocketCompressionPaths,
+}) {
   const home = join(root, 'home')
   const profile = join(home, 'profiles', 'web')
   const mobileState = join(home, 'mobile-access')
@@ -96,6 +105,9 @@ export async function createMobileProfile(root, { tarball, dshBin, excludedClien
     dependencies: {},
     dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app'] } },
   }, null, 2) + '\n')
+  const compression = websocketCompressionPaths === undefined
+    ? (compressedWebSocket ? { paths: ['/api/remote.mux'] } : undefined)
+    : { paths: websocketCompressionPaths }
   await writeFile(join(profile, 'cordis.patch.yml'), JSON.stringify([{
     id: 'mobile-access',
     config: {
@@ -107,7 +119,7 @@ export async function createMobileProfile(root, { tarball, dshBin, excludedClien
       initiallyEnabled: true,
       ...(hostExecution === undefined ? {} : { hostExecution }),
       ...(excludedClientModules.length > 0 ? { excludedClientModules } : {}),
-      ...(compressedWebSocket ? { websocketCompression: { paths: ['/api/remote.mux'] } } : {}),
+      ...(compression === undefined ? {} : { websocketCompression: compression }),
       listenHost: '127.0.0.1',
       listenPort: 0,
       allowedCidrs: ['127.0.0.0/8'],
