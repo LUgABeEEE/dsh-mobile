@@ -1456,10 +1456,10 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
   const irohPair = element('button', 'dsh-mobile-control__primary'); irohPair.type = 'button'; irohPair.textContent = t('generateIrohQr')
   const irohQr = element('div', 'dsh-mobile-control__qr is-expandable'); irohQr.hidden = true
   const irohPairStatus = element('p', 'dsh-mobile-control__component-status')
-  const irohCopyDescriptor = element('button', 'dsh-mobile-control__secondary'); irohCopyDescriptor.type = 'button'; irohCopyDescriptor.textContent = t('copyPairLink'); irohCopyDescriptor.hidden = true
+  const irohCopyDescriptor = element('button', 'dsh-mobile-control__secondary'); irohCopyDescriptor.type = 'button'; irohCopyDescriptor.textContent = t('copyPairLink'); irohCopyDescriptor.hidden = true; irohCopyDescriptor.disabled = true
   // The pairing trigger sits beside enable/disable remote access; the QR code and
   // its status stay in the card below as the result area.
-  irohPairing.append(irohPairingTitle, irohQr, irohPairStatus, irohCopyDescriptor)
+  irohPairing.append(irohPairingTitle, irohQr, irohPairStatus)
   const irohDetails = element('details', 'dsh-mobile-control__details')
   const irohDetailsSummary = element('summary'); irohDetailsSummary.textContent = t('componentDetails')
   const irohDetailsBody = element('div', 'dsh-mobile-control__details-body')
@@ -1526,8 +1526,9 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
   let remotePairingBusy = false
   let remotePairingGeneration = 0
   let activeIrohDescriptor = ''
+  let activeIrohPairExpiresAt = 0
   let activeIrohQrSvg = ''
-  remoteActions.append(remoteToggle, irohPair, remoteLogin, remoteReconnect, remotePair, remoteCopyLink)
+  remoteActions.append(remoteToggle, irohPair, irohCopyDescriptor, remoteLogin, remoteReconnect, remotePair, remoteCopyLink)
   const remoteManageRow = element('div', 'dsh-mobile-control__manage-row')
   const remoteDevices = element('button', 'dsh-mobile-control__manage'); remoteDevices.type = 'button'; remoteDevices.textContent = t('manageRemoteDevices'); remoteDevices.disabled = true
   const remoteReset = element('button', 'dsh-mobile-control__manage'); remoteReset.type = 'button'; remoteReset.textContent = t('resetRemoteLogin')
@@ -2609,16 +2610,18 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
     // The trigger now lives in the shared action row, so it must hide for the
     // other remote providers instead of showing a permanently disabled button.
     irohPair.hidden = !iroh
+    irohCopyDescriptor.hidden = !iroh
     if (iroh && irohInstalled && activeIrohQrSvg === '') showIrohQrPlaceholder()
     else if (!iroh || !irohInstalled) irohQr.hidden = true
     if ((!iroh || !remoteReady) && activeIrohDescriptor !== '') {
       activeIrohDescriptor = ''
+      activeIrohPairExpiresAt = 0
       activeIrohQrSvg = ''
       showQr('', irohQr)
       setIrohQrZoomOpen(false)
-      irohCopyDescriptor.hidden = true
       irohPairStatus.textContent = ''
     }
+    irohCopyDescriptor.disabled = !iroh || !remoteReady || remoteProviderBusy || activeIrohDescriptor === '' || activeIrohPairExpiresAt <= Date.now()
     if (origin) { remoteReconnect.disabled = remoteProviderBusy || remoteReconnectBusy; remoteReset.disabled = remoteProviderBusy }
     else remoteReset.disabled = false
     if (!remoteReady) {
@@ -2779,12 +2782,19 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
     if (event.key !== 'Escape') return
     closeIrohQrZoom()
   })
-  const openIrohPairing = (): Promise<void> => controlRequestJson('/api/mobile-access/remote/iroh/pairing/begin', { method: 'POST', body: '{}' }).then(async data => {
+  const openIrohPairing = async (): Promise<void> => {
+    const generation = remotePairingGeneration
+    activeIrohDescriptor = ''
+    activeIrohPairExpiresAt = 0
+    irohCopyDescriptor.disabled = true
+    const data = await controlRequestJson('/api/mobile-access/remote/iroh/pairing/begin', { method: 'POST', body: '{}' })
+    if (lifecycle.signal.aborted || remoteProvider !== 'iroh' || !remoteReady || generation !== remotePairingGeneration) return
     const record = data as Record<string, unknown>
     const qrSvg = typeof record.qrSvg === 'string' ? record.qrSvg : ''
     const code = typeof record.irohCode === 'string' ? record.irohCode : ''
+    const expiresAt = typeof record.expiresAt === 'number' && Number.isFinite(record.expiresAt) ? record.expiresAt : 0
     showQr(qrSvg, irohQr)
-    if (qrSvg === '' || code === '') { activeIrohQrSvg = ''; irohPairStatus.textContent = t('keyGenerationFailed'); return }
+    if (qrSvg === '' || code === '' || expiresAt <= Date.now()) { activeIrohQrSvg = ''; irohPairStatus.textContent = t('keyGenerationFailed'); return }
     activeIrohQrSvg = qrSvg
     // The QR and the copy action share the same one-time window. Re-copying
     // cannot invalidate a code the phone may already be scanning.
@@ -2792,12 +2802,14 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
     const descriptor: Record<string, unknown> = {}
     for (const field of fields) descriptor[field] = record[field]
     activeIrohDescriptor = JSON.stringify(descriptor)
-    irohCopyDescriptor.hidden = false
+    activeIrohPairExpiresAt = expiresAt
     irohPairStatus.textContent = t('irohPairingReady', { code })
-  })
+  }
   irohPair.addEventListener('click', () => {
-    if (remoteProviderBusy) return
+    if (remoteProviderBusy || !remoteReady || remoteProvider !== 'iroh') return
     remoteProviderBusy = true
+    remoteSnapshotEpoch += 1
+    renderRemote(latestRemoteState)
     irohPair.disabled = true
     irohPairStatus.textContent = t('loadingRemoteStatus')
     void openIrohPairing()
@@ -2805,7 +2817,7 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
       .finally(() => { remoteProviderBusy = false; loadRemote() })
   })
   irohCopyDescriptor.addEventListener('click', () => {
-    if (activeIrohDescriptor === '') return
+    if (remoteProviderBusy || !remoteReady || remoteProvider !== 'iroh' || activeIrohDescriptor === '' || activeIrohPairExpiresAt <= Date.now()) return
     void navigator.clipboard.writeText(activeIrohDescriptor).then(
       () => { irohPairStatus.textContent = t('irohLinkCopied') },
       () => { irohPairStatus.textContent = t('remoteQrReady') },
@@ -5180,6 +5192,7 @@ export const CONTROL_STYLES = `
 .dsh-mobile-control__frp-setup>.dsh-mobile-control__frp-step,.dsh-mobile-control__frp-group,.dsh-mobile-control__frp-overview{border:0;border-radius:0;background:transparent}
 .dsh-mobile-control__ws-paths{border:0;border-radius:0;background:transparent;padding:0;margin:10px 0 0}
 .dsh-mobile-control__view.is-remote .dsh-mobile-control__remote-workspace>.dsh-mobile-control__actions{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+.dsh-mobile-control__view.is-remote .dsh-mobile-control__remote-workspace>.dsh-mobile-control__actions[hidden]{display:none}
 .dsh-mobile-control__view.is-remote .dsh-mobile-control__origin-setup .dsh-mobile-control__actions.dsh-mobile-control__caddy-actions{display:grid;grid-template-columns:minmax(0,1fr)}
 .dsh-mobile-control__remote-workspace{border:0;border-radius:0;background:transparent;box-shadow:none}
 .dsh-mobile-control__stage-header{border:0;border-radius:0;background:transparent;box-shadow:none}

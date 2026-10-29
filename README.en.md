@@ -26,13 +26,13 @@
   <a href="#compatibility">Compatibility</a> ·
   <a href="docs/README.md">Documentation</a> ·
   <a href="#contributors">Contributors</a> ·
-  <a href="https://github.com/saya-ch/dsh-mobile/releases/tag/v0.6.18">Release notes</a> ·
+  <a href="https://github.com/saya-ch/dsh-mobile/releases/tag/v0.7.1">Release notes</a> ·
   <a href="README.md">简体中文</a>
 </p>
 
 > DSH Mobile is a DeepSeek Harness community plugin; the native app supports Android only.
 >
-> **Current stable release: 0.7.0**. Add experimental iroh connections, improve sidebars under translucent skins, third-party menu layering and fullscreen-panel exit, and offer recovery feedback when mobile customization fails to load. Existing HTTPS channels and older Apps remain usable; iroh requires the full App with native transport. [Plugin release notes and downloads](https://github.com/saya-ch/dsh-mobile/releases/tag/v0.7.0) · [Full changelog](CHANGELOG.md).
+> **Current stable release: 0.7.1**. Reorganize Mobile access and device management, improve cloudflared settings, pairing expiry and folded sidebars, and add iroh component cleanup and VPN troubleshooting. The independently released Android App remains at 0.7.0; existing pairings are kept. [Plugin release notes and downloads](https://github.com/saya-ch/dsh-mobile/releases/tag/v0.7.1) · [Full changelog](CHANGELOG.md).
 >
 > **Version policy**: since plugin **0.6.2**, the Android app and plugin use independent version numbers and releases. Their numbers do not need to match, and a plugin update does not imply an app update. [Compatibility notes](#compatibility).
 
@@ -42,7 +42,7 @@
   <sub><a href="https://github.com/saya-ch/dsh-mobile/releases/download/android-v0.7.0/dsh-mobile-android-v0.7.0-iroh.apk">64-bit full APK (experimental iroh)</a> · <a href="https://github.com/saya-ch/dsh-mobile/releases/tag/android-v0.7.0">Release notes and checksums</a></sub>
 </p>
 
-DSH Mobile is a DeepSeek Harness plugin that lets a mobile browser or the Android app connect over a protected LAN or an optional Tailscale Funnel, cpolar, cloudflared, self-hosted FRP, or own reverse-proxy remote path. Both routes reach the same sessions, Workspaces, messages, and tools. The computer manages their switches and pairing authorizations separately; the Android app lists paired computers together. The plugin does not modify DeepSeek Harness source.
+DSH Mobile is a DeepSeek Harness plugin that lets a mobile browser or the Android app connect over a protected LAN or an optional Tailscale Funnel, cpolar, cloudflared, self-hosted FRP, or own reverse-proxy remote path. The full Android App also supports experimental iroh encrypted direct connections with relay fallback. The phone reaches the computer's sessions, Workspaces, messages and tools. The computer manages LAN and remote switches and pairing authorizations separately; the Android app lists paired computers together. The plugin does not modify DeepSeek Harness source.
 
 Mobile access uses a dedicated HTTPS origin and device pairing. The Android app pins the private LAN CA; public remote paths use platform-trusted certificates. The self-signed FRP entry additionally requires the 0.4.6 app to pin a remote CA during pairing.
 
@@ -51,9 +51,9 @@ It also lets you customize the phone from a DSH conversation: `/mobile <what you
 ## What it does
 
 - **Continue DSH work from a phone**: the same sessions, Workspaces, messages, and tools, in real time.
-- **Customize the phone UI by talking to DSH**: request layout, interaction, or feature changes in a conversation; open pages usually refresh after the files have been changed.
+- **Customize the phone UI by talking to DSH**: request layout, interaction, or feature changes in a conversation; changed customization resources are usually picked up automatically.
 - **A dedicated touch layout**: session drawer, tool details, settings, question cards, and composer reorganized for phones; the app follows the system locale (Chinese/English/Italian), plugin UI follows DSH's locale.
-- **Several remote options**: Tailscale, cpolar, cloudflared quick/named tunnels, self-hosted FRP, or your own reverse proxy; Windows/Linux x64 can also let the plugin manage Caddy HTTPS and certificates.
+- **Several remote options**: Tailscale, cpolar, cloudflared quick/named tunnels, self-hosted FRP, your own reverse proxy, and experimental iroh without a domain or public port; Windows/Linux x64 can also let the plugin manage Caddy HTTPS and certificates.
 - **Pairing and multi-device**: pair once via QR code, link, or key; Wi-Fi, hotspot, or IP changes normally recover automatically; the app lists LAN and remote paired computers together, checks their reachability periodically, and lets you switch, re-pair, or delete a local record.
 - **One-click diagnostics and approval**: check versions, gateway, network interface, firewall, and the remote path with a redacted report; approve blocked third-party plugin connections per exact path.
 - **Task system notifications**: completion and pending-input alerts via Android system notifications, enabled from DSH General settings inside the app, with redacted lock-screen text.
@@ -153,6 +153,8 @@ For manual browser pairing, enter the 43-character pairing code shown on the com
 
 Use this after the phone leaves the computer's network. Remote access is disabled by default, and the phone needs no separate Tailscale, cpolar, cloudflared, or FRP app.
 
+**Without a domain or public inbound access, you can also try iroh (experimental).** Install the pinned computer component and the **full Android App 0.7.0** to connect through encrypted direct links with relay fallback. Computer support is currently Windows/Linux x64; the compatibility APK and mobile browsers cannot use iroh. This is not a guaranteed connectivity or acceleration service: VPNs, proxies and both networks can affect it. See [iroh setup and troubleshooting](docs/IROH.en.md).
+
 Remote providers may impose bandwidth and connection limits: the [cpolar Free plan](https://svip.cpolar.com/pricing) currently lists 1 Mbps, while [Tailscale Funnel](https://tailscale.com/docs/features/tailscale-funnel#requirements-and-limitations) has non-configurable bandwidth limits, and a cloudflared quick tunnel is a free Cloudflare address with randomized hostnames and rate limiting. DSH Mobile uses gzip for static assets, persistent WebSockets, and load-on-scroll history to improve loading; DSH controls the Session history window and page sizes, and the plugin cannot raise provider quotas.
 
 If the page opens but stays on “Reconnecting,” distinguish WebSocket upgrade failures, slow synchronization, and heartbeat deadlines using the [slow-link and reconnection guide](docs/SLOW_CONNECTIONS.en.md). Version 0.5.4 also offers opt-in WebSocket compression per exact path, disabled by default; for long Sessions or metered links, follow the guide and compare actual transfer volume.
@@ -161,6 +163,7 @@ The usage notes below reflect the maintainer's long-term experience on a persona
 
 | Channel | Prerequisites | Address and limitation | Maintainer's usage notes |
 | --- | --- | --- | --- |
+| iroh (experimental) | Windows/Linux x64 computer component and full Android App 0.7.0 | No domain, port forwarding or tunnel account; encrypted direct links with relay fallback; [setup and VPN troubleshooting](docs/IROH.en.md) | An option without public ingress, not a stability ranking; verify on both actual networks. Mobile browsers are unsupported |
 | cpolar | Account and Authtoken | Free temporary URLs may change | The free plan's bandwidth limit noticeably slows everyday loading and synchronization |
 | cloudflared quick tunnel | No account or domain | Random temporary URL; no SSE, with [notification limits](docs/CLOUDFLARE_TUNNEL.en.md#quick-tunnel-feature-limits); [officially intended only for development and testing](https://developers.cloudflare.com/tunnel/get-started/quick-tunnels/) | Frequent disconnections in long-term use, with the cause still unconfirmed; a temporary or testing choice |
 | cloudflared named tunnel | Cloudflare account and domain | Fixed hostname; [setup guide](docs/CLOUDFLARE_TUNNEL.en.md) | The most stable of the channels used long-term; worth trying first if you have an account and domain |
@@ -173,8 +176,10 @@ The usage notes below reflect the maintainer's long-term experience on a persona
   <img src="https://raw.githubusercontent.com/saya-ch/dsh-mobile/main/assets/screenshots/remote-access-en.png" width="82%" alt="DSH Mobile remote access and provider selection">
 </p>
 
-1. Open **Mobile Access → Remote** in the lower-left corner of DeepSeek Harness, choose a channel and complete its sign-in or configuration.
-2. Once ready, select **Create remote pairing QR code**. External proxy mode's **Backend listening** does not establish public readiness; verify public HTTPS and WebSocket access as well.
+The following steps cover HTTPS remote channels. **iroh uses its own “Generate iroh pairing QR code” action and the full App, as described below.** Do not open its descriptor as an ordinary browser URL.
+
+1. Open **Mobile Access** in the lower-left corner of DeepSeek Harness, choose an HTTPS channel and complete its sign-in or configuration.
+2. Once ready, select **Generate pairing QR code**. External proxy mode's **Backend listening** does not establish public readiness; verify public HTTPS and WebSocket access as well.
 3. Select **Remote access** in the Android app and scan the current QR code. A publicly trusted certificate also permits pairing from a mobile browser.
 4. Later launches reconnect using the saved address and credential. If a temporary address changes, scan the current computer QR code to verify it. Do not clear app data; the stored device token never goes to a new Origin.
 
@@ -182,6 +187,7 @@ The usage notes below reflect the maintainer's long-term experience on a persona
 <summary>Installation and sign-in for each channel</summary>
 
 After selecting the channel in the panel:
+   - **iroh (experimental)**: select iroh, choose **Install official component**, then enable remote access after installation and verification. Once ready, choose **Generate iroh pairing QR code** and scan it through the full Android App's iroh flow, or copy the pairing link. Main actions stay hidden before installation; afterwards all three share one row, with Copy disabled until valid pairing data exists. After stopping the channel, component details let you remove the downloaded program without deleting identity or pairings. See the [iroh guide](docs/IROH.en.md) for the full procedure and limits.
    - **Tailscale Funnel**: select **Enable remote access**, complete the one-time Tailscale sign-in on the official page, follow the panel prompt to allow Funnel, then return to DSH and wait until the connection is ready.
    - **cpolar**: select **Install official component**, sign in to the cpolar dashboard and obtain an Authtoken, paste it, then select **Save and connect**. The component is downloaded into the plugin's private directory only after confirmation; free temporary addresses may change after DSH or cpolar restarts.
    - **Self-hosted FRP (advanced)**: if you have a VPS, select **Self-hosted FRP** under **Mobile access** and enter its frps details and a public HTTPS domain or real public IPv4 address. Apply the restricted frps + Caddy template manually, or deploy with an SSH key on Ubuntu/Debian with systemd. Password login is unsupported. Use manual deployment and merge the import as described in the guide when custom Caddy sites already exist. Verify the VPS host keys against its console before deployment or cleanup. The local `frpc` is downloaded and verified on demand; VPS cleanup is separate. Android app 0.3.3 or later is required. The [self-hosted FRP guide](docs/SELF_HOSTED_FRP.en.md) covers certificates, ports, and the complete procedure.
@@ -209,11 +215,11 @@ See [Compatibility](#compatibility) for the supported components and platforms. 
 
 ### Experimental iroh connection
 
-Plugin 0.7.0 integrates the experimental connection from [dsh-mobile-iroh](https://github.com/saya-ch/dsh-mobile-iroh): encrypted direct or relayed access without a public domain, port forwarding or a tunnel account. Select **Mobile access → Remote → iroh (Experimental)** on the computer, install and verify the official component, enable it, then scan its dedicated QR code with the full App. LAN and existing HTTPS channels remain available; mobile browsers cannot connect through iroh directly. See the [iroh guide](docs/IROH.en.md) for platforms, pairing and troubleshooting.
+Since plugin 0.7.0, the experimental transport from [dsh-mobile-iroh](https://github.com/saya-ch/dsh-mobile-iroh) is integrated into this repository. Its computer component, native Android transport and full APK are maintained here. The standalone repository retains the design and prototype records; normal installation uses this project's plugin and App, without maintaining two Apps. See the [iroh guide](docs/IROH.en.md) for setup, platform limits and troubleshooting.
 
 ## Extend and customize
 
-Type `/mobile <what you want>` in a DSH conversation to hand the request to the current agent. Once the files have been changed, the phone page usually refreshes within a few seconds. For example:
+Type `/mobile <what you want>` in a DSH conversation to hand the request to the current agent. Changed customization resources are usually picked up within a few seconds. For example:
 
 ```text
 /mobile turn the phone UI into an old CRT terminal, with messages scrolling like terminal output
@@ -418,6 +424,13 @@ On macOS, local network, cloudflared, self-hosted FRP and the own reverse proxy 
 
 | DSH Mobile plugin | Verified DeepSeek Harness version |
 | --- | --- |
+| `0.7.1` | Isolated packed installation, mobile sidebar and breakpoint hit tests on `0.2.1-rc.3`, plus access-panel, pairing-expiry and component-cleanup checks. See [CI](https://github.com/saya-ch/dsh-mobile/actions/workflows/ci.yml) for the automated matrix; browser checks do not establish every phone, plugin or public route |
+
+<details>
+<summary>Earlier release checks</summary>
+
+| DSH Mobile plugin | Verified DeepSeek Harness version |
+| --- | --- |
 | `0.6.11` | Isolated packed-browser CI on `0.1.7-alpha.2`, `0.1.7-rc.1`, `0.1.7-rc.2`, `0.2.0-rc.1`, `0.2.0-rc.2`, `0.2.1-alpha.2` and `0.2.1-alpha.3`; additional real history-pagination, viewport-preservation and manual-loading checks on `0.2.0-rc.2` and `0.2.1-alpha.3`. Browser checks do not establish acceptance of every phone engine, third-party plugin or public route |
 | `0.6.12` | Packed installation, mobile boot, missing-API simulation, Workspace streaming, retained-page transport recovery and mobile settings on `0.2.1-rc.2`; authentication/resource regression with the actual community `dsh-web-startup-auth@0.1.12` on `0.2.0-rc.2`. This does not establish physical Chromium 92, arbitrary auth-plugin or public-route acceptance |
 | `0.6.13` | Packed text/image HTTP 400 recovery, Host refusal guard and error-feedback checks on `0.2.0-rc.2` and `0.2.1-rc.2`; Gateway 408/431 classification, bounded diagnostics and four Gateway factory wiring passed local tests. DSH source, iroh P2P and Android native code are outside this release |
@@ -427,9 +440,6 @@ On macOS, local network, cloudflared, self-hosted FRP and the own reverse proxy 
 | `0.6.17` | `0.2.0-rc.2` and `0.2.1-rc.2`: 15 real packed Chromium directory-picker checks, the old-WebView missing-API simulation and Workspace mux reads; the published package was then installed into official Desktop `0.2.1-rc.2` and its files matched byte for byte |
 | `0.6.18` | `0.2.1-rc.2`: 18 real packed Chromium directory-picker checks, including compact layout, folder creation and cancellation; the candidate was installed in local official Desktop `0.2.1-rc.3` with LAN and Cloudflare gateways running |
 | `0.7.0` | Packed-browser CI across eight DSH versions (`0.1.7-alpha.2`–`0.2.1-rc.2`), Windows/Linux Gateway and iroh Host checks, both Android ABIs and compatibility APK checks. See the [iroh guide](docs/IROH.en.md) for device and network limits |
-
-<details>
-<summary>Historical version checks</summary>
 
 | DSH Mobile plugin | Verified DeepSeek Harness version |
 | --- | --- |

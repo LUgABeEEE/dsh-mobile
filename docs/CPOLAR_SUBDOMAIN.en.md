@@ -12,7 +12,7 @@ The public entry still reaches the DSH Mobile Gateway with HTTPS, device pairing
 
 1. Check that your cpolar plan supports reserving a secondary subdomain. The [official tutorial](https://www.cpolar.com/blog/cpolar-quick-start-tutorial-raspberry-pi-series) uses Basic plans or above; your account dashboard is the authority for current eligibility, available regions and naming rules.
 2. Reserve a name under **Reserved → Reserve a secondary subdomain** in the [cpolar dashboard](https://dashboard.cpolar.com), and record the selected region.
-3. Install the component and save the Authtoken under **Mobile access → Remote → cpolar** in DSH.
+3. Install the component and save the Authtoken under **Mobile access → cpolar** in DSH.
 
 The region must match the reservation. The official command example uses `cn_vip`, but do not copy it for a reservation in another region; confirm other identifiers against cpolar's current instructions. This guide does not maintain a fixed region or domain-suffix mapping.
 
@@ -52,7 +52,7 @@ If you already customize paths, listeners, TLS or other settings, **keep your cu
 
 Leading and trailing whitespace is removed. The plugin only bounds the requested name's syntax: it starts with a letter or digit, contains letters, digits, `.`, `_`, `-`, and is at most 63 characters long. This is not a DNS-label specification or a guarantee of server acceptance. The account, region and cpolar's actual rules determine whether the reservation is valid. The [official subdomain instructions](https://www.cpolar.com/docs#configure-secondary-subdomain) and tutorial describe the `-subdomain` and `-region` arguments.
 
-After checking that no tasks are running, quit DSH completely and reopen it, then connect under **Mobile access → Remote → cpolar**. Use the actual HTTPS address shown by the panel; do not construct a domain suffix yourself.
+After checking that no tasks are running, quit DSH completely and reopen it, then connect under **Mobile access → cpolar**. Use the actual HTTPS address shown by the panel; do not construct a domain suffix yourself.
 
 ## Verification and pairing
 

@@ -57,7 +57,7 @@ For a separate proxy host, configure routing and a firewall rule limited to its 
 
 If you already configured a named tunnel the official way (`cloudflared tunnel`, possibly as a systemd unit, a launchd job or a Windows service), **you do not need the plugin to install a second copy, and you do not need to store a tunnel Token in it**. Use the own-reverse-proxy provider above and point your existing tunnel at the plugin's HTTP backend:
 
-1. In **Mobile access → Remote → Self-hosted → Own reverse proxy**, fill in: the public HTTPS address as your tunnel's public hostname (for example `https://dsh.example.com`), the private listen IP as `127.0.0.1`, an unused backend port (default `3444`), and the allowed source as `127.0.0.0/8`.
+1. In **Mobile access → Own reverse proxy**, fill in: the public HTTPS address as your tunnel's public hostname (for example `https://dsh.example.com`), the private listen IP as `127.0.0.1`, an unused backend port (default `3444`), and the allowed source as `127.0.0.0/8`.
 2. Select **Save and start backend** and copy the HTTP backend address the panel shows.
 3. For a locally managed tunnel, update the matching `ingress` entry's `service` while keeping your existing tunnel identity, credentials and other routes. This is an excerpt, not a replacement configuration:
 

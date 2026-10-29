@@ -18,7 +18,7 @@
 | 了解输入栏换行、附加控件与触摸目标 | [移动输入栏](MOBILE_COMPOSER_TOOLBAR.md) | [Mobile composer](MOBILE_COMPOSER_TOOLBAR.en.md) |
 | 保留电脑皮肤，排查移动页面的背景与可读性 | [皮肤与移动布局](SKIN_COMPATIBILITY.md) | [Skins and mobile layout](SKIN_COMPATIBILITY.en.md) |
 
-在 Android App 中连接公开隧道或自建入口时请选择 **远程访问**。公开受信任证书也可用手机浏览器配对；既有 frps 的自签入口需要 **0.4.6 或更高版本 App** 固定远程 CA。各通道仍要求 DSH Mobile 配对，不能直接暴露普通 DSH 或私有 HTTP 后端。
+在 Android App 中连接公开隧道或自建入口时请选择 **远程访问**。公开受信任证书也可用手机浏览器配对；既有 frps 的自签入口需要 **0.4.6 或更高版本 App** 固定远程 CA。**iroh 则使用完整版 App 0.7.0 的独立配对流程**，不支持兼容版 APK 或手机浏览器。各通道仍要求 DSH Mobile 配对，不能直接暴露普通 DSH 或私有 HTTP 后端。
 
 ## 页面与网络设置 / Page and network settings
 

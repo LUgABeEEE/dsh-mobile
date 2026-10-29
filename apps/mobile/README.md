@@ -40,7 +40,7 @@ Deleting a local record removes its saved token and pinned CA, not the computer'
 
 App 0.7.0/build 85 adds optional experimental iroh pairing and native transport in the full APK, working with plugin 0.7.0 or later. The compatibility APK retains existing HTTPS channels without native libraries, including on 32-bit devices. Legacy updates download compatibility by default; choose the full APK explicitly when using iroh. Both retain the device list, HTTPS pairings and established signer. Records from the separate experimental App do not migrate automatically.
 
-iroh is off by default. The computer installs a verified component, then generates a dedicated pairing QR code under **Mobile access → Remote → iroh (Experimental)**. Direct/relayed connectivity depends on both networks; mobile browsers cannot use this transport directly. See the [iroh guide](../../docs/IROH.en.md).
+iroh is off by default. Select **iroh (Experimental)** in the computer's **Mobile access** connection list, install the verified component, then enable it and generate a dedicated pairing QR code. Direct/relayed connectivity depends on both networks; mobile browsers cannot use this transport directly. See the [iroh guide](../../docs/IROH.en.md).
 
 ## 0.6.8 update
 

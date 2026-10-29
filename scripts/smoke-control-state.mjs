@@ -175,6 +175,13 @@ async function withControl(browser, name, options, run) {
       json(response, 200, state.remote)
       return
     }
+    if (pathname === `${prefix}/remote/iroh/pairing/begin` && request.method === 'POST') {
+      json(response, 200, { version: 1, type: 'iroh', endpointId: 'owned-endpoint', instanceId: 'owned-instance',
+        origin: 'https://owned.iroh.localhost:3444', localPort: 3444, gatewayToken: 'owned-fixture-token', caCertificate: 'owned-fixture-ca',
+        irohCode: '123456', expiresAt: Date.parse('2026-01-01T12:00:01Z') + 300_000,
+        qrSvg: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"><rect width="16" height="16"/></svg>' })
+      return
+    }
     if (pathname === `${prefix}/remote/frp/configure` && request.method === 'POST') {
       if (state.frpConfigureError !== undefined) { json(response, 400, { error: state.frpConfigureError }); return }
       if (state.holdFrpConfigure) { hold(entry, response); return }
@@ -346,6 +353,50 @@ async function withControl(browser, name, options, run) {
 const browser = await chromium.launch({ headless: true })
 let cases = 0
 try {
+  for (const provider of ['cloudflared', 'cpolar', 'iroh']) {
+    await withControl(browser, `${provider} actions require installation; stable three-button row`, {}, async ({ page, state, consumed, settle, openRemote, pollRemote, count }) => {
+      await openRemote()
+      state.remote.providers[provider] = { component: { installed: false, supported: true, configured: true }, configuration: { configured: true, mode: 'quick' } }
+      let before = await consumed(`${prefix}/remote/provider`)
+      await page.locator('.dsh-mobile-control__provider').filter({ has: page.locator('strong').filter({ hasText: new RegExp(`^${provider}\\b`, 'u') }) }).click()
+      await settle(`${prefix}/remote/provider`, before)
+      const row = page.locator('.dsh-mobile-control__remote-workspace > .dsh-mobile-control__actions')
+      assert.equal(await row.isVisible(), false, 'Uninstalled component exposed its remote action row')
+      assert.equal(await row.evaluate(node => getComputedStyle(node).display), 'none', 'Action layout overrode hidden')
+      state.remote.providers[provider].component.installed = true
+      await pollRemote()
+      assert.equal(await row.isVisible(), true)
+      assert.equal(await row.locator('button:visible').count(), 3)
+      const boxes = await row.locator('button:visible').evaluateAll(buttons => buttons.map(button => {
+        const rect = button.getBoundingClientRect(); return { y: rect.y, width: rect.width }
+      }))
+      assert(boxes.every(box => Math.abs(box.y - boxes[0].y) < 1 && Math.abs(box.width - boxes[0].width) < 1), 'Three actions no longer share one row')
+      if (provider !== 'iroh') return
+      const copy = row.getByRole('button', { name: 'Copy pairing link', exact: true })
+      assert.equal(await copy.isVisible(), true)
+      assert.equal(await copy.isDisabled(), true, 'An empty descriptor was copyable')
+      Object.assign(state.remote, { running: true, state: 'ready', origin: 'https://owned.iroh.localhost:3444' })
+      await pollRemote()
+      assert.equal(await copy.isDisabled(), true)
+      await page.evaluate(() => { Object.defineProperty(navigator, 'clipboard', { configurable: true,
+        value: { writeText: async text => { window.fixtureCopiedIroh = text } } }) })
+      const path = `${prefix}/remote/iroh/pairing/begin`
+      before = await consumed(path)
+      await row.getByRole('button', { name: 'Generate iroh pairing QR code', exact: true }).click()
+      await settle(path, before)
+      await pollRemote()
+      assert.equal(await copy.isEnabled(), true)
+      await copy.click()
+      await waitUntil(() => page.evaluate(() => window.fixtureCopiedIroh), value => typeof value === 'string', 'iroh descriptor copy')
+      assert.equal(JSON.parse(await page.evaluate(() => window.fixtureCopiedIroh)).irohCode, '123456')
+      assert.equal(count('POST', path), 1, 'Copy reminted a pairing window')
+      await page.clock.fastForward(300_001)
+      await pollRemote()
+      assert.equal(await copy.isVisible(), true)
+      assert.equal(await copy.isDisabled(), true, 'Expired descriptor was copyable')
+    })
+    cases++
+  }
   for (const remote of [false, true]) {
     await withControl(browser, `${remote ? 'remote' : 'LAN'} QR expiry and explicit copy`, {}, async ({ page, state, count, consumed, settle, openRemote, pollRemote }) => {
       if (remote) {

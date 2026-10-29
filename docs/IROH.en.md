@@ -10,7 +10,7 @@ iroh replaces public domains and tunnel accounts with an encrypted direct connec
 - Windows x64 or Linux x64 (the only published sidecar targets).
 - Android 10+ with the full `-iroh.apk`, supporting arm64-v8a and x86_64. The ordinary `.apk` is the compatibility build without native libraries: it retains existing HTTPS connections and serves older automatic-update links, but cannot use iroh. Mobile browsers cannot connect directly through iroh either. Both APKs have the same application ID and official signer; install only one.
 - Press **Install official component** once to fetch the sidecar: the plugin downloads the pinned `dsh-mobile-iroh 0.1.0-alpha.1` release per platform (about 15 MB on Windows x64, 24 MB on Linux x64), verifies its SHA-256, and stores it in the plugin private directory. An installed companion plugin with a verified copy is reused instead, with no download. The Rust source lives with the main repository under `native/iroh-host` (shared core under `native/iroh-core`) and is built per platform in CI.
-- DSH Mobile stays enabled; the iroh channel is off by default and never disturbs LAN or other remote channels.
+- DSH Mobile stays enabled; iroh is off by default. LAN runs independently, but only one remote provider is active: switching to iroh stops the previous remote channel.
 
 ## Usage
 
@@ -19,6 +19,8 @@ iroh replaces public domains and tunnel accounts with an encrypted direct connec
 3. Turn remote access on: the plugin resolves the endpoint identity, issues the endpoint gateway certificate (own CA, 90-day leaf, 30-day renewal headroom), starts a dedicated gateway, launches the sidecar, and waits for `ready`. `ready` means the sidecar is connected and the gateway serves its loopback socket.
 4. Press **Generate iroh pairing QR code** and scan it with the full App. The descriptor binds the sidecar's six-digit code, the Gateway's one-time token and pinned CA. Generating another descriptor replaces the previous pairing window; pairing a phone redeems the Gateway token through the normal pair endpoint over iroh.
 5. Switching off or switching providers stops the owned process and Gateway without deleting stored pairings. The independent App has a different package identity; its Keystore credentials are not automatically migrated into this App.
+
+Main actions stay hidden before component installation. Afterwards, the toggle, QR generation and Copy pairing link buttons share one row. Copy stays visible but disabled without valid pairing data; copying an existing descriptor does not generate another pairing code.
 
 To reclaim component storage, turn off iroh remote access, expand the component details and choose **Remove the downloaded iroh component**. This removes only the pinned program downloaded by this plugin, keeping identities, pairings and external companion packages. Later use can reinstall it or reuse a verified external copy. Removal while enabled is refused by the management API as well as the panel.
 

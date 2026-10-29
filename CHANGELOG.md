@@ -2,9 +2,10 @@
 
 Notable changes are recorded here. GitHub Releases provide the downloadable packages and generated commit notes.
 
-## Unreleased
+## 0.7.1 - 2026-10-29
 
 - Reorganize **Mobile access** into a compact channel list and configuration pane, stacked on narrow screens. Device management has its own LAN/remote tabs beside Diagnostics; keyboard focus and Escape follow the open panel.
+- Keep the three main actions in one row, including iroh link copying. Copy remains visible but disabled without valid pairing data; component-dependent actions stay hidden before installation.
 - Improve cloudflared quick/named tunnel switching, expandable settings and tunnel notes. **Save and connect** saves and enables the selected provider in one queued operation; connection readiness remains visible separately. Protect pending edits from duplicate actions and stale reads, and keep incomplete named settings editable.
 - Show the server-issued expiry for LAN and HTTPS remote pairing codes, remove expired QR codes, and reuse the displayed code when copying its link. Generating another code still invalidates the previous one. Thanks @jackfocus15-spec for [#285](https://github.com/saya-ch/dsh-mobile/issues/285).
 - Keep the collapsed navigation rail clear of the conversation between the phone and wide-layout breakpoints, without taking 56 px away from phone content. A collapsed phone drawer no longer leaves a transparent strip intercepting conversation input. Thanks @wintekk for [#306](https://github.com/saya-ch/dsh-mobile/issues/306).

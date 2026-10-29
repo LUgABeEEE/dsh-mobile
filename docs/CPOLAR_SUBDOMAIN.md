@@ -12,7 +12,7 @@ cpolar 默认分配临时公网地址。账号预留子域名后，可请求使�
 
 1. 确认 cpolar 套餐支持保留二级子域名。[官方教程](https://www.cpolar.com/blog/cpolar-quick-start-tutorial-raspberry-pi-series)以基础套餐及以上为例；当前资格、可用地区及命名规则以你的账号控制台为准。
 2. 在 [cpolar 控制台](https://dashboard.cpolar.com)的 **预留 → 保留二级子域名** 中保留名字，记录对应地区。
-3. 在 DSH **移动访问 → 远程 → cpolar** 中安装组件并保存 Authtoken。
+3. 在 DSH **移动访问 → cpolar** 中安装组件并保存 Authtoken。
 
 地区必须与预留记录一致。官方命令示例使用 `cn_vip`，但不要将它照抄到其他地区的预留记录；其他地区的配置值请按 cpolar 当前说明确认。本指南不提供固定地区或域名后缀对照表。
 
@@ -52,7 +52,7 @@ DSH 加载器会整体替换条目的 `config`，不是逐键合并。因此不�
 
 配置值会去除首尾空白。插件的名字检查仅限制请求格式：以字母或数字开头，只含字母、数字、`.`、`_`、`-`，长度不超过 63 字符；这不是 DNS 标签规范，也不代表 cpolar 服务端会接受。预留是否有效仍取决于账号、地区和 cpolar 的实际规则。[官方子域名配置说明](https://www.cpolar.com/docs#configure-secondary-subdomain)与教程说明了 `-subdomain`、`-region` 参数。
 
-确认没有正在运行的任务后，完整退出并重开 DSH，再在 **移动访问 → 远程 → cpolar** 中连接。连接后使用面板实际显示的 HTTPS 地址，不要自行拼接域名后缀。
+确认没有正在运行的任务后，完整退出并重开 DSH，再在 **移动访问 → cpolar** 中连接。连接后使用面板实际显示的 HTTPS 地址，不要自行拼接域名后缀。
 
 ## 验证与配对
 

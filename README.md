@@ -26,13 +26,13 @@
   <a href="#兼容性">兼容性</a> ·
   <a href="docs/README.md">文档</a> ·
   <a href="#贡献者">贡献者</a> ·
-  <a href="https://github.com/saya-ch/dsh-mobile/releases/tag/v0.6.18">更新记录</a> ·
+  <a href="https://github.com/saya-ch/dsh-mobile/releases/tag/v0.7.1">更新记录</a> ·
   <a href="README.en.md">English</a>
 </p>
 
 > DSH Mobile 是 DeepSeek Harness 社区插件，原生 App 仅支持 Android。
 >
-> **当前正式版本：0.7.0**。新增实验性 iroh 连接，改善透明皮肤下的侧栏、第三方菜单层级和全屏面板退出，并在移动定制加载失败时提供恢复提示。现有 HTTPS 通道和旧版 App 仍可使用；iroh 需要含原生传输的完整版 App。[插件更新与下载](https://github.com/saya-ch/dsh-mobile/releases/tag/v0.7.0) · [完整更新记录](CHANGELOG.md)。
+> **当前正式版本：0.7.1**。整理移动访问面板与设备管理，改善 cloudflared 配置、配对码有效期和折叠侧栏；新增 iroh 下载组件清理与 VPN 排障说明。Android App 继续使用独立发布的 0.7.0，现有配对无需重建。[插件更新与下载](https://github.com/saya-ch/dsh-mobile/releases/tag/v0.7.1) · [完整更新记录](CHANGELOG.md)。
 >
 > **版本说明**：自插件 **0.6.2** 起，Android App 与插件独立编号、独立发布，版本号无需一致；插件升级不代表 App 需要同步升级。[兼容说明](#兼容性)。
 
@@ -42,7 +42,7 @@
   <sub><a href="https://github.com/saya-ch/dsh-mobile/releases/download/android-v0.7.0/dsh-mobile-android-v0.7.0-iroh.apk">64 位完整版（含实验性 iroh）</a> · <a href="https://github.com/saya-ch/dsh-mobile/releases/tag/android-v0.7.0">版本说明与校验文件</a></sub>
 </p>
 
-DSH Mobile 是一个 DeepSeek Harness 插件，让手机浏览器或 Android App 通过局域网，或可选的 Tailscale Funnel、cpolar、cloudflared、自建 FRP 或自有反向代理远程通道连接电脑，继续使用同一份会话、工作区、消息和工具。电脑端分别启停局域网与远程访问、分别管理配对授权；Android App 统一显示已配对电脑。插件不修改 DeepSeek Harness 源码。
+DSH Mobile 是一个 DeepSeek Harness 插件，让手机浏览器或 Android App 通过局域网，或可选的 Tailscale Funnel、cpolar、cloudflared、自建 FRP、自有反向代理远程通道连接电脑；Android 完整版还支持实验性 iroh 加密直连与中继。手机可以继续使用电脑上的会话、工作区、消息和工具。电脑端分别启停局域网与远程访问、分别管理配对授权；Android App 统一显示已配对电脑。插件不修改 DeepSeek Harness 源码。
 
 移动访问使用独立 HTTPS 与设备配对；Android App 固定局域网私有 CA，公开远程通道使用系统信任的证书；自签 FRP 入口还需由 0.4.6 App 在配对时固定远程 CA。
 
@@ -51,9 +51,9 @@ DSH Mobile 是一个 DeepSeek Harness 插件，让手机浏览器或 Android App
 ## 能做什么
 
 - **在手机上继续电脑端的工作**：同一份会话、工作区、消息和工具，实时同步。
-- **用对话定制手机端**：在 DSH 对话里提出布局、交互或功能需求；文件修改完成后，手机页面通常会自动刷新。
+- **用对话定制手机端**：在 DSH 对话里提出布局、交互或功能需求；文件修改完成后，自定义资源通常会自动更新。
 - **专属触屏布局**：会话抽屉、工具详情、设置、提问卡片和输入栏都按手机重新组织；App 跟随系统语言（简/英/意），插件界面跟随 DSH 语言。
-- **多种远程通道**：Tailscale、cpolar、cloudflared 快速/命名隧道、自建 FRP、自有反向代理，按网络任选；Windows/Linux x64 还可由插件托管 Caddy HTTPS 与证书。
+- **多种远程通道**：Tailscale、cpolar、cloudflared 快速/命名隧道、自建 FRP、自有反向代理，以及无需域名和公网端口的实验性 iroh；Windows/Linux x64 还可由插件托管 Caddy HTTPS 与证书。
 - **配对与多设备**：扫码、链接或密钥配对一次；切换 Wi-Fi、热点或 IP 后通常自动恢复；App 在一个列表中显示局域网和远程配对的电脑，定期检测可达状态，并支持切换、重新配对或删除本地记录。
 - **一键诊断与放行**：检查版本、网关、网卡、防火墙和远程通道，生成脱敏报告；被拦截的第三方插件连接按确切路径一键放行。
 - **任务系统通知**：任务完成与待输入以 Android 系统通知提醒，可在 App 内的 DSH“通用设置”中开启，锁屏文本脱敏。
@@ -153,6 +153,8 @@ dsh plugin --profile web add dshmarket
 
 适合手机离开电脑所在网络后使用。远程访问默认关闭，手机不需要另外安装 Tailscale、cpolar、cloudflared 或 FRP。
 
+**没有域名或公网入站，也可以尝试 iroh（实验性）**：电脑安装固定版本的 iroh 组件，手机安装 **Android App 0.7.0 完整版**，即可通过加密直连、必要时中继连接电脑。电脑端目前支持 Windows/Linux x64；兼容版 APK 和手机浏览器不能使用 iroh。它不是保证连通的加速线路，VPN、代理和两端网络仍可能影响连接。详见 [iroh 使用与排障](docs/IROH.md)。
+
 远程服务可能受带宽和连接限额影响：[cpolar 免费方案](https://svip.cpolar.com/pricing) 当前为 1 Mbps，[Tailscale Funnel](https://tailscale.com/docs/features/tailscale-funnel#requirements-and-limitations) 也存在不可配置的带宽限制，cloudflared 的 quick tunnel 由 Cloudflare 免费提供、地址随机且有限流。DSH Mobile 使用静态资源 gzip、WebSocket 长连接和顶部按需加载改善体验；会话的历史窗口与分页大小由 DSH 决定，插件无法提高服务商限额。
 
 页面能打开但一直“重连中”，应先区分 WebSocket 升级失败、慢速数据同步和心跳超时，操作见[慢链路与反复重连指南](docs/SLOW_CONNECTIONS.md)。0.5.4 还提供按确切路径启用的 WebSocket 压缩，默认关闭；长会话或计量网络可按指南尝试，并对比实际传输量。
@@ -161,6 +163,7 @@ dsh plugin --profile web add dshmarket
 
 | 连接方式 | 需要准备 | 地址特点与注意事项 | 维护者使用参考 |
 | --- | --- | --- | --- |
+| iroh（实验性） | Windows/Linux x64 电脑组件与 Android 0.7.0 完整版 | 无需域名、端口映射或隧道账号；加密直连、中继兜底；[使用与 VPN 排障](docs/IROH.md) | 可作为没有公网入口时的选择；不作稳定性排名，需在两端实际网络验证，手机浏览器不支持 |
 | cpolar | cpolar 账号与 Authtoken | 免费临时地址可能变化 | 免费方案限速明显，日常加载与同步体验较差 |
 | cloudflared 快速隧道 | 无需账号或域名 | 临时随机地址；不支持 SSE，[即时通知存在限制](docs/CLOUDFLARE_TUNNEL.md#快速隧道的功能限制)；[官方仅定位为开发测试用途](https://developers.cloudflare.com/tunnel/get-started/quick-tunnels/) | 长期使用中经常断连，原因尚未确认；只作临时或测试选择 |
 | cloudflared 命名隧道 | Cloudflare 账号与域名 | 固定域名；[配置指南](docs/CLOUDFLARE_TUNNEL.md) | 已长期使用的通道中最稳定；有账号和域名可优先尝试 |
@@ -173,7 +176,9 @@ dsh plugin --profile web add dshmarket
   <img src="https://raw.githubusercontent.com/saya-ch/dsh-mobile/main/assets/screenshots/remote-access.png" width="82%" alt="DSH Mobile 远程访问与通道选择">
 </p>
 
-1. 在 DeepSeek Harness 左下角打开 **移动访问**，按上表选择通道，完成登录或配置。
+下面的扫码步骤适用于 HTTPS 远程通道；**iroh 使用独立的「生成 iroh 配对二维码」和完整版 App，按下方 iroh 步骤操作**，不要把其描述符当成普通网址在浏览器打开。
+
+1. 在 DeepSeek Harness 左下角打开 **移动访问**，按上表选择 HTTPS 通道，完成登录或配置。
 2. 状态变为“远程访问已就绪”后，点击 **生成配对二维码**。自备代理模式的“后端已监听”不等于公网就绪，仍需确认公网 HTTPS 与 WebSocket 可用。
 3. 在 Android App 中选择 **远程访问**，扫描当前二维码完成配对；公开证书入口也可用手机浏览器打开配对链接。
 4. 以后 App 使用保存的地址与凭据自动重连。临时地址改变时，重新扫描电脑端当前二维码验证新地址，不需要清除 App 数据；旧设备 token 不会发送给新 Origin。
@@ -182,6 +187,7 @@ dsh plugin --profile web add dshmarket
 <summary>各通道的安装与登录步骤</summary>
 
 在面板选择对应通道后：
+   - **iroh（实验性）**：选择 iroh，点击 **安装官方组件**，安装并校验完成后打开远程访问；就绪后点 **生成 iroh 配对二维码**，用 Android 完整版 App 的 iroh 流程扫码，也可以复制配对链接。未安装组件时不显示主操作按钮；安装后三个按钮保持同排，没有有效配对内容时复制按钮置灰。关闭通道后，可从组件详情移除插件下载的程序，不删除配对和身份。完整步骤与限制见 [iroh 指南](docs/IROH.md)。
    - **Tailscale Funnel**：点击 **启用远程访问**，在打开的官方页面完成一次 Tailscale 登录；按面板提示继续允许 Funnel，然后返回 DSH 等待连接就绪。
    - **cpolar**：点击 **安装官方组件**，登录 cpolar 控制台取得 Authtoken，粘贴后点击 **保存并连接**。组件只会在确认后下载到插件私有目录；免费临时地址可能在 DSH 或 cpolar 重启后变化。
    - **自建 FRP（高级）**：已有 VPS 时，在 **移动访问** 中选择 **自建 FRP**，填写 frps 信息和公开 HTTPS 域名或真实公网 IPv4。可以复制受限的 frps + Caddy 模板手动部署，也可以在 Ubuntu/Debian + systemd 上用 SSH 密钥一键部署；不支持密码登录。已有自定义 Caddy 站点时，请按指南手动部署并合并 import。部署或清理前须到 VPS 控制台核对主机指纹。本机 `frpc` 按需下载校验，VPS 需单独清理。需要 Android App 0.3.3 或更新版本；证书、端口和操作步骤见 [自建 FRP 使用指南](docs/SELF_HOSTED_FRP.md)。
@@ -209,11 +215,11 @@ Funnel 的运行组件把公开监听生命周期绑定到父进程和受限控�
 
 ### 实验中的 iroh 连接
 
-插件 0.7.0 整合了 [dsh-mobile-iroh](https://github.com/saya-ch/dsh-mobile-iroh) 的实验性连接：通过加密直连或中继访问电脑，不要求公网域名、端口映射或隧道账号。电脑端选择 **移动访问 → 远程 → iroh（实验性）**，安装并校验官方组件后启用，再用完整版 App 扫描专属二维码。局域网和既有 HTTPS 通道不受影响；手机浏览器不能直接使用 iroh。平台要求、配对与排障见 [iroh 使用说明](docs/IROH.md)。
+从插件 0.7.0 起，[dsh-mobile-iroh](https://github.com/saya-ch/dsh-mobile-iroh) 的实验性传输已整合进本仓库，电脑端组件、Android 原生传输和完整版 APK 随本项目维护。独立仓库保留方案与原型记录；日常安装使用本仓库的插件和 App 即可，不必再维护两套 App。连接步骤、平台限制与排障以 [iroh 使用说明](docs/IROH.md) 为准。
 
 ## 扩展与自定义
 
-在 DSH 对话里输入 `/mobile <需求>`，当前会话的 agent 会处理定制请求；文件修改完成后，手机端通常会在几秒内刷新。例如：
+在 DSH 对话里输入 `/mobile <需求>`，当前会话的 agent 会处理定制请求；文件修改完成后，自定义资源通常会在几秒内更新。例如：
 
 ```text
 /mobile 把手机端做成老式终端的样子，让消息像终端输出一样逐行滚动
@@ -418,6 +424,13 @@ macOS 上局域网、cloudflared、自建 FRP 与自有反向代理可用；Funn
 
 | DSH Mobile 插件 | 已验证的 DeepSeek Harness 版本与范围 |
 | --- | --- |
+| `0.7.1` | `0.2.1-rc.3` 的隔离打包安装、手机侧栏与断点命中回归；另验证访问面板、配对有效期和组件清理。自动检查范围见 [CI](https://github.com/saya-ch/dsh-mobile/actions/workflows/ci.yml)；浏览器检查不代表所有手机、第三方插件或公网线路已验收 |
+
+<details>
+<summary>较早版本的验证记录</summary>
+
+| DSH Mobile 插件 | 已验证的 DeepSeek Harness 版本与范围 |
+| --- | --- |
 | `0.6.11` | `0.1.7-alpha.2`、`0.1.7-rc.1`、`0.1.7-rc.2`、`0.2.0-rc.1`、`0.2.0-rc.2`、`0.2.1-alpha.2`、`0.2.1-alpha.3` 的隔离打包浏览器 CI；`0.2.0-rc.2` 与 `0.2.1-alpha.3` 另通过真实历史分页、滚动位置保持和手动加载检查。浏览器检查不代表所有手机内核、第三方插件或公网线路已验收 |
 | `0.6.12` | `0.2.1-rc.2` 的打包安装、移动启动、缺失 API 模拟、工作区实时读取、保留页面的断线恢复及移动设置；`0.2.0-rc.2` 搭配实际社区认证插件 `dsh-web-startup-auth@0.1.12` 的认证与资源回归。未将 Chromium 92 真机、任意认证插件或公网线路写成已验收 |
 | `0.6.13` | `0.2.0-rc.2`、`0.2.1-rc.2` 的打包图文 HTTP 400 恢复、Host 拒绝护栏与错误提示回归；网关 408/431 分类、三类受限诊断及四种 Gateway 工厂接线通过本地测试。DSH 源码、iroh P2P 和 Android 原生代码不在本版范围 |
@@ -427,9 +440,6 @@ macOS 上局域网、cloudflared、自建 FRP 与自有反向代理可用；Funn
 | `0.6.17` | `0.2.0-rc.2`、`0.2.1-rc.2` 的 15 项真实打包 Chromium 目录选择检查、旧 WebView 缺失 API 模拟与工作区 mux 读取；发布后装入官方 Desktop `0.2.1-rc.2` 并核对包内文件一致 |
 | `0.6.18` | `0.2.1-rc.2` 上的 18 项真实打包 Chromium 目录选择检查，含紧凑布局、目录创建和取消；本机官方 Desktop `0.2.1-rc.3` 已装入候选并启用局域网与 Cloudflare 网关 |
 | `0.7.0` | 8 个 DSH 版本（`0.1.7-alpha.2`–`0.2.1-rc.2`）的打包浏览器 CI；Windows/Linux Gateway 与 iroh Host、Android 双 ABI 和兼容版包检查。设备与网络范围见 [iroh 说明](docs/IROH.md) |
-
-<details>
-<summary>历史版本验证记录</summary>
 
 | DSH Mobile 插件                         | 验证支持的 DeepSeek Harness 版本                             |
 | ----------------------------------------- | -------------------------------------------------------------- |
