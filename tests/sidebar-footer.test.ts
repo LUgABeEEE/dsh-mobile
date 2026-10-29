@@ -223,7 +223,7 @@ describe('desktop Mobile Access footer', () => {
     expect(footer.injectSlot).toHaveBeenNthCalledWith(2, 'sidebar.footer.action', expect.any(Function))
     for (const wide of [true, false]) {
       const tree = footer.render(wide)
-      const children = Children.toArray(tree.props.children) as ReactElement[]
+      const children = Children.toArray(tree.props.children) as ReactElement<{ children?: ReactNode }>[]
       expect(tree.type).toBe('button')
       expect(tree.props).toMatchObject({ 'aria-label': label, title: label, type: 'button', 'aria-expanded': false })
       expect(tree.props.className.includes('is-rail')).toBe(!wide)
