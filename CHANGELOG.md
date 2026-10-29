@@ -2,10 +2,6 @@
 
 Notable changes are recorded here. GitHub Releases provide the downloadable packages and generated commit notes.
 
-## Unreleased
-
-- Compress the main live path (`/api/remote.mux`) by default. Slow links spend most of their time on live frames, and a measured session switch on a relayed link dropped from 7–15.6 s to 1–2 s once compression was enabled. An explicit `paths: []` keeps the previous uncompressed relay; the existing `thresholdBytes` (1 KiB) and `level` (3) still bound the CPU and tiny-frame cost. Thanks @eeeggplant for [#289](https://github.com/saya-ch/dsh-mobile/issues/289).
-
 ## 0.7.1 - 2026-10-29
 
 - Reorganize **Mobile access** into a compact channel list and configuration pane, stacked on narrow screens. Device management has its own LAN/remote tabs beside Diagnostics; keyboard focus and Escape follow the open panel.
