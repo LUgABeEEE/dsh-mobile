@@ -241,7 +241,8 @@ describe('authenticated gateway compression integration', () => {
     // A permessage-deflate frame whose RSV1 bit is set but whose payload is not a
     // valid deflate stream: the decoder must reject it rather than forward bytes.
     const bogus = Buffer.from([0x41, 0x42, 0x43, 0x44, 0x45, 0x46])
-    connection.client._socket.write(Buffer.concat([
+    const raw = (connection.client as unknown as { _socket: Socket })._socket
+    raw.write(Buffer.concat([
       Buffer.from([0xc1, 0x86, 0x00, 0x00, 0x00, 0x00, 0x00]), bogus,
     ]))
     const code = await closed
