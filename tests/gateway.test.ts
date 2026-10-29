@@ -253,6 +253,7 @@ async function upstream(
   extraBatchedEntries = 0,
   secondApplicationBatchEntries = 0,
   bundleUrlOverride?: (id: string, url: string) => string,
+  extraHeadLinks = '',
 ): Promise<{
   port: number
   observations: UpstreamObservation[]
@@ -401,7 +402,7 @@ async function upstream(
         : { rev: 'stock', entries, batches: applicationBatches }
       const preload = boot === 'legacy' ? '' : applicationBatches
         .map(batch => `<link rel="preload" as="script" href="${batch.url.replaceAll('&', '&amp;')}">`).join('')
-      const body = `<!doctype html><html><head>${preload}<script>globalThis["__DSH_BOOT__"] = ${JSON.stringify(graph)};</script></head><body></body></html>`
+      const body = `<!doctype html><html><head>${extraHeadLinks}${preload}<script>globalThis["__DSH_BOOT__"] = ${JSON.stringify(graph)};</script></head><body></body></html>`
       response.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'content-length': Buffer.byteLength(body) })
       response.end(body)
       return
@@ -1224,8 +1225,9 @@ describe('HTTP gateway', () => {
     expect(inner.observations).toHaveLength(0)
   })
 
-  it('serves the dedicated layout at the authenticated root while retaining a stock escape hatch', async () => {
-    const inner = await upstream()
+  it('serves the dedicated layout at the authenticated root while retaining stock metadata and escape hatch', async () => {
+    const upstreamMetadata = '<link rel="manifest" href="/manifest.webmanifest"><link rel="apple-touch-icon" sizes="192x192" href="/upstream-icon.png"><link rel="icon" href="/favicon.ico">'
+    const inner = await upstream('legacy', false, Buffer.alloc(0), [], undefined, undefined, 0, 0, undefined, upstreamMetadata)
     const instance = await gateway(inner.port)
     const paired = await pair(instance)
     const headers = {
@@ -1241,6 +1243,13 @@ describe('HTTP gateway', () => {
     expect(mobile.body).toContain('/mobile-access/mobile-layout.js')
     expect(mobile.body).toContain('/plugins/feature.js')
     expect(mobile.body).toContain('<script src="/mobile-access/compat.js"></script>')
+    expect(mobile.body).toContain('<link rel="manifest" href="/mobile-access/push/manifest.webmanifest">')
+    expect(mobile.body).toContain('<link rel="apple-touch-icon" sizes="180x180" href="/mobile-access/push/icon-180.png">')
+    expect(mobile.body).toContain('<link rel="apple-touch-icon" sizes="192x192" href="/mobile-access/push/icon-192.png">')
+    expect(mobile.body).not.toContain('href="/manifest.webmanifest"')
+    expect(mobile.body).not.toContain('/upstream-icon.png')
+    expect(mobile.body).toContain('<link rel="icon" href="/favicon.ico">')
+    expect(mobile.body.match(/rel="manifest"/gu)).toHaveLength(1)
     expect(mobile.body.indexOf('/mobile-access/compat.js')).toBeLessThan(mobile.body.indexOf('__DSH_BOOT__'))
 
     const deepLink = await request(instance.address().port, '/?sessionId=example', { headers })
@@ -1262,6 +1271,9 @@ describe('HTTP gateway', () => {
     expect(stock.body).not.toContain('__DSH_MOBILE_FRONTEND__')
     expect(stock.body).toContain('<meta name="dsh-mobile-gateway" content="authenticated">')
     expect(stock.body).toContain('/plugins/layout.js')
+    expect(stock.body).toContain(upstreamMetadata)
+    expect(stock.body).not.toContain('/mobile-access/push/manifest.webmanifest')
+    expect(stock.body).not.toContain('/mobile-access/push/icon-192.png')
     expect(stock.body).not.toContain('/mobile-access/compat.js')
     const conditionalStock = await request(instance.address().port, '/?frontend=stock', {
       headers: { ...headers, 'if-none-match': '"old-upstream-html"', 'if-modified-since': 'Wed, 14 Oct 2026 00:00:00 GMT' },

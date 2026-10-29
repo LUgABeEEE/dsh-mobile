@@ -26,6 +26,10 @@ import { installCustomizationNotice } from './mobile-customization-notice.js'
 import { EXTENSION_LIMITS, LEGACY_CUSTOM_ASSET_LIMIT } from './extension-limits.js'
 import { installMobileConnectionRecovery, type MobileConnectionState } from './client-recovery.js'
 import { installMobileUiLocalePersistence } from './mobile-ui-locale.js'
+import { createMobilePushBrowserApi, type MobilePushBrowserApi } from './mobile-push/browser-api.js'
+import { browserPushEnvironment, createMobilePushController, type MobilePushEnvironment } from './mobile-push/client.js'
+import { MobilePushSettings } from './mobile-push/settings.js'
+import { installPushNavigation } from './mobile-push/navigation.js'
 import { dismissMobileDirectoryPicker, hasUpstreamBrowsePicker, installMobileDirectoryPicker } from './mobile-directory-picker.js'
 
 export { shouldNudgeReconnect, shouldRenewSession } from './client-recovery.js'
@@ -55,10 +59,23 @@ interface ClientContext {
   effect(effect: () => void | (() => void), label?: string): void
   get(name: 'connection'): MobileConnectionHandle | undefined
   get(name: string): unknown
+  /** Public Cordis child lifecycle; optional so minimal harness contexts without the navigation feature stay valid. */
+  inject?(services: readonly MobilePushNavigationService[], callback: (context: ClientNavigationContext) => (() => void) | undefined): { dispose(): unknown }
   slots: {
     inject(key: string, callback: () => (() => void)): () => void
     register<Props>(options: { name: string; id: string; order?: number; priority?: number; label?: string }, component: (props: Props) => unknown): () => void
   }
+}
+
+/** Public client services the authenticated tap consumer follows (scoped child lifecycle, never a required plugin dependency). */
+const mobilePushNavigationServices = ['sessions', 'workspaces', 'uiWorkspace'] as const
+type MobilePushNavigationService = typeof mobilePushNavigationServices[number]
+
+/** Shape of the public navigation services as provided on a scoped child context. */
+interface ClientNavigationContext {
+  readonly sessions: { readonly list: { getSnapshot(): { readonly phase: string; readonly byId: Readonly<Record<string, unknown>>; readonly ids: readonly string[] }; subscribe(listener: () => void): () => void } }
+  readonly workspaces: { readonly list: { getSnapshot(): { readonly phase: string; readonly items: readonly unknown[] }; subscribe(listener: () => void): () => void } }
+  readonly uiWorkspace: { openSession(sessionId: string): void }
 }
 
 interface MobileConnectionHandle {
@@ -5231,6 +5248,112 @@ export const CONTROL_STYLES = `
 .dsh-mobile-control__self-hosted{border:0;border-radius:0;background:transparent;box-shadow:none}
 ` + EXTENSION_RECOVERY_STYLES
 
+interface MobilePushEntryRuntime {
+  readonly page: Document
+  readonly view: Window
+  readonly api?: MobilePushBrowserApi
+  readonly environment?: MobilePushEnvironment
+  /** Optional notice sink for isolated tests; production uses the accessible page notice. */
+  readonly notify?: (key: 'session-unavailable' | 'session-resolved') => void
+}
+
+/** Resolve safe, locale-owned copy for tap-navigation results. */
+export function mobilePushNavigationNotice(locale: MobileControlLocale, key: 'session-unavailable' | 'session-resolved'): string {
+  const messages: Record<MobileControlLocale, Record<typeof key, string>> = {
+    en: { 'session-unavailable': 'This conversation is no longer available.', 'session-resolved': 'Opened the conversation.' },
+    it: { 'session-unavailable': 'Questa conversazione non è più disponibile.', 'session-resolved': 'Conversazione aperta.' },
+    zh: { 'session-unavailable': '此会话已不可用。', 'session-resolved': '已打开会话。' },
+  }
+  return messages[locale][key]
+}
+
+function showMobilePushNavigationNotice(page: Document, view: Window, key: 'session-unavailable' | 'session-resolved'): void {
+  const node = page.createElement('div')
+  node.className = 'dsh-mobile-push-navigation-notice'
+  node.setAttribute('role', 'status')
+  node.setAttribute('aria-live', 'polite')
+  node.lang = selectedMobileControlLocale()
+  node.textContent = mobilePushNavigationNotice(selectedMobileControlLocale(), key)
+  node.style.cssText = 'position:fixed;z-index:1201;left:50%;bottom:max(24px,env(safe-area-inset-bottom));transform:translateX(-50%);max-width:calc(100vw - 32px);padding:10px 16px;border-radius:12px;background:var(--dsw-alias-bg-layer-3,#20242b);color:var(--dsw-alias-label-primary,#fff);font:14px/1.45 system-ui,sans-serif;box-shadow:0 8px 24px #0003;pointer-events:none'
+  page.body.append(node)
+  view.setTimeout(() => node.remove(), 3_000)
+}
+
+/** Own the browser-only push controller, settings row, and optional authenticated tap navigation. */
+export function installMobilePushBrowserClient(ctx: ClientContext, runtime: MobilePushEntryRuntime): () => void {
+  const { page, view } = runtime
+  if (view.__DSH_MOBILE_FRONTEND__ !== 'dedicated' || view.__DSH_MOBILE_NATIVE__ !== undefined
+    || page.querySelector('meta[name="dsh-mobile-gateway"][content="authenticated"]') === null) return () => undefined
+
+  const api = runtime.api ?? createMobilePushBrowserApi(mobileRequest)
+  const controller = createMobilePushController(api, runtime.environment ?? browserPushEnvironment(view))
+  controller.start()
+  const removeSettings = ctx.slots.inject('settings.general.item', () => ctx.slots.register({
+    name: 'settings.general.item', id: 'dsh-mobile-push-browser', order: 120,
+  }, () => createElement(MobilePushSettings, { controller, locale: selectedMobileControlLocale() })))
+
+  const refresh = (): void => { controller.refresh() }
+  const onVisible = (): void => { if (page.visibilityState === 'visible') refresh() }
+  view.addEventListener('focus', refresh)
+  page.addEventListener('visibilitychange', onVisible)
+  const connection = ctx.get('connection')
+  const unbindConnection = connection?.state?.subscribe(() => {
+    if (connection.state?.getSnapshot() === 'connected') refresh()
+  }) ?? (() => undefined)
+
+  // The tap consumer follows the public navigation services through a scoped
+  // child lifecycle: on a cold load the plugin activates with `slots` before
+  // sessions/workspaces/uiWorkspace are provided, and a plain effect never
+  // re-runs, so a one-shot availability check would silently drop every
+  // reference-carrying cold load. The child activates once all three services
+  // are active, disposes on provider loss or plugin teardown, and re-runs on
+  // re-provision; each activation re-checks the one-time reference so a
+  // consumed URL can never resolve or notify twice.
+  let removeNavigation: () => void = () => undefined
+  let disposeNavigationLifecycle: () => void = () => undefined
+  const reference = new URLSearchParams(view.location.search).get('mobile-push')
+  if (reference !== null && reference !== '' && ctx.inject !== undefined) {
+    let navigationClosed = false
+    const navigationFiber = ctx.inject(mobilePushNavigationServices, navigationContext => {
+      if (navigationClosed) return () => undefined
+      const pending = new URLSearchParams(view.location.search).get('mobile-push')
+      if (pending === null || pending === '') return () => undefined
+      const remove = installPushNavigation(navigationContext as unknown as Parameters<typeof installPushNavigation>[0], {
+        resolve: value => api.resolve(value),
+        notify: key => {
+          if (key !== 'session-unavailable' && key !== 'session-resolved') return
+          if (runtime.notify) runtime.notify(key)
+          else showMobilePushNavigationNotice(page, view, key)
+        },
+        browser: { location: view.location, history: view.history },
+      })
+      removeNavigation = remove
+      return () => {
+        if (removeNavigation === remove) removeNavigation = () => undefined
+        remove()
+      }
+    })
+    disposeNavigationLifecycle = () => {
+      if (navigationClosed) return
+      navigationClosed = true
+      removeNavigation()
+      void navigationFiber.dispose()
+    }
+  }
+
+  let disposed = false
+  return () => {
+    if (disposed) return
+    disposed = true
+    view.removeEventListener('focus', refresh)
+    page.removeEventListener('visibilitychange', onVisible)
+    unbindConnection()
+    disposeNavigationLifecycle()
+    removeSettings()
+    controller.stop()
+  }
+}
+
 /** Mount the desktop control or mobile feature enhancements. */
 export function apply(ctx: ClientContext): void {
   let gatewayRejectionSink: ((status: number) => void) | undefined
@@ -5259,6 +5382,8 @@ export function apply(ctx: ClientContext): void {
       return recovery()
     }
   }, 'dsh-mobile: connection recovery')
+
+  ctx.effect(() => installMobilePushBrowserClient(ctx, { page: document, view: window }), 'dsh-mobile: authenticated browser push lifecycle')
 
   ctx.effect(() => {
     const desktopAdmin = isDesktopAdminSurface(location.hostname, location.search, window.__DSH_MOBILE_FRONTEND__, location.protocol)

@@ -99,6 +99,10 @@ import {
   resolveAuthPageLocale,
 } from './auth-pages.js'
 import { resolveBrowserUiLocale } from './browser-ui-locale.js'
+import { mobilePushAsset } from './mobile-push/assets.js'
+import { isPushInstallationId } from './mobile-push/installation-id.js'
+import type { PushConfig, PushEnrollment, PushMutationGuard, PushOwner, PushPreferences, PushRegistration, PushTarget } from './mobile-push/contracts.js'
+import type { PushGatewayService } from './mobile-push/gateway.js'
 
 type GatewayServer = HttpServer | HttpsServer
 
@@ -136,6 +140,82 @@ type OwnedStaticAsset = {
 }
 const MOBILE_BOOT_BATCH_PREFIX = `${AUTH_PREFIX}/mobile-boot/`
 const MOBILE_DOCUMENT_VIEW_HEADER = 'x-dsh-mobile-view'
+const MOBILE_PUSH_CONFIG_PATH = `${AUTH_PREFIX}/push/config`
+const MOBILE_PUSH_SUBSCRIPTION_PATH = `${AUTH_PREFIX}/push/subscription`
+const MOBILE_PUSH_PREFERENCES_PATH = `${AUTH_PREFIX}/push/preferences`
+const MOBILE_PUSH_DISABLE_PATH = `${AUTH_PREFIX}/push/disable`
+const MOBILE_PUSH_TEST_PATH = `${AUTH_PREFIX}/push/test`
+const MOBILE_PUSH_RESOLVE_PATH = `${AUTH_PREFIX}/push/resolve`
+const MOBILE_PUSH_PREFERENCE_KEYS = ['question', 'plan', 'approval', 'response', 'goal', 'failure'] as const
+const DEFAULT_PUSH_PREFERENCES: PushPreferences = Object.freeze({ question: true, plan: true, approval: true, response: true, goal: true, failure: true })
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+function hasOnlyKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  return Object.keys(value).every(key => keys.includes(key))
+}
+
+function exactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  return Object.keys(value).length === keys.length && hasOnlyKeys(value, keys)
+}
+
+function parseInstallationId(value: unknown): string {
+  if (!isPushInstallationId(value)) throw new HttpError(400, 'bad_request')
+  return value
+}
+
+function parsePushPreferences(value: unknown): PushPreferences {
+  if (!isRecord(value) || !exactKeys(value, MOBILE_PUSH_PREFERENCE_KEYS)
+    || !MOBILE_PUSH_PREFERENCE_KEYS.every(key => typeof value[key] === 'boolean')) throw new HttpError(400, 'bad_request')
+  return Object.freeze({
+    question: value.question as boolean, plan: value.plan as boolean, approval: value.approval as boolean,
+    response: value.response as boolean, goal: value.goal as boolean, failure: value.failure as boolean,
+  })
+}
+
+function parseGeneration(value: unknown, allowZero: boolean): number {
+  if (!Number.isSafeInteger(value) || Number(value) < (allowZero ? 0 : 1)) throw new HttpError(400, 'bad_request')
+  return Number(value)
+}
+
+function parsePushEnrollment(value: Record<string, unknown>): PushEnrollment {
+  const keys = ['installationId', 'subscription', 'locale', 'preferences', 'keyFingerprint', 'ownerGeneration', 'registrationGeneration']
+  if (!exactKeys(value, keys) || !isRecord(value.subscription) || !exactKeys(value.subscription, ['endpoint', 'keys'])
+    || !isRecord(value.subscription.keys) || !exactKeys(value.subscription.keys, ['p256dh', 'auth'])
+    || (value.locale !== 'en' && value.locale !== 'zh-CN' && value.locale !== 'it')
+    || typeof value.keyFingerprint !== 'string' || value.keyFingerprint.length === 0 || value.keyFingerprint.length > 128) {
+    throw new HttpError(400, 'bad_request')
+  }
+  const installationId = parseInstallationId(value.installationId)
+  const preferences = parsePushPreferences(value.preferences)
+  const subscription = value.subscription as unknown as PushEnrollment['subscription']
+  if (typeof subscription.endpoint !== 'string' || typeof subscription.keys.p256dh !== 'string' || typeof subscription.keys.auth !== 'string') {
+    throw new HttpError(400, 'bad_request')
+  }
+  return {
+    installationId, subscription, locale: value.locale, preferences, keyFingerprint: value.keyFingerprint,
+    ownerGeneration: parseGeneration(value.ownerGeneration, true),
+    registrationGeneration: parseGeneration(value.registrationGeneration, true),
+  }
+}
+
+function safePushFailure(error: unknown): HttpError {
+  if (error instanceof HttpError) return error
+  const message = error instanceof Error ? error.message : ''
+  if (message.includes('stale push mutation generation')) return new HttpError(409, 'stale_generation')
+  if (message.includes('conflict') || message.includes('already owned')) return new HttpError(409, 'push_conflict')
+  if (message === 'push_unauthorized') return new HttpError(401, 'authentication_failed')
+  if (message === 'push_test_rate_limited') return new HttpError(429, 'rate_limited')
+  if (message === 'push_test_unavailable') return new HttpError(503, 'push_unavailable')
+  if (message === 'push_subscription_invalid' || message === 'push_endpoint_invalid' || message.startsWith('invalid subscription')) {
+    return new HttpError(400, 'bad_request')
+  }
+  if (message === 'push_unavailable') return new HttpError(503, 'push_unavailable')
+  if (message === 'push_test_failed') return new HttpError(502, 'push_test_failed')
+  return new HttpError(500, 'internal_error')
+}
 const MAX_MOBILE_BOOT_BATCH_BYTES = 32 * 1024 * 1024
 const MAX_MOBILE_BOOT_ENTRY_BYTES = 8 * 1024 * 1024
 /**
@@ -756,6 +836,34 @@ function rewriteMobileApplicationPreloads(html: string, replacements: ReadonlyMa
   })
 }
 
+const MOBILE_PUSH_HEAD_LINKS = [
+  '<link rel="manifest" href="/mobile-access/push/manifest.webmanifest">',
+  '<link rel="apple-touch-icon" sizes="180x180" href="/mobile-access/push/icon-180.png">',
+  '<link rel="apple-touch-icon" sizes="192x192" href="/mobile-access/push/icon-192.png">',
+  '<link rel="apple-touch-icon" sizes="512x512" href="/mobile-access/push/icon-512.png">',
+].join('')
+
+function replaceDedicatedMobilePushLinks(html: string): string {
+  // The manifest/icon replacement is optional metadata polish: an upstream document
+  // without a literal head element keeps its own metadata unchanged rather than
+  // breaking the whole dedicated boot for ordinary Mobile access.
+  if (/<head\b[^>]*>/iu.exec(html) === null) return html
+  const linkPattern = /<link\b[^>]*>/giu
+  const remove: Array<{ start: number; end: number }> = []
+  for (const match of html.matchAll(linkPattern)) {
+    const rel = (preloadAttribute(match[0], 'rel') ?? '').toLowerCase().split(/\s+/u)
+    if (rel.includes('manifest') || rel.includes('apple-touch-icon')) {
+      remove.push({ start: match.index!, end: match.index! + match[0].length })
+    }
+  }
+  let cleaned = html
+  for (const range of remove.reverse()) cleaned = `${cleaned.slice(0, range.start)}${cleaned.slice(range.end)}`
+  const head = /<head\b[^>]*>/iu.exec(cleaned)
+  if (head?.index === undefined) throw new Error('dedicated mobile document has no head element')
+  const position = head.index + head[0].length
+  return `${cleaned.slice(0, position)}${MOBILE_PUSH_HEAD_LINKS}${cleaned.slice(position)}`
+}
+
 function rewriteMobileIndexWithBatch(
   html: string,
   options: { readonly sizes?: ReadonlyMap<string, number>; readonly passThrough?: ReadonlySet<string>; readonly excludedClientModules?: readonly string[]; readonly csrfCookie?: string; readonly viewId?: string; readonly compatPath?: string } = {},
@@ -766,7 +874,7 @@ function rewriteMobileIndexWithBatch(
   const replacement = `${MOBILE_GATEWAY_REACHABILITY_BOOTSTRAP}${transportBootstrap}${mobileCsrfFetchBootstrap(options.csrfCookie ?? CSRF_COOKIE)}window.__DSH_MOBILE_FRONTEND__="dedicated";${plan.assignment}${JSON.stringify(plan.parsed)};`
   const rewritten = `${html.slice(0, plan.replaceStart)}${replacement}${html.slice(plan.replaceEnd)}`
   return Object.freeze({
-    html: ensureMobileGatewayMarker(ensureMobileViewport(ensureMobileCompatibility(rewriteMobileApplicationPreloads(rewritten, projected.preloadReplacements), options.compatPath))),
+    html: replaceDedicatedMobilePushLinks(ensureMobileGatewayMarker(ensureMobileViewport(ensureMobileCompatibility(rewriteMobileApplicationPreloads(rewritten, projected.preloadReplacements), options.compatPath)))),
     batches: projected.batches,
     graphTransport: projected.graphTransport,
   })
@@ -1297,6 +1405,10 @@ export class MobileAccessGateway {
   private started = false
   private closeTask: Promise<void> | undefined
   private readonly removeSessionListener: () => void
+  private readonly removePushDeviceListener: () => void
+  private detachPushOrigin: (() => void) | undefined
+  private readonly pushDeviceRevocations = new Set<Promise<void>>()
+  private readonly pushTestsInFlight = new Set<string>()
   private readonly removeExtensionContentListener: () => void
   private readonly renewFailureLimiter: BoundedRateLimiter
   private readonly renewDeviceLimiter: BoundedRateLimiter
@@ -1330,6 +1442,7 @@ export class MobileAccessGateway {
     httpFailureLog?: (entry: HttpFailureEntry) => void,
     upstreamAuthLog?: (entry: UpstreamAuthEntry) => void,
     apiLatencyLog?: (entry: ApiLatencyEntry) => void,
+    private readonly pushGateway?: PushGatewayService,
   ) {
     this.authFailures = new AuthFailureRecorder(authFailureLog)
     this.httpFailures = new HttpFailureRecorder(httpFailureLog)
@@ -1358,6 +1471,14 @@ export class MobileAccessGateway {
     this.renewDeviceLimiter = new BoundedRateLimiter(renewLimit, config.rateLimitWindowMs, config.maxDevices)
     this.probeFailureLimiter = new BoundedRateLimiter(probeLimit, config.rateLimitWindowMs, config.maxRateLimitKeys)
     this.probeDeviceLimiter = new BoundedRateLimiter(probeLimit, config.rateLimitWindowMs, config.maxDevices)
+    this.removePushDeviceListener = this.access.onDevicesRemoved(ids => {
+      const invalidate = this.pushGateway?.invalidateDevices
+      if (invalidate === undefined) return
+      const mutation = Promise.resolve().then(() => invalidate(config.stateFile, ids))
+        .catch(() => { process.emitWarning('Unable to remove revoked device notification state', { code: 'DSH_MOBILE_PUSH_REVOKE_FAILED' }) })
+      this.pushDeviceRevocations.add(mutation)
+      void mutation.finally(() => this.pushDeviceRevocations.delete(mutation))
+    })
     this.removeSessionListener = this.access.onSessionEnded((authorization, reason) => {
       for (const view of this.mobileDocumentViews.values()) {
         if (view.sessionKey === authorization.sessionKey) this.removeMobileDocumentView(view)
@@ -1473,6 +1594,17 @@ export class MobileAccessGateway {
         this.config.allowedCidrs,
         this.tlsEnabled,
       )
+      if (this.pushGateway?.attachOrigin !== undefined) {
+        try {
+          this.detachPushOrigin = this.pushGateway.attachOrigin({
+            scopeId: this.config.stateFile,
+            origin: this.address().origin,
+            authorizedDevices: () => this.access.authorizedDevices(),
+          })
+        } catch {
+          process.emitWarning('Mobile push origin attachment failed; Mobile access remains available', { code: 'DSH_MOBILE_PUSH_ORIGIN_ATTACH_FAILED' })
+        }
+      }
       if (this.config.discovery) await this.startDiscovery(address.port)
       await this.pollLegacyCustomChanges()
       this.extensionChangeTimer = setInterval(() => { void this.pollLegacyCustomChanges() }, EXTENSION_CHANGE_POLL_MS)
@@ -1623,6 +1755,10 @@ export class MobileAccessGateway {
   }
 
   private async closeFailedStart(): Promise<void> {
+    const detachPushOrigin = this.detachPushOrigin
+    this.detachPushOrigin = undefined
+    detachPushOrigin?.()
+    this.removePushDeviceListener()
     if (this.extensionChangeTimer !== undefined) clearInterval(this.extensionChangeTimer)
     this.extensionChangeTimer = undefined
     this.removeExtensionContentListener()
@@ -1889,10 +2025,108 @@ export class MobileAccessGateway {
     )
   }
 
+  private async requireFreshPushOwner(authorization: SessionAuthorization): Promise<PushOwner> {
+    const owner: PushOwner = {
+      scopeId: this.config.stateFile,
+      deviceId: authorization.deviceId,
+      origin: this.address().origin,
+    }
+    const devices = await this.access.authorizedDevices()
+    if (!devices.some(device => device.id === owner.deviceId && device.expiresAt > Date.now())) {
+      throw new HttpError(401, 'authentication_failed')
+    }
+    return owner
+  }
+
+  private async handleMobilePushRequest(
+    target: ReturnType<typeof parseRequestTarget>,
+    request: IncomingMessage,
+    response: ServerResponse,
+    authorization: SessionAuthorization,
+  ): Promise<void> {
+    const method = request.method ?? ''
+    const configRoute = target.decodedPathname === MOBILE_PUSH_CONFIG_PATH
+    if (configRoute) {
+      if (method !== 'GET') throw new HttpError(405, 'method_not_allowed')
+      const params = new URLSearchParams(target.search)
+      const values = params.getAll('installationId')
+      if (params.size !== 1 || values.length !== 1) throw new HttpError(400, 'bad_request')
+      const installationId = parseInstallationId(values[0])
+      const owner = await this.requireFreshPushOwner(authorization)
+      const config: PushConfig = this.pushGateway === undefined
+        ? { available: false, installationId, ownerGeneration: 0, registrationGeneration: 0, status: 'disabled', preferences: DEFAULT_PUSH_PREFERENCES }
+        : await this.pushGateway.config(owner, installationId).catch(error => { throw safePushFailure(error) })
+      sendJson(response, 200, config, this.tlsEnabled)
+      return
+    }
+    if (method !== 'POST' || target.search !== '') throw new HttpError(method === 'POST' ? 400 : 405, method === 'POST' ? 'bad_request' : 'method_not_allowed')
+    const owner = await this.requireFreshPushOwner(authorization)
+    const body = await readJsonObject(request, MAX_CONTROL_BODY_BYTES)
+    const service = this.pushGateway
+    if (service === undefined) throw new HttpError(503, 'push_unavailable')
+    try {
+      if (target.decodedPathname === MOBILE_PUSH_SUBSCRIPTION_PATH) {
+        const enrollment = parsePushEnrollment(body)
+        sendJson(response, 200, await service.enroll(owner, enrollment), this.tlsEnabled)
+        return
+      }
+      if (target.decodedPathname === MOBILE_PUSH_PREFERENCES_PATH) {
+        const keys = ['installationId', 'preferences', 'ownerGeneration', 'registrationGeneration']
+        if (!exactKeys(body, keys)) throw new HttpError(400, 'bad_request')
+        const installationId = parseInstallationId(body.installationId)
+        const preferences = parsePushPreferences(body.preferences)
+        const guard: PushMutationGuard = {
+          ownerGeneration: parseGeneration(body.ownerGeneration, true),
+          registrationGeneration: parseGeneration(body.registrationGeneration, true),
+        }
+        sendJson(response, 200, await service.preferences(owner, installationId, preferences, guard), this.tlsEnabled)
+        return
+      }
+      if (target.decodedPathname === MOBILE_PUSH_DISABLE_PATH) {
+        const keys = body.ifGeneration === undefined ? ['installationId'] : ['installationId', 'ifGeneration']
+        if (!exactKeys(body, keys)) throw new HttpError(400, 'bad_request')
+        const installationId = parseInstallationId(body.installationId)
+        const ifGeneration = body.ifGeneration === undefined ? undefined : parseGeneration(body.ifGeneration, false)
+        await service.disable(owner, installationId, ifGeneration)
+        sendJson(response, 200, { disabled: true }, this.tlsEnabled)
+        return
+      }
+      if (target.decodedPathname === MOBILE_PUSH_TEST_PATH) {
+        if (!exactKeys(body, ['installationId'])) throw new HttpError(400, 'bad_request')
+        const installationId = parseInstallationId(body.installationId)
+        const key = JSON.stringify([owner.scopeId, owner.deviceId, owner.origin, installationId])
+        if (this.pushTestsInFlight.has(key)) throw new HttpError(429, 'rate_limited')
+        this.pushTestsInFlight.add(key)
+        try { await service.test(owner, installationId) } finally { this.pushTestsInFlight.delete(key) }
+        sendJson(response, 200, { accepted: true }, this.tlsEnabled)
+        return
+      }
+      if (target.decodedPathname === MOBILE_PUSH_RESOLVE_PATH) {
+        if (!exactKeys(body, ['reference']) || typeof body.reference !== 'string'
+          || body.reference.length === 0 || body.reference.length > 256 || !/^[A-Za-z0-9_-]+$/u.test(body.reference)) {
+          throw new HttpError(400, 'bad_request')
+        }
+        const resolved = await service.resolve(owner, body.reference)
+        if (resolved === undefined) throw new HttpError(404, 'not_found')
+        sendJson(response, 200, resolved, this.tlsEnabled)
+        return
+      }
+      throw new HttpError(404, 'not_found')
+    } catch (error) {
+      if (error instanceof HttpError) throw error
+      throw safePushFailure(error)
+    }
+  }
+
   private async handleLogout(request: IncomingMessage, response: ServerResponse): Promise<void> {
     await readJsonObject(request, MAX_CONTROL_BODY_BYTES)
     const authorization = this.authorize(request)
     this.requireCsrf(request, authorization)
+    const owner = await this.requireFreshPushOwner(authorization)
+    if (this.pushGateway !== undefined) {
+      // Persistent notification consent must commit before the short Session is destroyed.
+      await this.pushGateway.logout(owner).catch(error => { throw safePushFailure(error) })
+    }
     this.access.logout(authorization)
     response.setHeader('Set-Cookie', [
       cookie(SESSION_COOKIE, '', { tls: this.tlsEnabled, httpOnly: true, path: '/', maxAgeSeconds: 0 }),
@@ -1920,6 +2154,21 @@ export class MobileAccessGateway {
       throw new HttpError(404, 'not_found')
     }
     if (request.method === 'TRACE' || request.method === 'CONNECT') throw new HttpError(405, 'method_not_allowed')
+
+    if (target.search === '' && (request.method === 'GET' || request.method === 'HEAD')) {
+      const asset = await mobilePushAsset(target.decodedPathname)
+      if (asset !== undefined) {
+        const body = Buffer.from(asset.body)
+        setSecurityHeaders(response, this.tlsEnabled)
+        response.writeHead(200, {
+          'Content-Type': asset.contentType,
+          'Content-Length': body.byteLength,
+          'Cache-Control': 'public, max-age=3600',
+        })
+        if (request.method === 'HEAD') response.end(); else response.end(body)
+        return
+      }
+    }
 
     if (target.search === '' && request.method === 'GET' && target.decodedPathname === `${AUTH_PREFIX}/health`) {
       sendJson(response, 200, { ok: true }, this.tlsEnabled)
@@ -2015,6 +2264,8 @@ export class MobileAccessGateway {
     const workspaceDirectories = (request.method === 'GET' || request.method === 'POST')
       && target.decodedPathname === `${AUTH_PREFIX}/workspace-directories`
     const clientModules = target.decodedPathname === `${AUTH_PREFIX}/client-modules`
+    const mobilePushRoute = [MOBILE_PUSH_CONFIG_PATH, MOBILE_PUSH_SUBSCRIPTION_PATH, MOBILE_PUSH_PREFERENCES_PATH,
+      MOBILE_PUSH_DISABLE_PATH, MOBILE_PUSH_TEST_PATH, MOBILE_PUSH_RESOLVE_PATH].includes(target.decodedPathname)
     const requestedExtension = extensionTarget(target.decodedPathname)
     const requestedMobileBootBatch = mobileBootBatchKey(target.decodedPathname)
     const requestedCompatRevision = mobileCompatibilityRevision(target.decodedPathname)
@@ -2052,7 +2303,7 @@ export class MobileAccessGateway {
                     digest: requestedCompatRevision,
                   }
       : undefined
-    if (customAsset === undefined && requestedMobileBootBatch === undefined && !computerImages && !computerImage && !workspaceDirectories && !clientModules
+    if (customAsset === undefined && requestedMobileBootBatch === undefined && !computerImages && !computerImage && !workspaceDirectories && !clientModules && !mobilePushRoute
       && extensionTarget(target.decodedPathname) === undefined
       && (target.decodedPathname === AUTH_PREFIX || target.decodedPathname.startsWith(`${AUTH_PREFIX}/`))) {
       throw new HttpError(404, 'not_found')
@@ -2095,6 +2346,10 @@ export class MobileAccessGateway {
         this.authFailures.record('csrf', mapError(error).status, request, target.decodedPathname, policy.canonicalOrigin(request.headers.origin), authorization)
         throw error
       }
+    }
+    if (mobilePushRoute) {
+      await this.handleMobilePushRequest(target, request, response, authorization)
+      return
     }
     if (clientModules) {
       if (target.search !== '') throw new HttpError(400, 'bad_request')
@@ -3987,6 +4242,10 @@ export class MobileAccessGateway {
 
   private async performClose(): Promise<void> {
     this.closing = true
+    const detachPushOrigin = this.detachPushOrigin
+    this.detachPushOrigin = undefined
+    detachPushOrigin?.()
+    this.removePushDeviceListener()
     const failures: unknown[] = []
     const directoryDrain = Promise.all(this.workspaceDirectoryTasks)
     for (const controller of this.clientModuleOperations) controller.abort()
@@ -4031,6 +4290,7 @@ export class MobileAccessGateway {
       } catch (error) { failures.push(error) }
     }
     await accessClose
+    await Promise.allSettled(this.pushDeviceRevocations)
     await Promise.allSettled(this.clientModuleTasks)
     await Promise.allSettled(this.clientModuleRevocations)
     await Promise.allSettled(this.mobileGraphTasks)

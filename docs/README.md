@@ -38,6 +38,12 @@
 | --- | --- | --- |
 | 让第三方插件面板在手机上可用 | [移动端插件适配指南](MOBILE_PLUGIN_ADAPTATION.md) | [Mobile plugin adaptation](MOBILE_PLUGIN_ADAPTATION.en.md) |
 
+## 开发候选 / Development candidates
+
+| 功能 | 中文 | English | 验证边界 |
+| --- | --- | --- | --- |
+| iOS/iPadOS 18.4+ 主屏幕 Declarative Web Push | [网页推送](<WEB_PUSH.md>) | [Web Push](<WEB_PUSH.en.md>) | 尚未发布；作者已在 iPhone 17 Pro Max（iOS 27.0.1）以开发期回溯观察完整执行验收矩阵，iPad、其他设备／系统组合与最终提交复查仍开放；仅限 iOS/iPadOS Safari 主屏幕明确启用，无 Service Worker 降级 |
+
 ## 开发与安全 / Development and security
 
 0.6.3 的 [扩展 Worker 指南](EXTENSION_WORKERS.md)／[Worker guide](EXTENSION_WORKERS.en.md) 介绍按扩展启用、预算与显式恢复；此功能不迁移普通 Cordis 插件，也不是权限沙箱。

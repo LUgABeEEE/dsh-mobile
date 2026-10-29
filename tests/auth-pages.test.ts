@@ -50,6 +50,27 @@ function pairingForm(locale: AuthPageLocale = 'zh', reply: () => Promise<PairRep
     submit: () => onSubmit({ preventDefault() {} }), edit: () => onInput(), focused: () => focused }
 }
 
+function loginReturn(candidate: string) {
+  const requests: Array<{ url: string; method: string; credentials: string; headers: Record<string, string>; body: string }> = []
+  let navigate = (_path: string): void => { throw new Error('Login return did not navigate') }
+  const navigation = new Promise<string>(resolve => { navigate = resolve })
+  const elements = new Map<string, { hidden: boolean; textContent: string }>([
+    ['login-progress', { hidden: false, textContent: '' }],
+    ['login-failed', { hidden: true, textContent: '' }],
+  ])
+  const query = new URLSearchParams({ return: candidate }).toString()
+  runInNewContext(renderLoginScript('en'), {
+    URL,
+    location: { href: `https://mobile.example.test/mobile-access/login?${query}`, origin: 'https://mobile.example.test', replace: navigate },
+    fetch: async (url: string, options: { method: string; credentials: string; headers: Record<string, string>; body: string }) => {
+      requests.push({ url, ...options })
+      return { ok: true }
+    },
+    document: { getElementById: (id: string) => elements.get(id) },
+  })
+  return { requests, navigation }
+}
+
 describe('browser authentication page localization', () => {
   it('negotiates the supported languages and falls back to English', () => {
     expect(resolveAuthPageLocale('zh-CN,zh;q=0.9,en;q=0.8')).toBe('zh')
@@ -184,5 +205,21 @@ describe('browser pairing input and recovery feedback', () => {
     expect(form.status.value).toContain('检查连接后重试')
     expect(form.token.value).toBe(code)
     expect(form.button.disabled).toBe(false)
+  })
+
+  it('preserves the opaque mobile-push return metadata across successful renewal', async () => {
+    const attempt = loginReturn('/?mobile-push=opaque-ref&keep=1')
+    expect(await attempt.navigation).toBe('/?mobile-push=opaque-ref&keep=1')
+    expect(attempt.requests).toEqual([{ url: '/mobile-access/auth/renew', method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' }, body: '{}' }])
+  })
+
+  it.each([
+    'https://evil.example/steal',
+    '//evil.example/steal',
+    '/mobile-access/login',
+    '/mobile-access/pair?token=secret',
+  ])('rejects reserved and foreign login return target %s', async candidate => {
+    const attempt = loginReturn(candidate)
+    expect(await attempt.navigation).toBe('/')
   })
 })

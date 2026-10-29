@@ -63,6 +63,15 @@ export interface DeviceProbeResult {
 /** Why a short-lived Session ended; only device revocation is sent to clients. */
 export type SessionEndReason = 'logout' | 'expired' | 'evicted' | 'revoked'
 
+/** Minimal persistent-device metadata safe for notification authorization decisions. */
+export interface PersistentDeviceAuthorization {
+  readonly id: string
+  readonly expiresAt: number
+}
+
+/** Why a persistent-device removal is durably committed. */
+export type DeviceRemovalReason = 'revoked' | 'reset'
+
 /** Safe device metadata returned by the loopback administration API. */
 export interface DeviceSummary {
   readonly id: string
@@ -174,6 +183,7 @@ export class AccessController {
   private pairPending = false
   private readonly sessions = new Map<string, SessionRecord>()
   private readonly sessionEndedListeners = new Set<(authorization: SessionAuthorization, reason: SessionEndReason) => void>()
+  private readonly devicesRemovedListeners = new Set<(ids: readonly string[], reason: DeviceRemovalReason) => void>()
   private mutation: Promise<void> = Promise.resolve()
   private initialized = false
   private closing = false
@@ -232,6 +242,18 @@ export class AccessController {
       expiresAt: session.expiresAt,
     })
     for (const listener of this.sessionEndedListeners) listener(authorization, reason)
+  }
+
+  private emitDevicesRemoved(ids: readonly string[], reason: DeviceRemovalReason): void {
+    const notificationIds = Object.freeze([...ids])
+    for (const listener of [...this.devicesRemovedListeners]) {
+      try {
+        const result: unknown = listener(notificationIds, reason)
+        void Promise.resolve(result).catch(() => undefined)
+      } catch (_error) {
+        // Removal is already durable; observers must not affect authorization or each other.
+      }
+    }
   }
 
   private removeSession(key: string, reason: SessionEndReason): void {
@@ -433,8 +455,12 @@ export class AccessController {
       if (next.length === this.devices.length) return false
       await this.store.save(this.snapshot(next))
       this.devices = next
-      for (const [key, session] of this.sessions) {
-        if (session.deviceId === deviceId) this.removeSession(key, 'revoked')
+      try {
+        for (const [key, session] of this.sessions) {
+          if (session.deviceId === deviceId) this.removeSession(key, 'revoked')
+        }
+      } finally {
+        this.emitDevicesRemoved([deviceId], 'revoked')
       }
       return true
     })
@@ -444,11 +470,30 @@ export class AccessController {
   async resetDevices(): Promise<void> {
     this.requireInitialized()
     await this.exclusive(async () => {
+      const removedIds = this.devices.map(device => device.id)
       await this.store.save(this.snapshot([]))
       this.devices = []
-      for (const key of [...this.sessions.keys()]) this.removeSession(key, 'revoked')
       this.pairingWindow = undefined
+      try {
+        for (const key of [...this.sessions.keys()]) this.removeSession(key, 'revoked')
+      } finally {
+        this.emitDevicesRemoved(removedIds, 'reset')
+      }
     })
+  }
+
+  /**
+   * Read fresh persistent-device authorization metadata without changing credentials,
+   * last-seen state, Session state, or the backing store.
+   */
+  async authorizedDevices(): Promise<readonly PersistentDeviceAuthorization[]> {
+    this.requireInitialized()
+    const snapshot = await this.store.load()
+    this.requireInitialized()
+    const now = this.now()
+    return Object.freeze(snapshot.devices
+      .filter(device => device.revokedAt === undefined && device.expiresAt > now)
+      .map(device => Object.freeze({ id: device.id, expiresAt: device.expiresAt })))
   }
 
   /** Safe metadata for the loopback administration surface. */
@@ -474,6 +519,13 @@ export class AccessController {
     return () => { this.sessionEndedListeners.delete(listener) }
   }
 
+  /** Subscribe to durably committed removal of persistent-device authorization. */
+  onDevicesRemoved(listener: (ids: readonly string[], reason: DeviceRemovalReason) => void): () => void {
+    if (this.closing) throw new Error('access controller is not available')
+    this.devicesRemovedListeners.add(listener)
+    return () => { this.devicesRemovedListeners.delete(listener) }
+  }
+
   /** Stop new operations, drain durable mutations, then clear volatile credentials. */
   close(): Promise<void> {
     if (this.closeTask !== undefined) return this.closeTask
@@ -485,9 +537,13 @@ export class AccessController {
   private async finishClose(): Promise<void> {
     await this.mutation
     this.pairingWindow = undefined
-    for (const key of [...this.sessions.keys()]) this.removeSession(key, 'expired')
-    this.sessionEndedListeners.clear()
-    this.initialized = false
+    try {
+      for (const key of [...this.sessions.keys()]) this.removeSession(key, 'expired')
+    } finally {
+      this.sessionEndedListeners.clear()
+      this.devicesRemovedListeners.clear()
+      this.initialized = false
+    }
   }
 
   /** Bounded volatile-state metrics for tests and local status. */

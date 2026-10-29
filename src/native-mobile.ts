@@ -49,6 +49,16 @@ export const NATIVE_MOBILE_STYLES = `
  .dsh-mobile-settings_fontFamily > span { flex:1 1 100px; }
  .dsh-mobile-settings_fontFamily input { box-sizing:border-box; flex:1 1 180px; width:100%; min-width:0; min-height:48px; padding:8px 12px; border:0.5px solid var(--dsw-alias-border-l2); border-radius:10px; background:var(--dsw-alias-bg-module-platform); color:var(--dsw-alias-label-primary); font:inherit; }
  .dsh-mobile-settings_fontFamily input:focus-visible,.dsh-mobile-settings_fontDetails > summary:focus-visible { outline:2px solid var(--dsw-alias-label-primary-bluish,#2563eb); outline-offset:2px; }
+ /* Push category rows: compact label-left / native-Switch-right rows. The control is
+    the actual public @deepseek-ai/dsh-client-ui-primitives Switch provided by the DSH
+    web shell: its track/thumb paint, dimensions, focus ring and motion are owned by
+    the shell stylesheet and are never re-created, resized or overridden here. Each
+    row is a label associated with its switch button, so the full 48px row remains
+    one tap target while the button keeps native keyboard semantics. Category names
+    match the General settings row title typography (14px/20px, regular weight). */
+ .dsh-mobile-push-categories { display:flex; flex-direction:column; width:100%; margin:8px 0 4px; border-top:0.5px solid var(--dsw-alias-border-l2,#e8ebef); }
+ .dsh-mobile-push-category { display:flex; align-items:center; justify-content:space-between; gap:12px; box-sizing:border-box; width:100%; min-height:48px; padding:6px 0; border-bottom:0.5px solid var(--dsw-alias-border-l2,#e8ebef); cursor:pointer; }
+ .dsh-mobile-push-categoryName { flex:1 1 auto; min-width:0; color:var(--dsw-alias-label-primary,#171a21); font-size:14px; line-height:20px; font-weight:400; overflow-wrap:anywhere; }
  html.dsh-native-mobile-active [data-dsh-mobile-settings-header] { box-sizing:border-box !important; height:56px !important; min-height:56px !important; padding:4px 12px !important; }
  html.dsh-native-mobile-active [data-dsh-mobile-settings-header] [class*="_close"] { box-sizing:border-box !important; flex:none !important; width:48px !important; min-width:48px !important; height:48px !important; min-height:48px !important; }
  /* The mobile row replaces the Host-backed font control, not the theme selector. */
