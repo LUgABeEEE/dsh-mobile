@@ -4,7 +4,15 @@ Notable changes are recorded here. GitHub Releases provide the downloadable pack
 
 ## Unreleased
 
-- Remember the mobile sidebar's session-list position when closing and reopening the drawer. Restore a visible session anchor across row movement, keep search positions separate, and reveal the current session when no position is available. Memory stays in the current page; rows hidden behind DSH's reset **More** watermark are not automatically expanded.
+- Compress the live `/api/remote.mux` path by default, measured against the same seeded workload (−86% session-init bytes, −88% session switch, −99.8% on a 64 KiB binary frame); `paths: []` still disables it. Thanks @LUgABeEEE for [#292](https://github.com/saya-ch/dsh-mobile/pull/292).
+- gzip owned static assets under an explicit `Vary` and keep 304 responses validator-only. Thanks @LUgABeEEE for [#310](https://github.com/saya-ch/dsh-mobile/pull/310).
+- Request the compatibility bundle by content revision, recomputed from real bytes on each page load so a same-size edit cannot pin a stale revision. Thanks @LUgABeEEE for [#311](https://github.com/saya-ch/dsh-mobile/pull/311).
+- Style injected album/camera actions on every viewport; fallback rules leave the narrow media query and an empty native class keeps the plugin class. Thanks @LUgABeEEE for [#312](https://github.com/saya-ch/dsh-mobile/pull/312).
+- Remember the mobile sidebar's session-list position per page and per search query; rows hidden behind DSH's **More** watermark are not automatically expanded. Thanks @abworks-dev for [#307](https://github.com/saya-ch/dsh-mobile/pull/307).
+- Keep an in-shell composer dialog's left edge above the wide static navigation rail without registering any third-party private class or raising the modal layers. Thanks @LUgABeEEE for [#309](https://github.com/saya-ch/dsh-mobile/pull/309).
+- Upgrade the plugin's React tooling to 19 (React remains host-provided; no second copy is bundled). Thanks Dependabot for [#140](https://github.com/saya-ch/dsh-mobile/pull/140).
+- Update the Android maintenance group (AGP 9.4.1, WebKit 1.18.0, Gradle wrapper 9.8.2) while keeping `core-ktx` 1.15.0 on compileSdk 36. Thanks Dependabot for [#304](https://github.com/saya-ch/dsh-mobile/pull/304).
+- Credit @qzyqmzn for [#284](https://github.com/saya-ch/dsh-mobile/pull/284), which shipped the iroh transport inside the plugin and the main app.
 
 ## 0.7.1 - 2026-10-29
 
