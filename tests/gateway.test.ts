@@ -955,6 +955,49 @@ describe('HTTP gateway', () => {
     expect(head.body).toBe('')
   })
 
+  it('requests the compatibility bundle by content revision and serves it immutable', async () => {
+    const inner = await upstream()
+    const directory = await mkdtemp(join(tmpdir(), 'dsh-mobile-compat-revision-'))
+    cleanups.push(() => rm(directory, { recursive: true, force: true }))
+    const mobileCompatibilityFile = join(directory, 'compat.js')
+    await writeFile(mobileCompatibilityFile, 'globalThis.__compatibilityProbe = "first";\n', 'utf8')
+    const instance = await gateway(inner.port, { mobileCompatibilityFile })
+    const paired = await pair(instance)
+    const pageHeaders = { ...browserHeaders(instance), accept: 'text/html', cookie: `${SESSION_COOKIE}=${paired.session}` }
+    const assetHeaders = { ...browserHeaders(instance), cookie: `${SESSION_COOKIE}=${paired.session}` }
+    const revisionPattern = /src="(\/mobile-access\/compat-[a-f\d]{64}\.js)"/u
+
+    const page = await request(instance.address().port, '/', { headers: pageHeaders })
+    const revisioned = revisionPattern.exec(page.body)?.[1]
+    expect(revisioned).toBeDefined()
+    // The document never names the un-revisioned path, so a reload cannot revalidate it.
+    expect(page.body).not.toContain('src="/mobile-access/compat.js"')
+
+    const immutableResponse = await request(instance.address().port, revisioned!, { headers: assetHeaders })
+    expect(immutableResponse.status).toBe(200)
+    expect(immutableResponse.headers['cache-control']).toBe('private, max-age=31536000, immutable')
+    expect(immutableResponse.body).toContain('__compatibilityProbe = "first"')
+
+    // Documents delivered before this change keep a working, revalidating path.
+    const plain = await request(instance.address().port, '/mobile-access/compat.js', { headers: assetHeaders })
+    expect(plain.status).toBe(200)
+    expect(plain.headers['cache-control']).toBe('private, no-cache')
+    expect(plain.body).toContain('__compatibilityProbe = "first"')
+
+    // A new bundle gets a new revision, and the retired one is refused rather than
+    // answered with different bytes under an immutable URL.
+    await writeFile(mobileCompatibilityFile, 'globalThis.__compatibilityProbe = "second";\n', 'utf8')
+    const nextPage = await request(instance.address().port, '/', { headers: pageHeaders })
+    const nextRevision = revisionPattern.exec(nextPage.body)?.[1]
+    expect(nextRevision).toBeDefined()
+    expect(nextRevision).not.toBe(revisioned)
+    const stale = await request(instance.address().port, revisioned!, { headers: assetHeaders })
+    expect(stale.status).toBe(404)
+    const fresh = await request(instance.address().port, nextRevision!, { headers: assetHeaders })
+    expect(fresh.status).toBe(200)
+    expect(fresh.body).toContain('__compatibilityProbe = "second"')
+  })
+
   it.each([
     ['/mobile-access/custom.css', 'customCssFile'],
     ['/mobile-access/custom.js', 'customScriptFile'],

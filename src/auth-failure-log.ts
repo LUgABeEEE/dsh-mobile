@@ -43,6 +43,9 @@ function requestPathCategory(path: string): string {
     default:
       if (path.startsWith('/api/')) return '/api/*'
       if (path.startsWith('/mobile-access/extensions/')) return '/mobile-access/extensions/*'
+      // The compatibility bundle is requested by content revision; the digest is not
+      // a stable log category, so every revision collapses to the bundle's name.
+      if (/^\/mobile-access\/compat-[a-f\d]{64}\.js$/u.test(path)) return '/mobile-access/compat.js'
       if (path.startsWith('/mobile-access/')) return '/mobile-access/*'
       return '/*'
   }

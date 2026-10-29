@@ -5,7 +5,7 @@ import { createContext, runInContext, type Context } from 'node:vm'
 import { build } from 'tsdown'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { mobileCompatibilityBuild } from '../tsdown.config.js'
-import { ensureMobileCompatibility, MOBILE_COMPAT_PATH } from '../src/mobile-compat-bootstrap.js'
+import { ensureMobileCompatibility, MOBILE_COMPAT_PATH, mobileCompatibilityRevision, mobileCompatibilityRevisionPath } from '../src/mobile-compat-bootstrap.js'
 
 let directory: string
 let bundle: string
@@ -184,6 +184,21 @@ describe('early WebView Iterator compatibility', () => {
     // served, because throwing here took the whole mobile frontend down with a 502.
     const headless = '<html><head><title>no scripts</title></head></html>'
     expect(ensureMobileCompatibility(headless)).toBe(headless)
+  })
+
+  it('names the bundle by content and recognises an already-revisioned document', () => {
+    const digest = 'a'.repeat(64)
+    const revisioned = mobileCompatibilityRevisionPath(digest)
+    expect(revisioned).toBe(`/mobile-access/compat-${digest}.js`)
+    expect(mobileCompatibilityRevision(revisioned)).toBe(digest)
+    expect(mobileCompatibilityRevision(MOBILE_COMPAT_PATH)).toBeUndefined()
+    expect(mobileCompatibilityRevision('/mobile-access/compat-abc.js')).toBeUndefined()
+    const input = '<html><head><script src="/bootstrap.js"></script></head></html>'
+    const output = ensureMobileCompatibility(input, revisioned)
+    expect(output).toContain(`<script src="${revisioned}"></script><script src="/bootstrap.js">`)
+    // A second pass over a revisioned document must not inject the bundle again.
+    expect(ensureMobileCompatibility(output, revisioned)).toBe(output)
+    expect(ensureMobileCompatibility(output, MOBILE_COMPAT_PATH)).toBe(output)
   })
 
   it('never anchors to markup that an HTML comment made inert', () => {
