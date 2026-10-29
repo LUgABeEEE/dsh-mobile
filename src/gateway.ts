@@ -2138,9 +2138,24 @@ export class MobileAccessGateway {
         }
         if (body.byteLength > LEGACY_CUSTOM_ASSET_LIMIT) throw new HttpError(413, 'payload_too_large')
         operation.signal.throwIfAborted()
-        const etag = `"${createHash('sha256').update(body).digest('hex')}"`
+        // Owned assets are the per-load scripts and styles the gateway serves itself
+        // (`compat.js`, `mobile-layout.js`, custom CSS/JS). They carry `no-cache`, so a
+        // client that cannot be relied on to revalidate them pays for the whole body on
+        // every page load; compressing the wire format is the one lever that also pays
+        // off for a client that never sends a conditional request.
+        const compressible = isCompressibleContentType(customAsset.contentType)
+          && body.byteLength >= MIN_COMPRESSIBLE_BYTES
+        const compressed = compressible && acceptsGzip(request.headers['accept-encoding'])
+        const digest = createHash('sha256').update(body).digest('hex')
+        // A gzip body is a different representation of the same resource, so it needs
+        // its own validator: one shared ETag would let a cache answer `304` for bytes
+        // it never stored in the encoding the client asked for.
+        const etag = compressed ? `"${digest}-gzip"` : `"${digest}"`
+        const payload = compressed ? await gzipBuffer(body) : body
         const responseHeaders: Record<string, string | number> = { ETag: etag }
         if (mtime !== undefined) responseHeaders['Last-Modified'] = mtime.toUTCString()
+        if (compressible) responseHeaders.Vary = 'Accept-Encoding'
+        if (compressed) responseHeaders['Content-Encoding'] = 'gzip'
         setSecurityHeaders(response, this.tlsEnabled)
         response.setHeader('Cache-Control', 'private, no-cache')
         if (matchesIfNoneMatch(headerValue(request.headers, 'if-none-match'), etag)) {
@@ -2151,9 +2166,9 @@ export class MobileAccessGateway {
         response.writeHead(200, {
           ...responseHeaders,
           'Content-Type': customAsset.contentType,
-          'Content-Length': body.byteLength,
+          'Content-Length': payload.byteLength,
         })
-        if (request.method === 'HEAD') response.end(); else response.end(body)
+        if (request.method === 'HEAD') response.end(); else response.end(payload)
         return
       } finally {
         operation.release()

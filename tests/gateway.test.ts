@@ -832,6 +832,76 @@ describe('HTTP gateway', () => {
     expect(revoked.status).toBe(401)
   })
 
+  it('gzips owned assets for clients that accept it, with a representation-specific validator', async () => {
+    const inner = await upstream()
+    const directory = await mkdtemp(join(tmpdir(), 'dsh-mobile-owned-gzip-'))
+    cleanups.push(() => rm(directory, { recursive: true, force: true }))
+    const mobileCompatibilityFile = join(directory, 'mobile-compat.js')
+    const customCssFile = join(directory, 'mobile.css')
+    const repeated = 'globalThis.__compatibilityProbe = true;\n'.repeat(64)
+    await writeFile(mobileCompatibilityFile, repeated, 'utf8')
+    await writeFile(customCssFile, ':root { --preview: tiny; }\n', 'utf8')
+    const instance = await gateway(inner.port, { mobileCompatibilityFile, customCssFile })
+    const paired = await pair(instance)
+    const headers = { ...browserHeaders(instance), cookie: `${SESSION_COOKIE}=${paired.session}` }
+
+    const identity = await request(instance.address().port, '/mobile-access/compat.js', { headers })
+    expect(identity.status).toBe(200)
+    expect(identity.headers['content-encoding']).toBeUndefined()
+    expect(identity.headers.vary).toBe('Accept-Encoding')
+    expect(identity.body).toBe(repeated)
+
+    const compressed = await request(instance.address().port, '/mobile-access/compat.js', {
+      headers: { ...headers, 'accept-encoding': 'gzip' },
+    })
+    expect(compressed.status).toBe(200)
+    expect(compressed.headers['content-encoding']).toBe('gzip')
+    expect(compressed.headers.vary).toBe('Accept-Encoding')
+    expect(compressed.headers['cache-control']).toBe('private, no-cache')
+    expect(compressed.headers['content-length']).toBe(String(compressed.rawBody.byteLength))
+    expect(compressed.rawBody.byteLength).toBeLessThan(identity.rawBody.byteLength)
+    expect(gunzipSync(compressed.rawBody).toString('utf8')).toBe(repeated)
+    // A representation gets its own validator, so the two encodings cannot collide.
+    expect(compressed.headers.etag).toBe(`"${String(identity.headers.etag).slice(1, -1)}-gzip"`)
+
+    const head = await request(instance.address().port, '/mobile-access/compat.js', {
+      method: 'HEAD',
+      headers: { ...headers, 'accept-encoding': 'gzip' },
+    })
+    expect(head.status).toBe(200)
+    expect(head.body).toBe('')
+    expect(head.headers.etag).toBe(compressed.headers.etag)
+    expect(head.headers['content-length']).toBe(compressed.headers['content-length'])
+
+    const revalidated = await request(instance.address().port, '/mobile-access/compat.js', {
+      headers: { ...headers, 'accept-encoding': 'gzip', 'if-none-match': String(compressed.headers.etag) },
+    })
+    expect(revalidated.status).toBe(304)
+    expect(revalidated.body).toBe('')
+    // The identity validator must not match the gzip representation.
+    const crossRepresentation = await request(instance.address().port, '/mobile-access/compat.js', {
+      headers: { ...headers, 'accept-encoding': 'gzip', 'if-none-match': String(identity.headers.etag) },
+    })
+    expect(crossRepresentation.status).toBe(200)
+    expect(crossRepresentation.headers['content-encoding']).toBe('gzip')
+
+    const refused = await request(instance.address().port, '/mobile-access/compat.js', {
+      headers: { ...headers, 'accept-encoding': 'gzip;q=0, identity' },
+    })
+    expect(refused.status).toBe(200)
+    expect(refused.headers['content-encoding']).toBeUndefined()
+    expect(refused.headers.etag).toBe(identity.headers.etag)
+
+    // Below the compression floor the asset stays identity and is not varied.
+    const small = await request(instance.address().port, '/mobile-access/custom.css', {
+      headers: { ...headers, 'accept-encoding': 'gzip' },
+    })
+    expect(small.status).toBe(200)
+    expect(small.headers['content-encoding']).toBeUndefined()
+    expect(small.headers.vary).toBeUndefined()
+    expect(small.headers['content-length']).toBe(String(small.rawBody.byteLength))
+  })
+
   it.each([
     ['/mobile-access/custom.css', 'customCssFile'],
     ['/mobile-access/custom.js', 'customScriptFile'],
