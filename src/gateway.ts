@@ -1280,8 +1280,6 @@ export class MobileAccessGateway {
   private readonly workspaceDirectoryTasks = new Set<Promise<PromiseSettledResult<void>>>()
   /** Cached upstream bundle byte sizes (HEAD probes), keyed by resource URL. */
   private readonly bootEntrySizeCache = new Map<string, { size: number; at: number }>()
-  /** Last compatibility-bundle signature and the revisioned path derived from it. */
-  private compatRevision: { readonly signature: string; readonly path: string } | undefined
   private readonly extensionEventListeners = new Set<(revision: number) => void>()
   private extensionEventRevision = 0
   private readonly taskEventListeners = new Set<(payload: string) => void>()
@@ -3143,21 +3141,20 @@ export class MobileAccessGateway {
   /**
    * Name the compatibility bundle by content, so a reload asks for it by revision.
    *
-   * The bundle is hashed at most once per modification: the memo signature is the
-   * file's modification time and size, so an edit that preserves the length still
-   * invalidates it. A missing bundle keeps the plain path, where the route reports
-   * the usual `503` instead of handing the document a URL that cannot exist.
+   * The digest is computed from the bytes on every page load rather than memoised on
+   * a modification-time signature: an edit that keeps the length and restores the
+   * timestamp (a build step preserving mtime, a same-size patch) is invisible to such
+   * a signature, and the document would then name a revision the route refuses with
+   * `404` — losing the shim exactly on the old WebViews it exists for. Hashing the
+   * ~78 KB bundle costs far less than the page load it belongs to.
+   *
+   * A missing bundle keeps the plain path, where the route reports the usual `503`
+   * instead of handing the document a URL that cannot exist.
    */
   private async mobileCompatibilityUrl(signal: AbortSignal): Promise<string> {
     try {
-      const file = this.config.mobileCompatibilityFile
-      const fileStat = await stat(file)
-      const signature = `${String(fileStat.mtimeMs)}:${String(fileStat.size)}`
-      const cached = this.compatRevision
-      if (cached !== undefined && cached.signature === signature) return cached.path
-      const path = mobileCompatibilityRevisionPath(createHash('sha256').update(await readFile(file, { signal })).digest('hex'))
-      this.compatRevision = { signature, path }
-      return path
+      const body = await readFile(this.config.mobileCompatibilityFile, { signal })
+      return mobileCompatibilityRevisionPath(createHash('sha256').update(body).digest('hex'))
     } catch (error) {
       if (signal.aborted) throw error
       return MOBILE_COMPAT_PATH
