@@ -205,6 +205,9 @@ function wrapDnsLookup(moduleObject, name, api, counter) {
   moduleObject[name] = function (...args) {
     const host = args[0]
     if (isLoopbackName(host)) { allow('loopback-host', api, host, null); delegate(counter); return Reflect.apply(original, this, args) }
+    // Node returns literal IP addresses without DNS I/O. UDP bind uses this path
+    // for its wildcard/broadcast addresses; TCP/TLS destinations remain guarded.
+    if (typeof host === 'string' && net.isIP(host) !== 0) { allow('literal-address-no-dns', api, host, null); delegate(counter); return Reflect.apply(original, this, args) }
     deny(typeof host === 'string' && host !== '' ? 'non-loopback-host' : 'unidentified-host', 'dnsBlocked', api, host, null)
   }
 }

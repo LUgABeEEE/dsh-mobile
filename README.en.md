@@ -444,13 +444,14 @@ On macOS, local network, cloudflared, self-hosted FRP and the own reverse proxy 
 
 | DSH Mobile plugin | Verified DeepSeek Harness version |
 | --- | --- |
-| `0.7.1` | Isolated packed installation, mobile sidebar and breakpoint hit tests on `0.2.1-rc.3`, plus access-panel, pairing-expiry and component-cleanup checks. See [CI](https://github.com/saya-ch/dsh-mobile/actions/workflows/ci.yml) for the automated matrix; browser checks do not establish every phone, plugin or public route |
+| `0.8.0` | Push public-contract, settings, encrypted-payload and tap-ownership checks are pinned to `0.2.1-rc.2 / rc.3`; see [CI](https://github.com/saya-ch/dsh-mobile/actions/workflows/ci.yml) for the general boot/layout matrix. iOS device results accept contributor testing; browser checks do not establish every phone, plugin or public route |
 
 <details>
 <summary>Earlier release checks</summary>
 
 | DSH Mobile plugin | Verified DeepSeek Harness version |
 | --- | --- |
+| `0.7.1` | Isolated packed installation, mobile sidebar and breakpoint hit tests on `0.2.1-rc.3`, plus access-panel, pairing-expiry and component-cleanup checks |
 | `0.6.11` | Isolated packed-browser CI on `0.1.7-alpha.2`, `0.1.7-rc.1`, `0.1.7-rc.2`, `0.2.0-rc.1`, `0.2.0-rc.2`, `0.2.1-alpha.2` and `0.2.1-alpha.3`; additional real history-pagination, viewport-preservation and manual-loading checks on `0.2.0-rc.2` and `0.2.1-alpha.3`. Browser checks do not establish acceptance of every phone engine, third-party plugin or public route |
 | `0.6.12` | Packed installation, mobile boot, missing-API simulation, Workspace streaming, retained-page transport recovery and mobile settings on `0.2.1-rc.2`; authentication/resource regression with the actual community `dsh-web-startup-auth@0.1.12` on `0.2.0-rc.2`. This does not establish physical Chromium 92, arbitrary auth-plugin or public-route acceptance |
 | `0.6.13` | Packed text/image HTTP 400 recovery, Host refusal guard and error-feedback checks on `0.2.0-rc.2` and `0.2.1-rc.2`; Gateway 408/431 classification, bounded diagnostics and four Gateway factory wiring passed local tests. DSH source, iroh P2P and Android native code are outside this release |

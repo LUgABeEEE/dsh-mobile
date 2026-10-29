@@ -473,6 +473,8 @@ async function transportSelfTest() {
         const details=webPush.generateRequestDetails(subscription,${JSON.stringify(plaintext)},{contentEncoding:'aes128gcm',vapidDetails:{subject:'mailto:push-fixture@example.test',publicKey:vapid.publicKey,privateKey:vapid.privateKey},TTL:60,timeout:10000})
         const answer=await dns.lookup(url.hostname,{all:true,verbatim:true})
         assert.deepEqual(answer,[{address:'17.0.0.1',family:4}])
+        assert.deepEqual(await dns.lookup('0.0.0.0',{all:true}),[{address:'0.0.0.0',family:4}])
+        assert.deepEqual(await dns.lookup('255.255.255.255',{all:true}),[{address:'255.255.255.255',family:4}])
         await new Promise((resolve,reject)=>{
           const request=https.request(url,{method:details.method,headers:details.headers,servername:url.hostname,rejectUnauthorized:true,agent:false,lookup:(_host,_options,callback)=>callback(null,'17.0.0.1',4)},response=>{assert.equal(response.statusCode,201);response.resume();response.once('end',resolve)})
           request.once('error',reject);request.end(details.body)
