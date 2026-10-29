@@ -1514,6 +1514,7 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
   const remotePair = element('button', 'dsh-mobile-control__secondary'); remotePair.type = 'button'; remotePair.textContent = t('generateRemoteQr'); remotePair.disabled = true
   const remoteCopyLink = element('button', 'dsh-mobile-control__secondary'); remoteCopyLink.type = 'button'; remoteCopyLink.textContent = t('copyRemoteLink'); remoteCopyLink.disabled = true
   const remotePairLink = element('p', 'dsh-mobile-control__status'); remotePairLink.hidden = true
+  const pairingValidity = element('p', 'dsh-mobile-control__component-status'); pairingValidity.hidden = true
   let activeRemotePairUrl = ''
   let activeRemotePairExpiresAt = 0
   let activeIrohDescriptor = ''
@@ -1672,7 +1673,7 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
   // provider page, below the action buttons, regardless of the active provider.
   const setupDetailsRow = element('div', 'dsh-mobile-control__setup-details')
   for (const disclosure of [cpolarDetails, cloudflaredDetails, frpDetails, irohDetails]) { disclosure.hidden = true; setupDetailsRow.append(disclosure) }
-  remoteWorkspace.append(remoteStatus, remoteAccess, remoteGuide, providerSetupBody, remoteQr, providerInstallRow, remoteActions, remotePairLink, setupDetailsRow)
+  remoteWorkspace.append(remoteStatus, remoteAccess, remoteGuide, providerSetupBody, remoteQr, pairingValidity, providerInstallRow, remoteActions, remotePairLink, setupDetailsRow)
   const diagnosticsView = element('div', 'dsh-mobile-control__view is-diagnostics'); diagnosticsView.hidden = true
   // Paired-device management is its own page (like diagnostics), reached from the
   // LAN view's "Manage paired devices" button, instead of expanding inline.
@@ -2561,6 +2562,16 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
       else showRemoteQrPlaceholder(t('remoteQrPlaceholderIdle'))
     } else if (!iroh && activeRemotePairUrl === '') {
       showQr('', remoteQr)
+    } else if (!iroh && activeRemotePairExpiresAt > 0 && Date.now() > activeRemotePairExpiresAt) {
+      // The pairing window is server-authoritative; the poll only reflects expiry
+      // here — no background timer, no re-mint, and a stale QR can never survive.
+      activeRemotePairUrl = ''
+      activeRemotePairExpiresAt = 0
+      showRemoteQrPlaceholder(t('pairingExpired'))
+      pairingValidity.hidden = false
+      pairingValidity.textContent = t('pairingExpired')
+    } else {
+      pairingValidity.hidden = true
     }
     // Source/cleanup disclosures are pinned to the bottom and only shown for the
     // provider that owns them.
@@ -3648,6 +3659,8 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
     // cannot invalidate a QR that the phone may already be scanning.
     activeRemotePairUrl = pairUrl
     activeRemotePairExpiresAt = expiresAt
+    pairingValidity.hidden = false
+    pairingValidity.textContent = t('pairingExpires', { time: formatTime(expiresAt) })
     remotePairLink.textContent = pairUrl
     remotePairLink.classList.add('is-key')
     remotePairLink.hidden = false
