@@ -4,19 +4,13 @@ Notable changes are recorded here. GitHub Releases provide the downloadable pack
 
 ## Unreleased
 
-- Rebuild the Mobile access panel as a compact floating two-column layout: channel selection stays on the left, provider configuration on the right, with aligned LAN/remote widths, a stable scrollbar gutter and denser spacing.
-
-- Move paired-device management to its own page with a header entry beside Diagnostics and separate LAN/remote device tabs; inline device rows leave the main panes.
-
-- cloudflared: keep tunnel switching to the tab row, surface tunnel notes as a hover popover, collapse named-tunnel settings behind an expandable section that stays read-only after saving until edited, require saving the named tunnel before enabling remote access, and close a running connection before switching tunnel types.
-
-- Only show the pairing QR placeholder when a provider is actually ready to pair; provider component install buttons move below the QR next to the enable row.
-
-- Add iroh component cleanup: a purge action removes the installed sidecar from the plugin private directory (new authenticated route), disabled while the connection runs.
-
-- Show real APK download sizes on the download buttons, resolved dynamically from the published GitHub release assets.
-
-- State fixes: the LAN option's aria-checked follows the active view, the notes popover opens for touch and keyboard, the install row hides when nothing is installable, and iroh cleanup is blocked while connected.
+- Reorganize **Mobile access** into a compact channel list and configuration pane, stacked on narrow screens. Device management has its own LAN/remote tabs beside Diagnostics; keyboard focus and Escape follow the open panel.
+- Improve cloudflared quick/named tunnel switching, expandable settings and tunnel notes. **Save and connect** saves and enables the selected provider in one queued operation; connection readiness remains visible separately. Protect pending edits from duplicate actions and stale reads, and keep incomplete named settings editable.
+- Show the server-issued expiry for LAN and HTTPS remote pairing codes, remove expired QR codes, and reuse the displayed code when copying its link. Generating another code still invalidates the previous one. Thanks @jackfocus15-spec for [#285](https://github.com/saya-ch/dsh-mobile/issues/285).
+- Keep the collapsed navigation rail clear of the conversation between the phone and wide-layout breakpoints, without taking 56 px away from phone content. A collapsed phone drawer no longer leaves a transparent strip intercepting conversation input. Thanks @wintekk for [#306](https://github.com/saya-ch/dsh-mobile/issues/306).
+- Allow removal of the plugin-downloaded iroh component after remote access is turned off. The authenticated Host route also refuses removal while enabled; identities, pairings and external companion installations are retained.
+- Display published APK sizes when available. This optional lookup runs independently of release status and package installation and is cancelled when the plugin stops.
+- Add practical Android VPN/proxy troubleshooting for iroh, including per-app bypass and the limits of domain-only rules. Thanks @ZinChl for [#308](https://github.com/saya-ch/dsh-mobile/issues/308).
 
 ## 0.7.0 - 2026-10-28
 

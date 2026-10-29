@@ -24,7 +24,7 @@ Android App / 浏览器 → 公网 HTTPS 域名（Caddy 终止 TLS）
 
 ## 安装、启动与就绪
 
-1. 在电脑端打开 **移动访问 → 远程 → 自建连接 → 自有反向代理**，选择 **托管 Caddy**。
+1. 在电脑端打开 **移动访问 → 自有反向代理**，选择 **托管 Caddy**。
 2. 点击 **安装托管 Caddy** 并确认下载。插件从固定的 [DSH Mobile 组件分发](https://github.com/saya-ch/dsh-mobile/releases/tag/caddy-component-2.11.7-tencentcloud-0.4.3-r1) 下载，核对完整大小、SHA-256、Caddy 核心与 DNS 模块版本；来源不可用或校验失败时不会执行文件。
 3. 填写公网 HTTPS 地址，例如 `https://dsh.example.com`，选择腾讯云 DNSPod，填写具有所需区域权限的 `SecretId` 和 `SecretKey`，再设置本机 HTTPS 端口，例如 `8443`。让域名解析到你的公网入口，并按需将公网 TCP 443 映射至电脑的 8443。
 4. 点击 **保存并启动 Caddy**。组件已安装不等于连接就绪：只有电脑端经公网 HTTPS 验证证书，并确认入口属于当前 DSH 实例后，面板才显示已就绪。这个探测仍不能证明手机网络可达。

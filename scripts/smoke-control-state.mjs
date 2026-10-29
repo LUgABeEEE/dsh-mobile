@@ -62,6 +62,7 @@ async function withControl(browser, name, options, run) {
     hosts: options.hosts ?? [], holdHosts: false, holdRecovery: options.holdRecovery === true,
     recoveryError: options.recoveryError,
     diagnostics: options.diagnostics,
+    pairingSequence: 0, holdCloudflared: false,
   }
   if (options.managedReady) {
     Object.assign(state.remote, {
@@ -130,6 +131,13 @@ async function withControl(browser, name, options, run) {
       json(response, 200, { configured: true, running: true, origin: 'https://192.168.50.20:3443' })
       return
     }
+    if (/^\/api\/mobile-access\/(lan|remote)\/pairing\/open$/u.test(pathname) && request.method === 'POST') {
+      const token = `owned-pairing-fixture-${++state.pairingSequence}`
+      json(response, 201, { pairUrl: `https://fixture.example/mobile-access/pair#token=${token}`,
+        expiresAt: Date.parse('2026-01-01T12:00:01Z') + 120_000,
+        qrSvg: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"><rect width="16" height="16"/></svg>' })
+      return
+    }
     if (pathname === trustedPath) {
       if (request.method === 'GET' && state.holdTrusted) { hold(entry, response); return }
       if (request.method === 'POST') state.trusted.extraAllowedCidrs = body.extraAllowedCidrs
@@ -156,6 +164,14 @@ async function withControl(browser, name, options, run) {
         state.remote.origin = body.settings.publicOrigin
         state.remote.caddyState = { enabled: true, state: 'ready' }
       }
+      json(response, 200, state.remote)
+      return
+    }
+    if (pathname === `${prefix}/remote/cloudflared/tunnel` && request.method === 'POST') {
+      if (state.holdCloudflared) { state.pendingCloudflared = response; hold(entry, response); return }
+      const { token: _token, ...configuration } = body
+      state.remote.providers.cloudflared.configuration = { ...configuration, configured: true }
+      if (body.connect === true) Object.assign(state.remote, { running: true, state: 'connecting' })
       json(response, 200, state.remote)
       return
     }
@@ -187,7 +203,7 @@ async function withControl(browser, name, options, run) {
     const address = server.address()
     assert(address !== null && typeof address !== 'string', `${name}: fixture has no TCP address`)
     const origin = `http://127.0.0.1:${address.port}`
-    context = await browser.newContext({ viewport: { width: options.width ?? 1100, height: 900 }, locale: options.locale ?? 'en-US', reducedMotion: 'reduce' })
+    context = await browser.newContext({ viewport: { width: options.width ?? 1100, height: 900 }, locale: options.locale ?? 'en-US', reducedMotion: 'reduce', hasTouch: options.touch === true, isMobile: options.touch === true })
     const page = await context.newPage()
     page.setDefaultTimeout(10_000)
     page.on('pageerror', error => { errors.push(error.message) })
@@ -225,11 +241,13 @@ async function withControl(browser, name, options, run) {
       const originalFetch = window.fetch.bind(window)
       window.fetch = async (...args) => {
         const response = await originalFetch(...args)
-        const originalJson = response.json.bind(response)
-        response.json = async () => {
-          const value = await originalJson()
-          window.fixtureConsumed.push(new URL(typeof args[0] === 'string' ? args[0] : args[0].url, location.href).pathname)
-          return value
+        for (const method of ['text', 'json']) {
+          const originalRead = response[method].bind(response)
+          response[method] = async () => {
+            const value = await originalRead()
+            window.fixtureConsumed.push(new URL(typeof args[0] === 'string' ? args[0] : args[0].url, location.href).pathname)
+            return value
+          }
         }
         return response
       }
@@ -295,7 +313,7 @@ async function withControl(browser, name, options, run) {
     }
     const openRemote = async () => {
       const previous = await consumed(remotePath)
-      await page.locator('.dsh-mobile-control__tab').nth(1).click()
+      await page.locator('.dsh-mobile-control__provider.is-origin').click()
       await settle(remotePath, previous)
     }
     const pollRemote = async () => {
@@ -328,6 +346,109 @@ async function withControl(browser, name, options, run) {
 const browser = await chromium.launch({ headless: true })
 let cases = 0
 try {
+  for (const remote of [false, true]) {
+    await withControl(browser, `${remote ? 'remote' : 'LAN'} QR expiry and explicit copy`, {}, async ({ page, state, count, consumed, settle, openRemote, pollRemote }) => {
+      if (remote) {
+        Object.assign(state.remote, { running: true, state: 'ready', origin: 'https://fixture.example' })
+        await openRemote()
+      }
+      const catalog = await page.evaluate(() => window.mobileClient.MOBILE_CONTROL_MESSAGES.en)
+      const path = `${prefix}/${remote ? 'remote' : 'lan'}/pairing/open`
+      const pane = page.locator(remote ? '.dsh-mobile-control__remote-workspace' : '.dsh-mobile-control__channel-pane > .dsh-mobile-control__view')
+      await page.evaluate(() => { Object.defineProperty(navigator, 'clipboard', { configurable: true,
+        value: { writeText: async text => { window.fixtureCopiedPairing = text } } }) })
+      const previous = await consumed(path)
+      await pane.getByRole('button', { name: catalog[remote ? 'generateRemoteQr' : 'generateCopyKey'], exact: true }).click()
+      await settle(path, previous)
+      assert.equal(await pane.locator('.dsh-mobile-control__qr img').count(), 1)
+      const actions = await pane.locator(':scope > .dsh-mobile-control__actions > button:visible').evaluateAll(buttons => buttons.map(button => {
+        const { x, y, width, height } = button.getBoundingClientRect()
+        return { x, y, width, height }
+      }))
+      assert.equal(actions.length, 3, 'The ready channel must keep its three primary actions')
+      assert(actions.every(action => Math.abs(action.y - actions[0].y) < 1 && Math.abs(action.width - actions[0].width) < 1), `Primary actions did not remain a single equal-width row: ${JSON.stringify(actions)}`)
+      assert.equal(await pane.locator('.dsh-mobile-control__stage-header').count(), 0, 'Removed current-connection row returned')
+      await pollRemote()
+      assert.equal(await pane.getByText(/^Pairing QR valid until/u).isVisible(), true, 'Poll hid a valid pairing deadline')
+      await pane.getByRole('button', { name: catalog[remote ? 'copyRemoteLink' : 'copyPairLink'], exact: true }).click()
+      await waitUntil(() => page.evaluate(() => window.fixtureCopiedPairing), value => typeof value === 'string', 'explicit copy')
+      assert.equal(count('POST', path), 1, 'Copy unexpectedly invalidated the displayed QR')
+      await page.clock.fastForward(120_000)
+      await pollRemote()
+      assert.equal(await pane.locator('.dsh-mobile-control__qr img').count(), 0, 'Expired QR remained visible')
+      assert.equal(await pane.getByText(catalog.pairingExpired, { exact: true }).first().isVisible(), true)
+      await pollRemote()
+      assert.equal(await pane.getByText(catalog.pairingExpired, { exact: true }).first().isVisible(), true, 'Next poll erased expiry')
+      assert.equal(count('POST', path), 1, 'Polling silently generated a new pairing token')
+    })
+    cases++
+  }
+  await withControl(browser, 'named cloudflared save-and-connect keeps one busy owner', {}, async ({ page, state, count, consumed, settle, waitRequest, openRemote, pollRemote }) => {
+    await openRemote()
+    state.remote.providers.cloudflared = { component: { installed: true, supported: true }, configuration: { mode: 'named', configured: false } }
+    let previous = await consumed(`${prefix}/remote/provider`)
+    await page.getByRole('radio', { name: /^cloudflared\b/u }).click()
+    await settle(`${prefix}/remote/provider`, previous)
+    const catalog = await page.evaluate(() => window.mobileClient.MOBILE_CONTROL_MESSAGES.en)
+    await page.getByRole('button', { name: new RegExp(`^${catalog.cloudflaredShowConfig}`, 'u') }).click()
+    const host = page.getByLabel(catalog.cloudflaredTunnelHostname, { exact: true })
+    const port = page.getByLabel(catalog.cloudflaredTunnelPort, { exact: true })
+    const token = page.getByLabel(catalog.cloudflaredTunnelToken, { exact: true })
+    assert.equal(await host.isEnabled(), true, 'Incomplete saved named settings were locked')
+    await host.fill('https://owned-fixture.example')
+    await port.fill('3444')
+    await token.fill('a'.repeat(40))
+    state.holdCloudflared = true
+    const path = `${prefix}/remote/cloudflared/tunnel`
+    previous = await consumed(path)
+    await page.getByRole('button', { name: catalog.cloudflaredTunnelSave, exact: true }).click()
+    const saved = await waitRequest('POST', path)
+    assert.equal(saved.body.connect, true)
+    assert.equal(await host.isDisabled(), true)
+    assert.equal(await page.locator('.dsh-mobile-control__provider.is-iroh').isDisabled(), true)
+    await pollRemote()
+    assert.equal(await host.isDisabled(), true, 'Poll unlocked an in-flight save')
+    Object.assign(state.remote, { running: true, state: 'connecting' })
+    state.remote.providers.cloudflared.configuration = { mode: 'named', configured: true, hostname: saved.body.hostname, port: 3444 }
+    const held = state.pendingCloudflared
+    assert(held !== undefined, 'Save fixture did not retain its response')
+    held.writeHead(200, { 'content-type': 'application/json' }); held.end(JSON.stringify(state.remote))
+    await settle(path, previous)
+    assert.equal(count('POST', remotePath), 0, 'Save-and-connect used a second raceable control request')
+    assert.equal(await token.inputValue(), '')
+    assert.equal(await page.getByText(catalog.cloudflaredTunnelSaved, { exact: true }).isVisible(), true)
+    assert.equal(await page.getByRole('button', { name: catalog.cloudflaredEditConfig, exact: true }).isVisible(), true)
+    assert.equal(await page.getByText('Saved and connected.', { exact: true }).count(), 0)
+  })
+  cases++
+  for (const touch of [false, true]) {
+    await withControl(browser, `cloudflared notes and modal keyboard ${touch ? 'touch' : 'pointer'}`, { touch, width: touch ? 390 : 1100 }, async ({ page, state, consumed, settle, openRemote }) => {
+      await openRemote()
+      state.remote.providers.cloudflared = { component: { installed: true, supported: true }, configuration: { mode: 'quick', configured: false } }
+      const before = await consumed(`${prefix}/remote/provider`)
+      await page.getByRole('radio', { name: /^cloudflared\b/u }).click()
+      await settle(`${prefix}/remote/provider`, before)
+      const notes = page.locator('.dsh-mobile-control__notes-panel')
+      const toggle = page.locator('.dsh-mobile-control__notes-toggle')
+      await page.mouse.move(1090, 890)
+      await toggle.focus()
+      await page.keyboard.press('Enter')
+      assert.equal(await notes.isVisible(), true, 'Keyboard could not open tunnel notes')
+      await page.keyboard.press('Escape')
+      assert.equal(await notes.isVisible(), false)
+      assert.equal(await page.locator('.dsh-mobile-control__panel').isVisible(), true, 'Notes Escape also closed the whole panel')
+      if (touch) {
+        await toggle.tap()
+        assert.equal(await notes.isVisible(), true, 'Touch could not open tunnel notes')
+        await toggle.tap()
+        assert.equal(await notes.isVisible(), false, 'Touch could not dismiss tunnel notes')
+      }
+      await page.keyboard.press('Escape')
+      assert.equal(await page.locator('.dsh-mobile-control__panel').isVisible(), false)
+      assert.equal(await page.locator('.dsh-mobile-control__trigger').evaluate(node => document.activeElement === node), true, 'Closing did not restore trigger focus')
+    })
+    cases++
+  }
   for (const language of ['en', 'it', 'zh']) {
     await withControl(browser, `FRP field validation ${language}`, {
       layoutFixture: true, frpFixture: true, language, width: 360,
@@ -343,7 +464,6 @@ try {
         })) document.documentElement.style.setProperty(name, value)
       })
       await openRemote()
-      await page.locator('.dsh-mobile-control__self-hosted').evaluate(node => { node.open = true })
       const previous = await consumed(`${prefix}/remote/provider`)
       await page.locator('.dsh-mobile-control__provider.is-frp').click()
       await settle(`${prefix}/remote/provider`, previous)
@@ -433,7 +553,6 @@ try {
     layoutFixture: true, frpFixture: true, frpInstalled: false,
   }, async ({ page, state, count, waitRequest, consumed, settle, openRemote }) => {
     await openRemote()
-    await page.locator('.dsh-mobile-control__self-hosted').evaluate(node => { node.open = true })
     const refreshBefore = count('GET', remotePath)
     const refreshConsumed = await consumed(remotePath)
     state.holdNextRemote = true
@@ -492,7 +611,8 @@ try {
       await authorize.click()
       assert.deepEqual(await page.evaluate(() => window.fixtureOpenedUrls), ['https://tailscale.com/s/https'])
       const previous = await consumed(`${prefix}/diagnostics`)
-      await page.locator('.dsh-mobile-control__diagnostic-entry').click()
+      const diagnosticName = await page.evaluate(locale => window.mobileClient.MOBILE_CONTROL_MESSAGES[locale].openDiagnostics, language)
+      await page.getByRole('button', { name: diagnosticName, exact: true }).click()
       await settle(`${prefix}/diagnostics`, previous)
       const rows = page.locator('.dsh-mobile-control__diagnostic-check')
       assert.equal(await rows.count(), codes.length)
@@ -516,14 +636,10 @@ try {
   }
 
   await withControl(browser, 'managed readiness uses server truth, not the HTTPS form preview', { managedReady: true }, async ({ page, state, ui, count, openRemote, pollRemote }) => {
-    const heading = page.locator('.dsh-mobile-control__stage-value')
-    const badge = page.locator('.dsh-mobile-control__state-badge')
+    const badge = page.locator('.dsh-mobile-control__provider.is-origin .dsh-mobile-control__provider-badge')
     const notice = page.locator('.dsh-mobile-control__remote-workspace .dsh-mobile-control__status[aria-live="polite"]')
-    const selfHostedBadge = page.locator('.dsh-mobile-control__provider-badge.is-frp')
     const assertManaged = async () => {
-      assert.equal(await heading.textContent(), 'Managed Caddy')
       assert.equal(await badge.textContent(), 'Ready')
-      assert.equal(await selfHostedBadge.textContent(), 'Ready')
       assert.equal(await notice.textContent(), 'Managed HTTPS entry verified for this computer.')
     }
     await assertManaged() // initial mount, before opening the remote tab
@@ -532,7 +648,7 @@ try {
     await assertManaged()
     await pollRemote()
     assert.equal(await ui.managed.isChecked(), true)
-    await page.locator('.dsh-mobile-control__trigger').click()
+    await page.locator('.dsh-mobile-control__close').click()
     await page.locator('.dsh-mobile-control__trigger').click()
     await assertManaged()
     // A different controller changes the server mode; a clean form follows it.
@@ -541,7 +657,6 @@ try {
     state.remote.origin = state.remote.providers.origin.configuration.publicOrigin
     await pollRemote()
     assert.equal(await ui.external.isChecked(), true)
-    assert.equal(await heading.textContent(), 'Own reverse proxy')
     assert.equal(await badge.textContent(), 'Backend listening')
     assert.match(await notice.textContent(), /have NOT been verified/u)
     state.remote.originMode = 'managed'
@@ -557,7 +672,6 @@ try {
     await ui.caddyDomain.fill('https://unsaved-caddy.example.com:9443')
     await pollRemote()
     assert.equal(await ui.managed.isChecked(), true)
-    assert.equal(await heading.textContent(), 'Own reverse proxy')
     assert.equal(await badge.textContent(), 'Backend listening')
     assert.equal(await page.getByText('HTTPS form preview differs from the current connection.', { exact: true }).isVisible(), true)
     // Another server mode change updates the summary without discarding edits.
@@ -587,11 +701,10 @@ try {
     await pollRemote()
     assert.equal(await ui.external.isChecked(), true, 'Server change discarded the intentional external preview')
     assert.equal(await ui.originPublic.inputValue(), 'https://unsaved-proxy.example.com:8816')
-    assert.equal(await page.locator('.dsh-mobile-control__stage-value').textContent(), 'Managed Caddy')
-    assert.equal(await page.locator('.dsh-mobile-control__state-badge').textContent(), 'Ready')
+    assert.equal(await page.locator('.dsh-mobile-control__provider.is-origin .dsh-mobile-control__provider-badge').textContent(), 'Ready')
     assert.equal(await page.locator('.dsh-mobile-control__remote-workspace .dsh-mobile-control__status[aria-live="polite"]').textContent(), 'Managed HTTPS entry verified for this computer.')
     assert.equal(await page.getByText('HTTPS form preview differs from the current connection.', { exact: true }).isVisible(), true)
-    await page.locator('.dsh-mobile-control__trigger').click()
+    await page.locator('.dsh-mobile-control__close').click()
     await page.locator('.dsh-mobile-control__trigger').click()
     await pollRemote()
     assert.equal(await ui.external.isChecked(), true, 'Reopening discarded the intentional preview')
@@ -651,7 +764,7 @@ try {
         }
         for (const control of geometry.controls) assert(control.height >= 44 && control.height <= 48, 'Input/select heights differ')
         for (const action of geometry.actions) {
-          assert(action.height >= 44 && action.height <= 72, 'Action stretched to a note height')
+          assert(action.height >= 44 && action.height <= 72, `Action stretched to a note height: ${JSON.stringify(geometry)}`)
           assert(action.width >= geometry.bounds.width - 28, 'Caddy action did not span the form width')
         }
         const columns = geometry.bounds.width - 26 >= 292 ? 2 : 1
@@ -773,7 +886,7 @@ try {
       for (const [label, control] of [['managed radio', ui.managed], ['external radio', ui.external], ['Caddy save', ui.caddySave], ['Caddy domain', ui.caddyDomain]]) {
         assert.equal(await control.isDisabled(), true, `${label} unlocked during a pending Caddy action`)
       }
-      assert.equal(await page.locator('.dsh-mobile-control__provider').evaluateAll(nodes => nodes.every(node => node.disabled)), true, 'Provider cards unlocked during a pending Caddy action')
+      assert.equal(await page.locator('.dsh-mobile-control__provider:not(.is-lan)').evaluateAll(nodes => nodes.every(node => node.disabled)), true, 'Remote provider cards unlocked during a pending Caddy action')
     }
     await assertBusy()
     staleRead.release(200, { ...remoteState(), provider: 'tailscale' })
@@ -915,7 +1028,8 @@ try {
       assert.equal(count('POST', recoverPath), 0, 'Opening the control automatically restarted a worker')
       await openRemote()
       assert.equal(await section.isVisible(), true, 'Remote tab hid extension recovery')
-      await page.locator('.dsh-mobile-control__diagnostic-entry').click()
+      const diagnosticName = await page.evaluate(locale => window.mobileClient.MOBILE_CONTROL_MESSAGES[locale].openDiagnostics, language)
+      await page.getByRole('button', { name: diagnosticName, exact: true }).click()
       assert.equal(await section.isVisible(), true, 'Diagnostics hid extension recovery')
       const confirmations = []
       page.on('dialog', dialog => { confirmations.push(dialog.message()) })
@@ -995,7 +1109,7 @@ try {
       window.detachedRecovery = document.querySelector('.dsh-mobile-control__extension-recovery')
       window.detachedRecoveryText = window.detachedRecovery.textContent
     }, { hosts: [] })
-    await page.locator('.dsh-mobile-control__trigger').click()
+    await page.locator('.dsh-mobile-control__close').click()
     await page.locator('.dsh-mobile-control__trigger').click()
     await page.waitForFunction(() => typeof window.releaseLateRecovery === 'function')
     await page.evaluate(async () => {

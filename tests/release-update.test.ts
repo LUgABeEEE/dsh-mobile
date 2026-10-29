@@ -64,6 +64,53 @@ function notesFetch(version: string): typeof globalThis.fetch {
 }
 
 describe('profile-local release updates', () => {
+  it('does not wait for optional APK sizes and attaches only positive integer asset sizes', async () => {
+    let finishAssets!: (response: Response) => void
+    let requested = false
+    const base = releaseFetch('0.9.0')
+    const manager = new PluginReleaseManager({
+      profileDirectory: undefined,
+      installedVersion: '0.7.0',
+      fetch: async (input, init) => {
+        if (String(input) === `https://api.github.com/repos/saya-ch/dsh-mobile/releases/tags/${bundledApp.releaseTag}`) {
+          requested = true
+          return new Promise<Response>(resolve => {
+            finishAssets = resolve
+            init?.signal?.addEventListener('abort', () => resolve(new Response('', { status: 503 })), { once: true })
+          })
+        }
+        return base(input, init)
+      },
+    })
+    try {
+      const status = await manager.status()
+      expect(requested).toBe(true)
+      expect(status.androidDownloadUrl).toBe(bundledApkUrl)
+      expect(status.androidCompatBytes).toBeUndefined()
+      finishAssets(Response.json({ assets: [null, 4, { name: `dsh-mobile-android-v${bundledApp.version}.apk`, size: -1 },
+        { name: `dsh-mobile-android-v${bundledApp.version}.apk`, size: 1234 },
+        { name: `dsh-mobile-android-v${bundledApp.version}-iroh.apk`, size: 1.5 }] }))
+      await vi.waitFor(async () => expect((await manager.status()).androidCompatBytes).toBe(1234))
+      expect((await manager.status()).androidIrohBytes).toBeUndefined()
+    } finally { await manager.dispose() }
+  })
+
+  it('cancels and drains its size probe when disposed', async () => {
+    let observed: AbortSignal | null | undefined
+    const base = releaseFetch('0.9.0')
+    const manager = new PluginReleaseManager({ profileDirectory: undefined, fetch: async (input, init) => {
+      if (String(input) === `https://api.github.com/repos/saya-ch/dsh-mobile/releases/tags/${bundledApp.releaseTag}`) {
+        observed = init?.signal
+        return new Promise<Response>((_resolve, reject) => observed?.addEventListener('abort', () => reject(observed?.reason), { once: true }))
+      }
+      return base(input, init)
+    } })
+    await manager.status()
+    expect(observed?.aborted).toBe(false)
+    await manager.dispose()
+    expect(observed?.aborted).toBe(true)
+    expect((await manager.status()).androidCompatBytes).toBeUndefined()
+  })
   it('compares stable and prerelease SemVer values', () => {
     expect(comparePluginVersions('0.3.3', '0.3.2')).toBe(1)
     expect(comparePluginVersions('0.4.0', '0.3.2')).toBe(1)

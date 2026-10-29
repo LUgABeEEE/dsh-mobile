@@ -1096,6 +1096,17 @@ describe('stock DSH lifecycle', () => {
     }
   })
 
+  it('saves and enables only the selected cloudflared provider in one queued operation', async () => {
+    const mounted = await mount()
+    expect((await invoke(mounted.route, 'POST', '/api/mobile-access/remote/provider', JSON.stringify({ provider: 'cloudflared' }))).status).toBe(200)
+    expect((await invoke(mounted.route, 'POST', '/api/mobile-access/remote/cloudflared/tunnel', JSON.stringify({ mode: 'quick', connect: 'yes' }))).status).toBe(400)
+    const configured = await invoke(mounted.route, 'POST', '/api/mobile-access/remote/cloudflared/tunnel', JSON.stringify({ mode: 'quick', connect: true }))
+    expect(configured.status).toBe(200)
+    expect(JSON.parse(configured.body)).toMatchObject({ provider: 'cloudflared', running: true, state: 'unavailable', errorCode: 'cloudflared_component_missing' })
+    expect((await invoke(mounted.route, 'POST', '/api/mobile-access/remote/control', JSON.stringify({ provider: 'cloudflared', running: false }))).status).toBe(200)
+    expect(JSON.parse((await invoke(mounted.route, 'GET', '/api/mobile-access/remote/control')).body)).toMatchObject({ running: false })
+  })
+
   it('selects experimental iroh and fails closed without a sidecar', async () => {
     // Pin the companion lookup away from the checkout siblings so the
     // absence below holds on machines with a neighbouring companion clone.
@@ -1127,9 +1138,20 @@ describe('stock DSH lifecycle', () => {
     const started = await invoke(mounted.route, 'POST', '/api/mobile-access/remote/control', JSON.stringify({ running: true }))
     expect(started.status).toBe(200)
     expect(JSON.parse(started.body)).toMatchObject({ provider: 'iroh', running: true, state: 'unavailable', errorCode: 'iroh_companion_missing' })
+    const refusedPurge = await invoke(mounted.route, 'POST', '/api/mobile-access/remote/iroh/component/purge', JSON.stringify({ confirm: true }))
+    expect(refusedPurge.status).toBe(409)
+    expect(JSON.parse(refusedPurge.body)).toEqual({ error: 'iroh_component_running' })
     const pairing = await invoke(mounted.route, 'POST', '/api/mobile-access/remote/iroh/pairing/begin', '{}')
     expect(pairing.status).toBe(409)
     expect(JSON.parse(pairing.body)).toEqual({ error: 'iroh_not_ready' })
+    expect((await invoke(mounted.route, 'POST', '/api/mobile-access/remote/control', JSON.stringify({ running: false, provider: 'iroh' }))).status).toBe(200)
+    expect((await invoke(mounted.route, 'POST', '/api/mobile-access/remote/iroh/component/purge', '{}')).status).toBe(400)
+    const purged = await invoke(mounted.route, 'POST', '/api/mobile-access/remote/iroh/component/purge', JSON.stringify({ confirm: true }))
+    expect(purged.status).toBe(200)
+    expect(JSON.parse(purged.body)).toMatchObject({ running: false, providers: { iroh: { component: { installed: false } } } })
+    expect((await invoke(mounted.route, 'POST', '/api/mobile-access/remote/control', JSON.stringify({ running: true, provider: 'cloudflared' }))).status).toBe(409)
+    expect((await invoke(mounted.route, 'POST', '/api/mobile-access/remote/cloudflared/tunnel', JSON.stringify({ mode: 'quick', connect: true }))).status).toBe(409)
+    expect(JSON.parse((await invoke(mounted.route, 'GET', '/api/mobile-access/remote/control')).body)).toMatchObject({ provider: 'iroh', running: false })
     } finally {
       if (previousCompanion === undefined) delete process.env.DSH_MOBILE_IROH_COMPANION
       else process.env.DSH_MOBILE_IROH_COMPANION = previousCompanion

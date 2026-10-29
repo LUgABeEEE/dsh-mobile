@@ -8,7 +8,7 @@ This guide covers the default **external proxy** mode, where you manage public H
 
 ## When to use it
 
-Use an existing Lucky, Nginx or Caddy HTTPS proxy rather than a tunnel. Under **Mobile Access → Remote → Self-hosted connection → Own reverse proxy**, DSH Mobile creates a separate private HTTP backend with device authentication:
+Use an existing Lucky, Nginx or Caddy HTTPS proxy rather than a tunnel. Under **Mobile Access → Own reverse proxy**, DSH Mobile creates a separate private HTTP backend with device authentication:
 
 ```text
 phone → https://phone.example.com:8815 (your proxy terminates TLS)

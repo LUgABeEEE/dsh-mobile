@@ -817,6 +817,7 @@ const REMOTE_ERROR_MESSAGE_KEYS: Readonly<Record<string, string>> = {
   iroh_exited: 'irohExited',
   iroh_not_ready: 'irohNotReady',
   iroh_pairing_failed: 'irohPairingFailed',
+  iroh_component_running: 'irohComponentRunning',
   frp_server_address_invalid: 'frpServerAddressInvalid',
   frp_server_port_invalid: 'frpServerPortInvalid',
   frp_token_invalid: 'frpTokenInvalid',
@@ -1047,6 +1048,11 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
   const accessLink = element('a', 'dsh-mobile-control__access-link'); accessLink.target = '_blank'; accessLink.rel = 'noreferrer'
   access.append(accessLabel, accessLink)
   const qrBox = element('div', 'dsh-mobile-control__qr')
+  const lanPairingValidity = element('p', 'dsh-mobile-control__component-status'); lanPairingValidity.hidden = true
+  let activeLanPairUrl = ''
+  let activeLanPairExpiresAt = 0
+  let lanPairingBusy = false
+  let lanPairingGeneration = 0
   const status = element('p', 'dsh-mobile-control__status'); status.textContent = t('loadingStatus')
   const extensionStatus = element('p', 'dsh-mobile-control__extensions'); extensionStatus.hidden = true
   const actions = element('div', 'dsh-mobile-control__actions')
@@ -1152,9 +1158,15 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
   const hoverCapable = typeof window.matchMedia === 'function' ? window.matchMedia('(hover: hover)') : undefined
   cloudflaredModeRow.addEventListener('pointerenter', () => { if (hoverCapable?.matches) setCloudflaredNotesOpen(true) })
   cloudflaredModeRow.addEventListener('pointerleave', () => { if (hoverCapable?.matches) setCloudflaredNotesOpen(false) })
-  cloudflaredNotesToggle.addEventListener('click', () => {
-    if (hoverCapable?.matches) { setCloudflaredNotesOpen(true); return }
-    setCloudflaredNotesOpen(!cloudflaredNotesPanel.hidden)
+  cloudflaredNotesToggle.addEventListener('click', event => {
+    setCloudflaredNotesOpen(hoverCapable?.matches && event.detail !== 0 ? true : Boolean(cloudflaredNotesPanel.hidden))
+  })
+  cloudflaredModeRow.addEventListener('keydown', event => {
+    if (event.key !== 'Escape' || cloudflaredNotesPanel.hidden) return
+    event.preventDefault()
+    event.stopPropagation()
+    setCloudflaredNotesOpen(false)
+    cloudflaredNotesToggle.focus()
   })
   const cloudflaredTunnel = element('div', 'dsh-mobile-control__tunnel'); cloudflaredTunnel.hidden = true
   const cloudflaredTunnelFields = element('div', 'dsh-mobile-control__frp-fields')
@@ -1432,12 +1444,6 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
   const tailscaleInfoBody = element('div', 'dsh-mobile-control__details-body')
   const tailscaleInfoText = element('p'); tailscaleInfoText.textContent = t('tailscaleHelpText')
   tailscaleInfoBody.append(tailscaleInfoText); tailscaleInfo.append(tailscaleInfoSummary, tailscaleInfoBody)
-  const providerSetupHeader = element('div', 'dsh-mobile-control__stage-header')
-  const providerSetupHeading = element('h3', 'dsh-mobile-control__section-title'); providerSetupHeading.textContent = t('currentProvider')
-  const providerSetupName = element('span', 'dsh-mobile-control__stage-value'); providerSetupName.textContent = 'Tailscale Funnel'
-  const remoteStateBadge = element('span', 'dsh-mobile-control__state-badge'); remoteStateBadge.textContent = t('remoteStateOff')
-  const providerSetupMeta = element('div', 'dsh-mobile-control__stage-meta'); providerSetupMeta.append(providerSetupName, remoteStateBadge)
-  providerSetupHeader.append(providerSetupHeading, providerSetupMeta)
   const providerSetupBody = element('div', 'dsh-mobile-control__provider-setup-body')
   const irohSetup = element('section', 'dsh-mobile-control__frp-setup'); irohSetup.hidden = true
   const irohSetupTitle = element('h3', 'dsh-mobile-control__section-title'); irohSetupTitle.textContent = t('prepareIroh')
@@ -1517,6 +1523,8 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
   const pairingValidity = element('p', 'dsh-mobile-control__component-status'); pairingValidity.hidden = true
   let activeRemotePairUrl = ''
   let activeRemotePairExpiresAt = 0
+  let remotePairingBusy = false
+  let remotePairingGeneration = 0
   let activeIrohDescriptor = ''
   let activeIrohQrSvg = ''
   remoteActions.append(remoteToggle, irohPair, remoteLogin, remoteReconnect, remotePair, remoteCopyLink)
@@ -1721,7 +1729,7 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
   const diagnosticsReport = element('pre', 'dsh-mobile-control__diagnostic-report')
   diagnosticsDetails.append(diagnosticsDetailsSummary, diagnosticsReport)
   header.append(title, headerActions); actions.append(toggle, pair, linkPair)
-  lanView.append(lanSetup, access, qrBox, status, extensionStatus, actions, trustedNetworks)
+  lanView.append(lanSetup, access, qrBox, lanPairingValidity, status, extensionStatus, actions, trustedNetworks)
   // Two-column remote layout: the channel list on the left, its configuration on
   // the right, so switching providers no longer scrolls the setup out of view.
   const channelPane = element('div', 'dsh-mobile-control__channel-pane')
@@ -1890,12 +1898,43 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
   providerChoices.addEventListener('click', () => { selectView('remote'); loadRemote() })
   remoteTab.addEventListener('click', () => { selectView('remote'); loadRemote() })
   selectView('lan')
+  let returnFocus: HTMLElement | undefined
   const setOpen = (open: boolean): void => {
+    const changed = panel.hidden === open
+    if (open && changed && document.activeElement instanceof HTMLElement) returnFocus = document.activeElement
     panel.hidden = !open
+    if (open) { panel.setAttribute('role', 'dialog'); panel.setAttribute('aria-modal', 'true') }
+    else { panel.removeAttribute('role'); panel.removeAttribute('aria-modal') }
     if (open) void extensionRecovery.refresh()
+    if (open && changed) void controlRequestJson('/api/mobile-access/release').then(renderRelease, () => {})
+    if (changed) {
+      if (open) close.focus()
+      else if (returnFocus?.isConnected) returnFocus.focus()
+    }
     for (const trigger of document.querySelectorAll('.dsh-mobile-control__trigger')) trigger.setAttribute('aria-expanded', String(open))
   }
+  panel.addEventListener('keydown', event => {
+    if (event.defaultPrevented) return
+    if (event.key === 'Escape') { event.preventDefault(); setOpen(false); return }
+    if (event.key !== 'Tab') return
+    const controls = [...panel.querySelectorAll<HTMLElement>('button,a[href],input,select,textarea,[tabindex]')]
+      .filter(node => node.tabIndex >= 0 && !node.matches(':disabled') && node.getClientRects().length > 0)
+    const first = controls[0], last = controls.at(-1)
+    if (event.shiftKey && document.activeElement === first && last !== undefined) { event.preventDefault(); last.focus() }
+    else if (!event.shiftKey && document.activeElement === last && first !== undefined) { event.preventDefault(); first.focus() }
+  })
+  const renderLanPairingExpiry = (): void => {
+    if (!running || activeLanPairExpiresAt === 0) return
+    lanPairingValidity.hidden = false
+    if (Date.now() >= activeLanPairExpiresAt) {
+      activeLanPairUrl = ''
+      showQr('')
+      qrBox.textContent = t('pairingExpired')
+      lanPairingValidity.textContent = t('pairingExpired')
+    } else lanPairingValidity.textContent = t('pairingExpires', { time: formatTime(activeLanPairExpiresAt) })
+  }
   const render = (data: Record<string, unknown>): void => {
+    const previousOrigin = origin
     lanConfigured = data.configured !== false
     lanRestartRequired = data.restartRequired === true
     running = data.running === true
@@ -1925,12 +1964,18 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
       extensionStatus.hidden = false
       extensionStatus.textContent = failed === 0 ? t('extensionsLoaded', { loaded }) : t('extensionsFailed', { loaded, failed })
     } else extensionStatus.hidden = true
-    if (!running) showQr('')
+    if (!running || previousOrigin !== origin) {
+      lanPairingGeneration += 1
+      activeLanPairUrl = ''
+      activeLanPairExpiresAt = 0
+      lanPairingValidity.hidden = true
+      showQr('')
+    } else renderLanPairingExpiry()
     toggle.textContent = running ? t('disableLan') : t('enableLan')
     actions.hidden = !lanConfigured || lanRestartRequired
     manageRow.hidden = !lanConfigured || lanRestartRequired
-    pair.disabled = !running
-    linkPair.disabled = !running
+    pair.disabled = !running || lanPairingBusy
+    linkPair.disabled = !running || lanPairingBusy
     manageDevices.disabled = !running
     resetAll.disabled = !running
   }
@@ -2032,11 +2077,34 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
     remoteQr.append(placeholder)
   }
   const openPairing = (target: 'key' | 'link'): void => {
-    void controlRequestJson('/api/mobile-access/lan/pairing/open', { method: 'POST', body: '{}' }).then(async data => {
-      const value = target === 'key'
-        ? (typeof data.appKey === 'string' ? data.appKey : '')
-        : (typeof data.pairUrl === 'string' ? data.pairUrl : '')
-      showQr(typeof data.qrSvg === 'string' ? data.qrSvg : '')
+    if (lanPairingBusy || !running) return
+    lanPairingBusy = true
+    pair.disabled = true
+    linkPair.disabled = true
+    const pairingOrigin = origin
+    const generation = lanPairingGeneration
+    if (target === 'key' || activeLanPairExpiresAt <= Date.now()) {
+      activeLanPairUrl = ''
+      activeLanPairExpiresAt = 0
+      lanPairingValidity.hidden = true
+      status.classList.remove('is-key')
+      showQr('')
+    }
+    const operation = target === 'link' && activeLanPairUrl !== '' && activeLanPairExpiresAt > Date.now()
+      ? Promise.resolve({ pairUrl: activeLanPairUrl, expiresAt: activeLanPairExpiresAt })
+      : controlRequestJson('/api/mobile-access/lan/pairing/open', { method: 'POST', body: '{}' })
+    void operation.then(async data => {
+      if (lifecycle.signal.aborted || !running || origin !== pairingOrigin || generation !== lanPairingGeneration) return
+      const value = typeof data.pairUrl === 'string' ? data.pairUrl : ''
+      if (value === '' || typeof data.expiresAt !== 'number' || !Number.isFinite(data.expiresAt) || data.expiresAt <= Date.now()) {
+        status.textContent = t('keyGenerationFailed')
+        return
+      }
+      activeLanPairUrl = value
+      activeLanPairExpiresAt = data.expiresAt
+      lanPairingValidity.hidden = false
+      lanPairingValidity.textContent = t('pairingExpires', { time: formatTime(data.expiresAt) })
+      if ('qrSvg' in data) showQr(typeof data.qrSvg === 'string' ? data.qrSvg : '')
       // Generating the LAN pairing code only shows the QR; it no longer copies
       // the plaintext key to the clipboard. Copying stays explicit via the link.
       if (target === 'key') { status.classList.remove('is-key'); status.textContent = t('qrGenerated'); return }
@@ -2049,6 +2117,7 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
         status.classList.add('is-key')
       }
     }, error => { status.textContent = t('requestFailed', { error: String(error) }) }).finally(() => {
+      lanPairingBusy = false
       pair.disabled = !running
       linkPair.disabled = !running
     })
@@ -2097,6 +2166,15 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
       .then(loadDevices, error => { status.textContent = t('requestFailed', { error: String(error) }) })
   })
   const renderRemote = (data: Record<string, unknown>): void => {
+    if (data.provider !== latestRemoteState.provider || data.origin !== latestRemoteState.origin) {
+      remotePairingGeneration += 1
+      activeRemotePairUrl = ''
+      activeRemotePairExpiresAt = 0
+      remotePairLink.hidden = true
+      remotePairLink.textContent = ''
+      pairingValidity.hidden = true
+      showQr('', remoteQr)
+    }
     latestRemoteState = data
     remoteRunning = data.running === true
     remoteProvider = parseMobileRemoteProvider(data.provider)
@@ -2119,7 +2197,6 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
     originChoice.setAttribute('aria-pressed', String(origin))
     irohChoice.setAttribute('aria-pressed', String(iroh))
     applyChoiceSelection()
-    providerSetupName.textContent = cpolar ? 'cpolar' : cloudflared ? 'cloudflared' : frp ? t('frpName') : origin ? t(managedOrigin ? 'caddyName' : 'originName') : iroh ? t('irohName') : 'Tailscale Funnel'
     tailscaleChoice.disabled = remoteProviderBusy
     cpolarChoice.disabled = remoteProviderBusy
     cloudflaredChoice.disabled = remoteProviderBusy
@@ -2460,16 +2537,6 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
     remoteReady = remoteRunning && state === 'ready' && remoteOrigin !== ''
     frpChoiceBadge.textContent = frpConfigured && frpInstalled ? t('ready') : t('advanced')
     originChoiceBadge.textContent = managedOrigin ? t(remoteReady ? 'ready' : 'advanced') : originListening ? t('originBackendReady') : t('advanced')
-    remoteStateBadge.classList.toggle('is-ready', remoteReady)
-    remoteStateBadge.classList.toggle('is-busy', state === 'starting' || state === 'connecting' || state === 'needs-login')
-    remoteStateBadge.classList.toggle('is-attention', state === 'error' || state === 'unavailable')
-    remoteStateBadge.textContent = remoteReady
-      ? origin && !managedOrigin ? t('originBackendReady') : t('ready')
-      : state === 'starting' || state === 'connecting' || state === 'needs-login'
-        ? t('remoteStateConnecting')
-        : state === 'error' || state === 'unavailable'
-          ? t('remoteStateAttention')
-          : t('remoteStateOff')
     // The selected provider and its state already live in the left column. The
     // status line is only meaningful while connecting or when attention/errors
     // occur; hide it with display:none (not just hidden text) so it takes no space.
@@ -2525,8 +2592,8 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
     // No pairing QR is possible until the provider component is installed/prepared.
     if (!providerPrepared) remoteQr.hidden = true
     providerInstallRow.hidden = cpolarInstall.hidden && cloudflaredInstall.hidden
-    remotePair.disabled = !remoteReady || remoteProviderBusy
-    remoteCopyLink.disabled = !remoteReady || remoteProviderBusy
+    remotePair.disabled = !remoteReady || remoteProviderBusy || remotePairingBusy
+    remoteCopyLink.disabled = !remoteReady || remoteProviderBusy || remotePairingBusy
     remoteDevices.disabled = !remoteReady || remoteProviderBusy
     // The generic pair link points at the selected provider's origin. Under
     // iroh that origin only resolves inside the iroh transport while the app
@@ -2555,23 +2622,28 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
     if (origin) { remoteReconnect.disabled = remoteProviderBusy || remoteReconnectBusy; remoteReset.disabled = remoteProviderBusy }
     else remoteReset.disabled = false
     if (!remoteReady) {
+      remotePairingGeneration += 1
       remotePairLink.hidden = true
       activeRemotePairUrl = ''
       activeRemotePairExpiresAt = 0
+      pairingValidity.hidden = true
       if (iroh) remoteQr.hidden = true
       else showRemoteQrPlaceholder(t('remoteQrPlaceholderIdle'))
-    } else if (!iroh && activeRemotePairUrl === '') {
-      showQr('', remoteQr)
-    } else if (!iroh && activeRemotePairExpiresAt > 0 && Date.now() > activeRemotePairExpiresAt) {
+    } else if (!iroh && activeRemotePairExpiresAt > 0 && Date.now() >= activeRemotePairExpiresAt) {
       // The pairing window is server-authoritative; the poll only reflects expiry
       // here — no background timer, no re-mint, and a stale QR can never survive.
       activeRemotePairUrl = ''
-      activeRemotePairExpiresAt = 0
+      remotePairLink.hidden = true
+      remotePairLink.textContent = ''
       showRemoteQrPlaceholder(t('pairingExpired'))
       pairingValidity.hidden = false
       pairingValidity.textContent = t('pairingExpired')
+    } else if (!iroh && activeRemotePairUrl !== '') {
+      pairingValidity.hidden = false
+      pairingValidity.textContent = t('pairingExpires', { time: formatTime(activeRemotePairExpiresAt) })
     } else {
       pairingValidity.hidden = true
+      if (!iroh) showQr('', remoteQr)
     }
     // Source/cleanup disclosures are pinned to the bottom and only shown for the
     // provider that owns them.
@@ -2766,10 +2838,12 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
   const syncCloudflaredForm = (): void => {
     const mode = cloudflaredModeDraft ?? cloudflaredTunnelMode
     const named = mode === 'named'
-    const locked = named && cloudflaredTunnelMode === 'named' && !cloudflaredConfigEditing
-    cloudflaredHostname.disabled = locked
-    cloudflaredPort.disabled = locked
-    cloudflaredToken.disabled = locked
+    const locked = named && cloudflaredTunnelConfigured && cloudflaredTunnelMode === 'named' && !cloudflaredConfigEditing
+    cloudflaredHostname.disabled = locked || remoteProviderBusy
+    cloudflaredPort.disabled = locked || remoteProviderBusy
+    cloudflaredToken.disabled = locked || remoteProviderBusy
+    cloudflaredEditButton.disabled = remoteProviderBusy
+    cloudflaredTunnelForget.disabled = remoteProviderBusy
     cloudflaredTunnelToggle.hidden = !named
     cloudflaredEditButton.hidden = !locked
     cloudflaredTunnelSave.hidden = !named || locked
@@ -2812,10 +2886,12 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
     const activeState = typeof latestRemoteState.state === 'string' ? latestRemoteState.state : 'off'
     if (remoteRunning || activeState !== 'off') {
       if (!window.confirm(t('cloudflaredSwitchModeDisconnect'))) return
-      remoteToggle.disabled = true
-      void controlRequestJson('/api/mobile-access/remote/control', { method: 'POST', body: JSON.stringify({ running: false }) })
-        .then(() => { showCloudflaredMode(mode) }, error => { remoteFailureText = remoteFailureTextFor(error, 'requestFailed'); remoteStatus.textContent = remoteFailureText })
-        .finally(loadRemote)
+      remoteProviderBusy = true
+      remoteSnapshotEpoch += 1
+      renderRemote(latestRemoteState)
+      void controlRequestJson('/api/mobile-access/remote/control', { method: 'POST', body: JSON.stringify({ running: false, provider: 'cloudflared' }) })
+        .then(data => { renderRemote(data); showCloudflaredMode(mode) }, error => { remoteFailureText = remoteFailureTextFor(error, 'requestFailed'); remoteStatus.textContent = remoteFailureText })
+        .finally(() => { remoteProviderBusy = false; loadRemote() })
       return
     }
     // Not connected: switch straight away, no dialog.
@@ -2855,17 +2931,20 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
       }
     }
     remoteProviderBusy = true
+    remoteSnapshotEpoch += 1
+    renderRemote(latestRemoteState)
     cloudflaredTunnelSave.disabled = true
     cloudflaredTunnelSave.textContent = t('saving')
     report(mode === 'named' ? t('cloudflaredTunnelSaving') : t('switchingCloudflared'))
     void controlRequestJson('/api/mobile-access/remote/cloudflared/tunnel', {
       method: 'POST',
-      body: JSON.stringify(mode === 'named' ? { mode, hostname, port, token } : { mode: 'quick' }),
+      body: JSON.stringify(mode === 'named' ? { mode, hostname, port, token, connect: true } : { mode: 'quick', connect: true }),
     })
       .then(data => {
         // The token is write-only: never keep a copy in the DOM after saving.
         cloudflaredToken.value = ''
         cloudflaredModeDraft = null
+        cloudflaredConfigEditing = false
         // The saved values are now authoritative, so let the next poll restore them.
         cloudflaredHostnameDirty = false
         cloudflaredPortDirty = false
@@ -3586,15 +3665,19 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
       .then(() => { showOriginFeedback(t('originBackendCopied')) }, error => { showOriginFeedback(t('requestFailed', { error: String(error) }), true) })
   })
   remoteToggle.addEventListener('click', () => {
-    remoteToggle.disabled = true
+    if (remoteProviderBusy) return
+    const nextRunning = !remoteRunning
+    const provider = remoteProvider
+    remoteProviderBusy = true
+    remoteSnapshotEpoch += 1
+    renderRemote(latestRemoteState)
     // A staged cloudflared mode that differs from the saved one must be committed
     // first: otherwise "Enable" would start the previously saved tunnel type while
     // the UI shows the newly selected one.
-    const commitMode = remoteProvider === 'cloudflared' && cloudflaredModeDraft !== null && cloudflaredModeDraft !== cloudflaredTunnelMode
-      ? controlRequestJson('/api/mobile-access/remote/cloudflared/tunnel', { method: 'POST', body: JSON.stringify({ mode: cloudflaredModeDraft }) })
-      : Promise.resolve()
-    void commitMode
-      .then(() => controlRequestJson('/api/mobile-access/remote/control', { method: 'POST', body: JSON.stringify({ running: !remoteRunning }) }))
+    const operation = nextRunning && provider === 'cloudflared' && cloudflaredModeDraft !== null && cloudflaredModeDraft !== cloudflaredTunnelMode
+      ? controlRequestJson('/api/mobile-access/remote/cloudflared/tunnel', { method: 'POST', body: JSON.stringify({ mode: cloudflaredModeDraft, connect: true }) })
+      : controlRequestJson('/api/mobile-access/remote/control', { method: 'POST', body: JSON.stringify({ running: nextRunning, provider }) })
+    void operation
       .then(renderRemote, error => {
         remoteFailureText = remoteFailureTextFor(error, 'requestFailed')
         remoteStatus.textContent = remoteFailureText
@@ -3603,7 +3686,7 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
           cloudflaredTunnelFeedback.textContent = remoteFailureText
         }
       })
-      .finally(loadRemote)
+      .finally(() => { remoteProviderBusy = false; loadRemote() })
   })
   remoteLogin.addEventListener('click', () => {
     if (remoteLoginUrl !== '') window.open(remoteLoginUrl, '_blank', 'noopener,noreferrer')
@@ -3650,36 +3733,54 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
       remoteStatus.textContent = t('remoteQrReady')
     }
   }
-  const openRemotePairing = (): Promise<void> => controlRequestJson('/api/mobile-access/remote/pairing/open', { method: 'POST', body: '{}' }).then(async data => {
-    const pairUrl = typeof data.pairUrl === 'string' ? data.pairUrl : ''
-    const expiresAt = typeof data.expiresAt === 'number' && Number.isFinite(data.expiresAt) ? data.expiresAt : 0
-    showQr(typeof data.qrSvg === 'string' ? data.qrSvg : '', remoteQr)
-    if (pairUrl === '') { remoteStatus.textContent = t('keyGenerationFailed'); return }
-    // QR and copy actions share the same one-time pairing window. Re-copying
-    // cannot invalidate a QR that the phone may already be scanning.
-    activeRemotePairUrl = pairUrl
-    activeRemotePairExpiresAt = expiresAt
-    pairingValidity.hidden = false
-    pairingValidity.textContent = t('pairingExpires', { time: formatTime(expiresAt) })
-    remotePairLink.textContent = pairUrl
-    remotePairLink.classList.add('is-key')
-    remotePairLink.hidden = false
-    await copyRemotePairUrl()
-  })
+  const openRemotePairing = (): Promise<void> => {
+    const provider = remoteProvider
+    const origin = latestRemoteState.origin
+    const generation = remotePairingGeneration
+    activeRemotePairUrl = ''
+    activeRemotePairExpiresAt = 0
+    pairingValidity.hidden = true
+    remotePairLink.hidden = true
+    remotePairLink.textContent = ''
+    showQr('', remoteQr)
+    return controlRequestJson('/api/mobile-access/remote/pairing/open', { method: 'POST', body: '{}' }).then(async data => {
+      if (lifecycle.signal.aborted || !remoteReady || provider !== remoteProvider || origin !== latestRemoteState.origin || generation !== remotePairingGeneration) return
+      const pairUrl = typeof data.pairUrl === 'string' ? data.pairUrl : ''
+      const expiresAt = typeof data.expiresAt === 'number' && Number.isFinite(data.expiresAt) ? data.expiresAt : 0
+      if (pairUrl === '' || expiresAt <= Date.now()) { remoteStatus.textContent = t('keyGenerationFailed'); return }
+      showQr(typeof data.qrSvg === 'string' ? data.qrSvg : '', remoteQr)
+      // QR and copy actions share the same one-time pairing window. Re-copying
+      // cannot invalidate a QR that the phone may already be scanning.
+      activeRemotePairUrl = pairUrl
+      activeRemotePairExpiresAt = expiresAt
+      pairingValidity.hidden = false
+      pairingValidity.textContent = t('pairingExpires', { time: formatTime(expiresAt) })
+      remotePairLink.textContent = pairUrl
+      remotePairLink.classList.add('is-key')
+      remotePairLink.hidden = false
+      await copyRemotePairUrl()
+    })
+  }
   remotePair.addEventListener('click', () => {
+    if (!remoteReady || remoteProviderBusy || remotePairingBusy) return
+    remotePairingBusy = true
     remotePair.disabled = true
+    remoteCopyLink.disabled = true
     void openRemotePairing()
       .catch(error => { remoteFailureText = remoteFailureTextFor(error, 'requestFailed'); remoteStatus.textContent = remoteFailureText })
-      .finally(() => { remotePair.disabled = !remoteReady })
+      .finally(() => { remotePairingBusy = false; remotePair.disabled = !remoteReady || remoteProviderBusy; remoteCopyLink.disabled = !remoteReady || remoteProviderBusy })
   })
   remoteCopyLink.addEventListener('click', () => {
+    if (!remoteReady || remoteProviderBusy || remotePairingBusy) return
+    remotePairingBusy = true
+    remotePair.disabled = true
     remoteCopyLink.disabled = true
     const operation = activeRemotePairUrl !== '' && activeRemotePairExpiresAt > Date.now()
       ? copyRemotePairUrl()
       : openRemotePairing()
     void operation
       .catch(error => { remoteFailureText = remoteFailureTextFor(error, 'requestFailed'); remoteStatus.textContent = remoteFailureText })
-      .finally(() => { remoteCopyLink.disabled = !remoteReady })
+      .finally(() => { remotePairingBusy = false; remotePair.disabled = !remoteReady || remoteProviderBusy; remoteCopyLink.disabled = !remoteReady || remoteProviderBusy })
   })
   const renderRemoteDevices = (data: Record<string, unknown>): void => {
     const devices = Array.isArray(data.devices) ? data.devices as Record<string, unknown>[] : []
@@ -3895,8 +3996,8 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
       diagnosticsFeedback.hidden = false
     })
   })
-  pair.addEventListener('click', () => { pair.disabled = true; openPairing('key') })
-  linkPair.addEventListener('click', () => { linkPair.disabled = true; openPairing('link') })
+  pair.addEventListener('click', () => { openPairing('key') })
+  linkPair.addEventListener('click', () => { openPairing('link') })
   close.addEventListener('click', () => { setOpen(false) })
   const dismiss = (event: PointerEvent): void => {
     if (panel.hidden || !(event.target instanceof Node)) return
@@ -3906,7 +4007,7 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
   void controlRequestJson('/api/mobile-access/release').then(renderRelease, () => {})
   void controlRequestJson('/api/mobile-access/lan/control').then(render, error => { status.textContent = t('requestFailed', { error: String(error) }) })
   loadRemote()
-  const remotePoll = window.setInterval(() => { if (!panel.hidden && !remoteView.hidden) loadRemote() }, 1_500)
+  const remotePoll = window.setInterval(() => { if (!panel.hidden && !remoteView.hidden) { renderLanPairingExpiry(); loadRemote() } }, 1_500)
   const pollWsBlocked = (): void => {
     void controlRequestJson('/api/mobile-access/remote/websocket-paths/blocked').then(blocked => {
       const raw = Array.isArray(blocked.blocked) ? blocked.blocked : []
@@ -5078,7 +5179,8 @@ export const CONTROL_STYLES = `
 .dsh-mobile-control__lan-setup,.dsh-mobile-control__cpolar-setup,.dsh-mobile-control__frp-setup,.dsh-mobile-control__origin-setup{border:0;border-radius:0;background:transparent;padding:0;margin:0 0 12px}
 .dsh-mobile-control__frp-setup>.dsh-mobile-control__frp-step,.dsh-mobile-control__frp-group,.dsh-mobile-control__frp-overview{border:0;border-radius:0;background:transparent}
 .dsh-mobile-control__ws-paths{border:0;border-radius:0;background:transparent;padding:0;margin:10px 0 0}
-.dsh-mobile-control__view.is-remote .dsh-mobile-control__actions{display:flex;flex-wrap:nowrap;gap:8px}
+.dsh-mobile-control__view.is-remote .dsh-mobile-control__remote-workspace>.dsh-mobile-control__actions{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+.dsh-mobile-control__view.is-remote .dsh-mobile-control__origin-setup .dsh-mobile-control__actions.dsh-mobile-control__caddy-actions{display:grid;grid-template-columns:minmax(0,1fr)}
 .dsh-mobile-control__remote-workspace{border:0;border-radius:0;background:transparent;box-shadow:none}
 .dsh-mobile-control__stage-header{border:0;border-radius:0;background:transparent;box-shadow:none}
 .dsh-mobile-control__app-downloads{display:flex;gap:8px;padding:6px 16px;border-bottom:1px solid var(--dsw-alias-border-l2,#e1e5eb)}

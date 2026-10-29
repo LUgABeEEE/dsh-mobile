@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { mkdtemp, mkdir, readFile, rm, writeFile, chmod } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, rm, writeFile, chmod, symlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -63,6 +63,43 @@ async function fixtureState(): Promise<string> {
 }
 
 describe('iroh component manager', () => {
+  it.each(['component', 'parent'] as const)('keeps external files behind a replaced %s junction', async junction => {
+    const stateDirectory = await fixtureState()
+    const external = await fixtureState()
+    const { artifact } = fixtureArtifact()
+    await writeFile(join(external, 'keep.txt'), 'external-owned-fixture')
+    await mkdir(join(stateDirectory, 'components', ...(junction === 'component' ? ['iroh'] : [])), { recursive: true })
+    const target = join(stateDirectory, 'components', 'iroh', ...(junction === 'component' ? [artifact.version] : []))
+    await symlink(external, target, process.platform === 'win32' ? 'junction' : 'dir')
+    const manager = new IrohComponentManager({ stateDirectory, platform: 'win32', arch: 'x64', artifact, locateCompanionRoots: () => [] })
+    if (junction === 'parent') await expect(manager.purge()).rejects.toThrow('iroh_component_cleanup_failed')
+    else await expect(manager.purge()).resolves.toMatchObject({ installed: false })
+    expect(await readFile(join(external, 'keep.txt'), 'utf8')).toBe('external-owned-fixture')
+    expect(manager.status().installed).toBe(false)
+  })
+  it('purges only its downloaded component and keeps identity, pairings and external packages', async () => {
+    const stateDirectory = await fixtureState()
+    const externalRoot = await fixtureCompanion()
+    const { artifact, bytes } = fixtureArtifact()
+    const manager = new IrohComponentManager({ stateDirectory, platform: 'win32', arch: 'x64', artifact,
+      locateCompanionRoots: () => [], fetchArtifact: async () => bytes })
+    await manager.initialize()
+    await manager.install()
+    const executable = manager.executable!
+    const identity = join(stateDirectory, 'remote', 'iroh', 'identity.json')
+    const pairings = join(stateDirectory, 'devices.json')
+    await mkdir(join(stateDirectory, 'remote', 'iroh'), { recursive: true })
+    await writeFile(identity, 'fixture-identity')
+    await writeFile(pairings, 'fixture-pairings')
+    await manager.purge()
+    expect(manager.status()).toMatchObject({ installed: false })
+    expect(manager.executable).toBeUndefined()
+    await expect(readFile(executable)).rejects.toMatchObject({ code: 'ENOENT' })
+    expect(await readFile(identity, 'utf8')).toBe('fixture-identity')
+    expect(await readFile(pairings, 'utf8')).toBe('fixture-pairings')
+    expect(await readFile(join(externalRoot, 'native', artifact.executableName))).toHaveLength(128)
+    await expect(manager.purge()).resolves.toMatchObject({ installed: false })
+  })
   it('pins exactly the published sidecar releases', () => {
     expect(IROH_VERSION).toBe('0.1.0-alpha.1')
     expect(Object.keys(IROH_COMPONENT_RELEASES).sort()).toEqual(['linux-x64', 'win32-x64'])

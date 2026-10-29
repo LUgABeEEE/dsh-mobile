@@ -171,6 +171,7 @@ function installedDshVersion(): string {
 function mapAdminError(error: unknown): HttpError {
   if (error instanceof HttpError) return error
   if (error instanceof MobileExtensionError) return new HttpError(error.status, error.code)
+  if (error instanceof Error && error.message === 'remote_provider_changed') return new HttpError(409, 'remote_provider_changed')
   const code = (error as NodeJS.ErrnoException).code
   if (error instanceof Error && error.message.includes('spawn UNKNOWN')) {
     return new HttpError(409, 'frp_component_launch_failed')
@@ -1319,12 +1320,17 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
         }
         if (request.method === 'POST' && target.decodedPathname === `${LOCAL_ADMIN_PREFIX}/remote/cloudflared/tunnel`) {
           const body = await readJsonObject(request, 8192)
-          await remoteProviders.mutate(async () => {
+          if (body.connect !== undefined && typeof body.connect !== 'boolean') throw new HttpError(400, 'bad_request')
+          const configure = async (): Promise<void> => {
             await cloudflaredTunnel.configure(mergeSavedCloudflaredTunnelSettings(body, cloudflaredTunnel.settings()))
-            // A live connector is bound to the previous hostname, port and token, so
-            // the new configuration only takes effect through a restart.
-            if (remoteControllers.cloudflared.status().enabled) await remoteControllers.cloudflared.reconnect()
-          })
+            if (body.connect === true && !remoteControllers.cloudflared.status().enabled) {
+              await remoteControllers.cloudflared.setEnabled(true)
+            } else if (remoteControllers.cloudflared.status().enabled) {
+              await remoteControllers.cloudflared.reconnect()
+            }
+          }
+          if (body.connect === true) await remoteProviders.mutateSelected('cloudflared', configure)
+          else await remoteProviders.mutate(configure)
           sendJson(response, 200, remotePayload(), false)
           return
         }
@@ -1380,7 +1386,11 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
           if (body.confirm !== true) throw new HttpError(400, 'bad_request')
           logger.info('iroh component purge started')
           try {
-            await remoteProviders.mutate(async () => irohComponent.purge())
+            await remoteProviders.mutate(async () => {
+              if (remoteControllers.iroh.status().enabled) throw new HttpError(409, 'iroh_component_running')
+              await remoteControllers.iroh.setEnabled(false)
+              await irohComponent.purge()
+            })
             logger.info('iroh component purge completed')
           } catch (error) {
             logger.error('iroh component purge failed: %s', error instanceof Error ? error.stack ?? error.message : String(error))
@@ -1563,7 +1573,12 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
           const body = await readJsonObject(request, 4096)
           const running = body.running
           if (typeof running !== 'boolean') throw new HttpError(400, 'bad_request')
-          await remoteProviders.mutate(async controller => controller.setEnabled(running))
+          if (body.provider !== undefined && body.provider !== 'tailscale' && body.provider !== 'cpolar'
+            && body.provider !== 'cloudflared' && body.provider !== 'frp' && body.provider !== 'origin'
+            && body.provider !== 'iroh') throw new HttpError(400, 'bad_request')
+          const control = async (controller: RemoteProviderController): Promise<void> => { await controller.setEnabled(running) }
+          if (body.provider !== undefined) await remoteProviders.mutateSelected(body.provider, control)
+          else await remoteProviders.mutate(control)
           sendJson(response, 200, remotePayload(), false)
           return
         }
@@ -1689,6 +1704,7 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
         await settleCleanupSteps([
           stopAdmin,
           drainRemoteWork,
+          () => releaseManager.dispose(),
           () => trustedNetworksWrite,
           disposeMobileCommand,
           disposeTaskEvents,
@@ -1710,6 +1726,7 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
       await settleCleanupSteps([
         stopAdmin,
         drainRemoteWork,
+        () => releaseManager.dispose(),
         () => trustedNetworksWrite,
         disposeMobileCommand,
         disposeTaskEvents,

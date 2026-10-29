@@ -4,7 +4,7 @@
 
 > Already running cloudflared or a system service? Use the [own-reverse-proxy mode](SELF_HOSTED_ORIGIN.en.md#when-you-already-run-cloudflared-yourself) and route that tunnel to the protected HTTP backend shown in the panel, without another component installation or a tunnel Token stored by the plugin. The instructions below describe the separate plugin-managed option.
 
-The built-in cloudflared provider runs in one of two modes, chosen in the panel under **Mobile access → Remote → cloudflared → Tunnel type**:
+The built-in cloudflared provider runs in one of two modes, chosen through the Quick/Named tabs under **Mobile access → cloudflared**:
 
 | | Quick tunnel (default) | Named tunnel |
 | --- | --- | --- |
@@ -43,13 +43,13 @@ These labels follow [Cloudflare's current official guide](https://developers.clo
 
 ## Fill in the DSH Mobile panel
 
-1. **Mobile access → Remote → cloudflared**.
-2. Set the tunnel type to **Named**.
+1. Select **cloudflared** in the **Mobile access** connection list.
+2. Select **Named**, then **Show settings** to expand the form. For an existing saved configuration, choose **Edit** first.
 3. Enter:
    - **Public hostname**: `dsh.example.com`
    - **Local forward port**: `3444`, matching the Service port from step 3
    - **Connector token**: the token you copied
-4. Choose **Save and connect**.
+4. Choose **Save and connect** and read the actual connection status above. Saved settings do not establish public reachability. Switching tunnel type while connected first requires confirming disconnection.
 
 Once saved, leaving the token field blank keeps the stored token, and the field never echoes a saved token back. **Remove the saved token** also **stops the cloudflared channel** and returns the provider to a quick tunnel. Nothing reconnects on its own: switch the channel back on afterwards.
 
@@ -57,7 +57,7 @@ Once saved, leaving the token field blank keeps the stored token, and the field 
 
 Moving to a fixed hostname means **an already paired phone must pair again**: the App does not send a saved device token to a changed Origin without new pairing. This client-side exact-address policy does not mean the server token automatically expires by hostname; remote channels share the device registry. Use a trusted entry you control and revoke a device on the computer if credential theft is suspected.
 
-1. On the computer, open **Remote** in the panel and choose **Create remote pairing QR code**. That is what opens the pairing window, which is time-limited; while it is closed nothing can pair.
+1. On the computer, open **Mobile access → cloudflared**, wait for readiness, then choose **Generate pairing QR code**. The panel shows the expiry time; generate a new code after expiry. Closing the pairing window does not revoke existing devices.
 2. In the app, **open the Remote entry first** (the remote access setup page in the connection center), then scan the code.
 
 > **A named tunnel must be scanned from inside the Remote flow.** The app treats platform suffixes such as `.ts.net`, cpolar and `.trycloudflare.com` as remote without asking. A domain you own is recognised as a remote candidate too, but the Local network flow accepts only non-candidate addresses, so scanning there is rejected as **Invalid QR code** and looks exactly like "cannot connect". Enter the Remote flow first, then scan.

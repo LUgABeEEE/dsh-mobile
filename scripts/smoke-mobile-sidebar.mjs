@@ -309,6 +309,30 @@ try {
     await phone.waitForFunction(id => window.__sidebarFixture.hasSession(id), sessions[0], { timeout: CLIENT_TIMEOUT_MS })
     await phone.evaluate(id => window.__sidebarFixture.openSession(id), sessions[0])
     await phone.locator('[data-composer-input][contenteditable="true"]').waitFor({ state: 'visible', timeout: CLIENT_TIMEOUT_MS })
+    if (frontend === 'dedicated' && !negative) {
+      for (const width of [393, 719, 720, 721, 844, 899, 900, 901]) {
+        await phone.setViewportSize({ width, height: 800 })
+        await openDrawer()
+        await sidebar().locator('[data-dsh-mobile-toggle]').tap()
+        await phone.waitForFunction(() => document.querySelector('[data-dsh-mobile-sidebar]')?.dataset.open === 'false')
+        await frames(phone)
+        const value = await phone.locator('.dshm-main').evaluate(node => {
+          const rect = node.getBoundingClientRect()
+          const drawer = document.querySelector('.dshm-drawer')
+          const rail = drawer.getBoundingClientRect()
+          const hit = document.elementFromPoint(rect.x + 8, rect.y + rect.height / 2)
+          return { x: rect.x, width: rect.width, railWidth: rail.width, railClip: getComputedStyle(drawer).overflowX,
+            obscuresMain: hit !== null && drawer.contains(hit) }
+        })
+        const offset = width <= 720 ? 0 : 56
+        assert(Math.abs(value.x - offset) < 1 && Math.abs(value.width - (width - offset)) < 1,
+          `Closed rail at ${width}px lost content width: ${JSON.stringify(value)}`)
+        if (width > 720) assert(Math.abs(value.railWidth - offset) < 1, `Offset disagrees with the actual rail: ${JSON.stringify(value)}`)
+        else assert(value.railWidth <= 56, `Phone drawer left a persistent navigation column: ${JSON.stringify(value)}`)
+        assert.equal(value.obscuresMain, false, `Closed navigation intercepted the main column: ${JSON.stringify(value)}`)
+        record.checks.push(`dedicated: closed rail ${width}px reserves ${offset}px`)
+      }
+    }
     for (const viewport of [{ width: 393, height: 659 }, { width: 369, height: 800 }, { width: 659, height: 393 }]) {
       await phone.setViewportSize(viewport)
       for (const large of [false, true]) {

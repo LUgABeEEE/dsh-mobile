@@ -14,6 +14,7 @@ class FakeElement extends EventTarget {
   textContent = ''
 
   constructor(readonly tagName: string) { super() }
+  focus(): void {}
 
   get classList() {
     return {
@@ -42,6 +43,7 @@ class FakeElement extends EventTarget {
 
   setAttribute(name: string, value: string): void { this.attributes.set(name, value) }
   getAttribute(name: string): string | null { return this.attributes.get(name) ?? null }
+  removeAttribute(name: string): void { this.attributes.delete(name) }
   contains(target: unknown): boolean { return target === this || this.children.some(child => child.contains(target)) }
 
   querySelectorAll(selector: string): FakeElement[] {
@@ -98,6 +100,7 @@ function installFooter(locale = 'en-US', hostname = 'localhost') {
   vi.stubGlobal('location', { hostname, search: '' })
   vi.stubGlobal('navigator', { languages: ['en-US'], language: 'en-US' })
   vi.stubGlobal('Node', FakeElement)
+  vi.stubGlobal('HTMLElement', FakeElement)
   vi.stubGlobal('MutationObserver', class {
     observe(): void {}
     disconnect = disconnect

@@ -14,11 +14,13 @@ iroh replaces public domains and tunnel accounts with an encrypted direct connec
 
 ## Usage
 
-1. Under **Mobile access → Remote**, pick `iroh (Experimental)`.
-2. Press **Prepare iroh → Install official component** (labelled with the download size): the first run downloads and verifies the sidecar; later runs reuse the verified copy. A hash mismatch or an unsupported platform stops here with a reason instead of a half-started channel. Merely switching the channel on never triggers a download.
+1. Under **Mobile access**, pick `iroh (Experimental)`.
+2. Press **Install official component** (labelled with the download size): the first run downloads and verifies the sidecar; later runs reuse the verified copy. A hash mismatch or an unsupported platform stops here with a reason instead of a half-started channel. Merely switching the channel on never triggers a download.
 3. Turn remote access on: the plugin resolves the endpoint identity, issues the endpoint gateway certificate (own CA, 90-day leaf, 30-day renewal headroom), starts a dedicated gateway, launches the sidecar, and waits for `ready`. `ready` means the sidecar is connected and the gateway serves its loopback socket.
 4. Press **Generate iroh pairing QR code** and scan it with the full App. The descriptor binds the sidecar's six-digit code, the Gateway's one-time token and pinned CA. Generating another descriptor replaces the previous pairing window; pairing a phone redeems the Gateway token through the normal pair endpoint over iroh.
 5. Switching off or switching providers stops the owned process and Gateway without deleting stored pairings. The independent App has a different package identity; its Keystore credentials are not automatically migrated into this App.
+
+To reclaim component storage, turn off iroh remote access, expand the component details and choose **Remove the downloaded iroh component**. This removes only the pinned program downloaded by this plugin, keeping identities, pairings and external companion packages. Later use can reinstall it or reuse a verified external copy. Removal while enabled is refused by the management API as well as the panel.
 
 ## Security boundaries
 
@@ -43,15 +45,15 @@ Before a component release, verify first use with the exact catalog-pinned execu
 
 ## VPN, proxies and network environments
 
-iroh prefers direct connections with relay fallback and depends on UDP and DNS discovery. The following environment factors **can** interfere; they are common troubleshooting directions, not confirmed failure mechanisms, and do not mean every VPN, proxy or network must fail:
+iroh prefers direct connections with relay fallback. Direct connections use QUIC/UDP; discovery and relays also need their network services to be reachable. The following environment factors **can** interfere; they are troubleshooting directions, not confirmed failure mechanisms for every VPN or network:
 
-- **Global VPN/TUN** (system-level virtual adapters) may take over UDP and DNS so that neither direct nor relay handshakes complete. One user on Win11 + WSL2 mirrored networking over mobile data reported ~6 s to connect after disabling the global VPN, and recovery after excluding the official DSH app from the VPN. This is community evidence, not a statement about every VPN/network combination or both ABIs.
+- **Global VPN/TUN** (system-level virtual adapters) may take over UDP and DNS so that neither direct nor relay handshakes complete. One user on Win11 + WSL2 mirrored networking over mobile data reported ~6 s to connect after disabling the global VPN, and recovery after excluding DSH Mobile from the VPN. This is community evidence, not a statement about every VPN/network combination or both ABIs.
 - **DNS policy** (fake-IP, filtering): discovery depends on DNS resolution; fake-IP modes may resolve discovery domains to a proxy virtual IP.
 - **Loopback entry**: the app reaches the local gateway via `*.iroh.localhost`; this loopback address should not be handed to a remote proxy/DNS.
 
 Things to try (voluntary, subject to your own security policy):
 
-1. Add the official DSH app (package `io.github.sayach.dshmobile`) to a per-app bypass/exclusion list in your VPN/proxy client; debug builds and the standalone experimental app use different package names — configure the one you actually installed.
+1. Add DSH Mobile (package `io.github.sayach.dshmobile`) to a per-app bypass/exclusion list in your VPN/proxy client; debug builds and the standalone experimental app use different package names. This is the community Android App, not the official DSH Desktop application; configure the one you actually installed.
 2. If your client supports per-domain rules, set discovery/relay domains to direct. Clash Meta example (illustrative; use your client's syntax): `DOMAIN-SUFFIX,iroh.link,DIRECT`; with fake-ip, add `+.iroh.link` to `fake-ip-filter`. Domain rules only cover client-side resolution — they **cannot** cover all direct peer IPs, relay services and loopback paths, and must not be summarized as "no UDP means it can never work".
 3. `*.iroh.localhost` is the app's local entry point and must not be sent to a remote proxy/DNS.
 4. Always-on/lockdown VPN policies may not allow per-app bypass; this plugin will not bypass system security policy, disable certificate verification, or force network switches.

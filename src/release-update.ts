@@ -225,18 +225,23 @@ async function fetchAndroidAssetSizes(
   fetcher: typeof globalThis.fetch,
   version: string,
   tag: string,
+  signal: AbortSignal,
 ): Promise<{ readonly compatBytes?: number; readonly irohBytes?: number }> {
   try {
     const response = await fetcher(`${GITHUB_RELEASE_API}${encodeURIComponent(tag)}`, {
       headers: { accept: 'application/vnd.github+json', 'user-agent': 'dsh-mobile-release-check' },
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      signal: AbortSignal.any([signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]),
     })
     if (!response.ok) return {}
-    const payload = await response.json() as { readonly assets?: unknown }
-    const assets = Array.isArray(payload.assets) ? payload.assets as Record<string, unknown>[] : []
+    const payload: unknown = await response.json()
+    if (payload === null || typeof payload !== 'object' || !('assets' in payload) || !Array.isArray(payload.assets)) return {}
+    const assets: unknown[] = payload.assets
     const sizeOf = (name: string): number | undefined => {
-      const asset = assets.find(entry => entry.name === name)
-      return asset !== undefined && typeof asset.size === 'number' ? asset.size : undefined
+      for (const asset of assets) {
+        if (asset !== null && typeof asset === 'object' && 'name' in asset && asset.name === name
+          && 'size' in asset && typeof asset.size === 'number' && Number.isSafeInteger(asset.size) && asset.size > 0) return asset.size
+      }
+      return undefined
     }
     const compatBytes = sizeOf(`dsh-mobile-android-v${version}.apk`)
     const irohBytes = sizeOf(`dsh-mobile-android-v${version}-iroh.apk`)
@@ -467,6 +472,9 @@ export class PluginReleaseManager {
   private readonly now: () => number
   private cache: { readonly expiresAt: number; readonly status: PluginReleaseStatus } | undefined
   private activeUpdate: Promise<PluginUpdateResult> | undefined
+  private readonly assetLookupOwner = new AbortController()
+  private assetLookup: Promise<void> | undefined
+  private assetSizes: { readonly downloadUrl: string; readonly compatBytes?: number; readonly irohBytes?: number } | undefined
 
   constructor(options: PluginReleaseManagerOptions) {
     this.profileDirectory = options.profileDirectory
@@ -485,15 +493,16 @@ export class PluginReleaseManager {
     const npmVersion = fetchNpmVersion(this.fetcher)
     const [npmResult, androidResult, notesResult] = await Promise.allSettled([
       npmVersion,
-      fetchAndroidRelease(this.fetcher),
+      fetchAndroidRelease(this.fetcher).then(android => {
+        if (android !== undefined) this.startAssetLookup(android)
+        return android
+      }),
       npmVersion.then(version => version === undefined ? undefined : fetchReleaseNotes(this.fetcher, version)),
     ])
     const latestVersion = npmResult.status === 'fulfilled' ? npmResult.value : undefined
     const android = androidResult.status === 'fulfilled' ? androidResult.value : undefined
     const releaseNotes = notesResult.status === 'fulfilled' ? notesResult.value : undefined
-    const androidSizes: { readonly compatBytes?: number; readonly irohBytes?: number } = android === undefined
-      ? {}
-      : await fetchAndroidAssetSizes(this.fetcher, android.version, android.tag)
+    const androidSizes = this.assetSizes?.downloadUrl === android?.downloadUrl ? this.assetSizes : undefined
     const comparison = latestVersion === undefined
       ? undefined
       : comparePluginVersions(latestVersion, this.installedVersion)
@@ -504,12 +513,33 @@ export class PluginReleaseManager {
       updateSupported,
       ...(android === undefined ? {} : { androidVersion: android.version }),
       androidDownloadUrl: android?.downloadUrl ?? GITHUB_RELEASES_URL,
-      ...(androidSizes.compatBytes === undefined ? {} : { androidCompatBytes: androidSizes.compatBytes }),
-      ...(androidSizes.irohBytes === undefined ? {} : { androidIrohBytes: androidSizes.irohBytes }),
+      ...(androidSizes?.compatBytes === undefined ? {} : { androidCompatBytes: androidSizes.compatBytes }),
+      ...(androidSizes?.irohBytes === undefined ? {} : { androidIrohBytes: androidSizes.irohBytes }),
       ...(releaseNotes === undefined ? {} : { releaseNotes }),
     })
     this.cache = { expiresAt: this.now() + STATUS_CACHE_MS, status }
     return status
+  }
+
+  /** Cancel and drain the optional APK-size lookup without delaying provider cleanup. */
+  async dispose(): Promise<void> {
+    this.assetLookupOwner.abort()
+    await this.assetLookup
+  }
+
+  private startAssetLookup(android: AndroidRelease): void {
+    if (this.assetLookupOwner.signal.aborted || this.assetLookup !== undefined || this.assetSizes?.downloadUrl === android.downloadUrl) return
+    this.assetLookup = fetchAndroidAssetSizes(this.fetcher, android.version, android.tag, this.assetLookupOwner.signal)
+      .then(sizes => {
+        if (this.assetLookupOwner.signal.aborted) return
+        this.assetSizes = { downloadUrl: android.downloadUrl, ...sizes }
+        if (this.cache?.status.androidDownloadUrl === android.downloadUrl) {
+          this.cache = { ...this.cache, status: Object.freeze({ ...this.cache.status,
+            ...(sizes.compatBytes === undefined ? {} : { androidCompatBytes: sizes.compatBytes }),
+            ...(sizes.irohBytes === undefined ? {} : { androidIrohBytes: sizes.irohBytes }),
+          }) }
+        }
+      }).finally(() => { this.assetLookup = undefined })
   }
 
   /** Install the latest npm release into the active profile, then require a DSH restart. */

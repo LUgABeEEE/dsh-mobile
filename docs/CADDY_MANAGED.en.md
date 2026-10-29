@@ -24,7 +24,7 @@ Configure the public HTTPS origin, DNS-01 credentials and local HTTPS port separ
 
 ## Installation, startup, and readiness
 
-1. On the computer, open **Mobile Access → Remote → Self-hosted connection → Own reverse proxy** and choose **Managed Caddy**.
+1. On the computer, open **Mobile Access → Own reverse proxy** and choose **Managed Caddy**.
 2. Choose **Install managed Caddy** and confirm the download. The plugin downloads the fixed [DSH Mobile component distribution](https://github.com/saya-ch/dsh-mobile/releases/tag/caddy-component-2.11.7-tencentcloud-0.4.3-r1), checking its exact length, SHA-256, core and DNS module versions. Unavailable or invalid assets are not executed.
 3. Enter the public HTTPS origin, such as `https://dsh.example.com`, select Tencent Cloud DNSPod, supply a `SecretId` and `SecretKey` with the required zone permissions, and set the local HTTPS port, such as `8443`. Point the domain at the public ingress and, where needed, forward public TCP 443 to port 8443 on the computer.
 4. Choose **Save and start Caddy**. Installed is not ready: the panel reports readiness only after a computer-side public HTTPS probe validates the certificate and confirms that the entry belongs to the current DSH instance. That probe still does not prove phone-network reachability.

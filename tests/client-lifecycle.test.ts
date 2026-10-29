@@ -549,7 +549,7 @@ describe('mobile-control localization', () => {
     // The form is collapsed by default and, once a named tunnel is configured, it
     // stays locked until the operator explicitly chooses Edit.
     expect(source).toContain('cloudflaredTunnel.hidden = true')
-    expect(source).toContain("const locked = named && cloudflaredTunnelMode === 'named' && !cloudflaredConfigEditing")
+    expect(source).toContain("const locked = named && cloudflaredTunnelConfigured && cloudflaredTunnelMode === 'named' && !cloudflaredConfigEditing")
     expect(CONTROL_STYLES).toContain('.dsh-mobile-control__tunnel[hidden]{display:none}')
   })
 
@@ -856,9 +856,9 @@ describe('mobile-control localization', () => {
   it('keeps managed connection copy distinct from external backend and form preview', () => {
     const source = readFileSync(new URL('../src/client.ts', import.meta.url), 'utf8')
     expect(source).toContain("const managedOrigin = origin && data.originMode === 'managed'")
-    expect(source).toContain("t(managedOrigin ? 'caddyName' : 'originName')")
     expect(source).toContain("ready: origin ? t(managedOrigin ? 'caddyVerified' : 'originReady')")
-    expect(source).toContain("origin && !managedOrigin ? t('originBackendReady') : t('ready')")
+    expect(source).toContain("originChoiceBadge.textContent = managedOrigin ? t(remoteReady ? 'ready' : 'advanced') : originListening ? t('originBackendReady') : t('advanced')")
+    expect(source).not.toContain("element('div', 'dsh-mobile-control__stage-header')")
     expect(source).toContain('caddyModeManagedSelected === managedOrigin')
     // The preview remains a form draft: only clean modes follow controller reads.
     expect(source).toContain("if (!caddyModePreviewDirty) caddyModeManagedSelected = data.originMode === 'managed'")

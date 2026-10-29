@@ -224,9 +224,8 @@ try {
           assert.equal(boxes['.dshm-main'].x, sidebarWidth, `${key}: main was not placed after the sidebar`)
           assert.equal(boxes['.dshm-main'].width, view.width - sidebarWidth, `${key}: main column lost available width`)
         } else {
-          if (!open) {
-            // Folded icon rail is a persistent column on narrow viewports too;
-            // it must never cover the first 56px of the main content (#306).
+          if (!open && view.width > 720) {
+            // The persistent rail starts above the phone drawer breakpoint.
             assert.equal(boxes['.dshm-main'].x, 56, `${key}: folded icon rail covered the main content`)
             assert.equal(boxes['.dshm-main'].width, view.width - 56, `${key}: main column lost folded-rail width`)
           } else {

@@ -1946,6 +1946,38 @@ describe('HTTP gateway', () => {
     expect(reset.status).toBe(200)
   })
 
+  it('reports the pairing deadline and rejects expired, consumed and superseded codes over native HTTP', async () => {
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(1_800_000_000_000)
+    try {
+      const inner = await upstream()
+      const instance = await gateway(inner.port)
+      const route = instance.localAdminRoute()
+      const server = createServer((incoming, response) => { void route.handler(incoming, response) })
+      const port = await listen(server)
+      cleanups.push(() => closeServer(server))
+      const host = `127.0.0.1:${port}`
+      const open = async (): Promise<{ token: string; expiresAt: number }> => {
+        const response = await request(port, '/api/mobile-access/pairing/open', { method: 'POST',
+          headers: { host, origin: `http://${host}`, 'sec-fetch-site': 'same-origin', 'content-type': 'application/json' }, body: '{}' })
+        expect(response.status).toBe(201)
+        return JSON.parse(response.body) as { token: string; expiresAt: number }
+      }
+      const use = (token: string) => request(instance.address().port, '/mobile-access/auth/native-pair', { method: 'POST',
+        headers: { ...browserHeaders(instance), 'content-type': 'application/json' }, body: JSON.stringify({ token, label: 'Expiry fixture' }) })
+      const first = await open()
+      expect(first.expiresAt).toBe(Date.now() + instance.config.pairingTtlMs)
+      const second = await open()
+      expect((await use(first.token)).status).toBe(401)
+      expect((await use(second.token)).status).toBe(201)
+      expect((await use(second.token)).status).toBe(401)
+      const third = await open()
+      clock.mockReturnValue(third.expiresAt)
+      expect((await use(third.token)).status).toBe(401)
+      const fresh = await open()
+      expect((await use(fresh.token)).status).toBe(201)
+    } finally { clock.mockRestore() }
+  })
+
   it('never trusts X-Forwarded-For for pairing rate-limit identity', async () => {
     const inner = await upstream()
     const instance = await gateway(inner.port, { maxPairingAttempts: 2 })
