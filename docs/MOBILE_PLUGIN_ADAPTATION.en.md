@@ -2,6 +2,8 @@
 
 [中文](MOBILE_PLUGIN_ADAPTATION.md) · [Documentation index](README.md)
 
+> The acceptance levels and where the numbers come from are in the [plugin mobile baseline](MOBILE_PLUGIN_BASELINE.en.md); this guide covers the techniques.
+
 This guide is for DSH plugin authors, aiming for **usable small screens without desktop regressions**. DSH Mobile provides connectivity, page layout and shared entry points; it does not rearrange every third-party plugin's internal controls. Start in a browser, then add device acceptance; an Android device is not required to begin.
 
 ## Identify where the panel is mounted

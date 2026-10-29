@@ -46,6 +46,7 @@ Use short 150–240ms state/navigation transitions. Respect `prefers-reduced-mot
 - Prevent page-level horizontal overflow. Wide tables and code blocks may scroll inside their own containers.
 - Keep primary actions reachable above the soft keyboard.
 - Test 375px and 390px portrait, landscape, font scaling, and keyboard-open states.
+- Plugin-owned panels follow the [plugin mobile baseline](../../docs/MOBILE_PLUGIN_BASELINE.en.md) for hit regions, type and the evidence expected in a PR.
 
 ## Brand artwork
 
