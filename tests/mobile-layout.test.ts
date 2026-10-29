@@ -735,9 +735,36 @@ describe('dedicated mobile layout boot', () => {
     expect(MOBILE_LAYOUT_STYLES).toContain('.dshm-drawer{position:fixed')
     expect(MOBILE_LAYOUT_STYLES).toContain('@media(min-width:900px)')
     expect(MOBILE_LAYOUT_STYLES).toContain('.dshm-shell{grid-template-columns:auto minmax(0,1fr)}')
-    expect(MOBILE_LAYOUT_STYLES).toContain('.dshm-main{grid-area:1/2}')
+    expect(MOBILE_LAYOUT_STYLES).toContain('.dshm-main{grid-area:1/2;z-index:1}')
     expect(MOBILE_LAYOUT_STYLES).toContain('.dshm-drawer{position:static')
     expect(MOBILE_LAYOUT_STYLES).toContain('.dshm-drawer[data-open=true]{width:340px')
+  })
+
+  it('lets the wide conversation column outrank the static rail without passing the scrim', () => {
+    // A plugin may mount its dialog inside the composer's own stacking context.
+    // On a wide viewport the navigation rail is a static grid column, so it must
+    // not outrank the conversation column and clip that dialog's left edge
+    // (issue #309). The column still has to stay below the scrim so a modal shell
+    // surface keeps dimming it, and the phone overlay drawer keeps its own layer.
+    const wide = MOBILE_LAYOUT_STYLES.slice(MOBILE_LAYOUT_STYLES.indexOf('@media(min-width:900px){'),
+      MOBILE_LAYOUT_STYLES.indexOf('@media(prefers-reduced-motion'))
+    expect(wide).toContain('.dshm-drawer{position:static;grid-area:1/1;box-shadow:none;z-index:auto}')
+    expect(wide).toContain('.dshm-main{grid-area:1/2;z-index:1}')
+    const zOf = selector => {
+      const start = MOBILE_LAYOUT_STYLES.indexOf(selector)
+      expect(start).toBeGreaterThan(-1)
+      const rule = MOBILE_LAYOUT_STYLES.slice(start, MOBILE_LAYOUT_STYLES.indexOf('}', start))
+      const parsed = /z-index:(\d+)/u.exec(rule)
+      return parsed === null ? null : Number(parsed[1])
+    }
+    const conversation = zOf('.dshm-main{grid-area:1/2;')
+    const scrim = zOf('.dshm-scrim{position:fixed;')
+    const details = zOf('.dshm-details{position:fixed;')
+    expect(conversation).toBe(1)
+    expect(conversation).toBeLessThan(scrim)
+    expect(scrim).toBeLessThan(details)
+    // No private third-party class names are part of this contract.
+    expect(MOBILE_LAYOUT_STYLES).not.toContain('lc-modal')
   })
 
   it('keeps its own chrome opaque when a skin makes the theme layers translucent', () => {
