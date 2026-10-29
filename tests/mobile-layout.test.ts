@@ -750,12 +750,13 @@ describe('dedicated mobile layout boot', () => {
       MOBILE_LAYOUT_STYLES.indexOf('@media(prefers-reduced-motion'))
     expect(wide).toContain('.dshm-drawer{position:static;grid-area:1/1;box-shadow:none;z-index:auto}')
     expect(wide).toContain('.dshm-main{grid-area:1/2;z-index:1}')
-    const zOf = selector => {
+    const zOf = (selector: string): number => {
       const start = MOBILE_LAYOUT_STYLES.indexOf(selector)
       expect(start).toBeGreaterThan(-1)
       const rule = MOBILE_LAYOUT_STYLES.slice(start, MOBILE_LAYOUT_STYLES.indexOf('}', start))
       const parsed = /z-index:(\d+)/u.exec(rule)
-      return parsed === null ? null : Number(parsed[1])
+      expect(parsed).not.toBeNull()
+      return Number(parsed?.[1])
     }
     const conversation = zOf('.dshm-main{grid-area:1/2;')
     const scrim = zOf('.dshm-scrim{position:fixed;')
