@@ -8,6 +8,7 @@
 import { installTaskCompletionWatcher, type TaskNotifyKind } from './task-notify.js'
 import { MOBILE_COMPOSER_TOOLBAR_STYLES } from './mobile-composer-toolbar.js'
 import { pickBrowserFiles } from './browser-file-picker.js'
+import { installMobileSidebarScrollMemory } from './mobile-sidebar-scroll.js'
 
 export const NATIVE_MOBILE_OVERLAY_QUERY = '(max-width:720px)'
 
@@ -52,6 +53,16 @@ export const NATIVE_MOBILE_STYLES = `
  html.dsh-native-mobile-active [data-dsh-mobile-settings-header] [class*="_close"] { box-sizing:border-box !important; flex:none !important; width:48px !important; min-width:48px !important; height:48px !important; min-height:48px !important; }
  /* The mobile row replaces the Host-backed font control, not the theme selector. */
  html.dsh-native-mobile-active [data-slot="settings.general.item"]:has([data-mobile-font-setting]) > :not([data-mobile-font-setting])[class*="_row"]:has([class*="_control"] > [class*="_stepper"] > [class*="_arrows"]) { display:none !important; }
+/* The injected attachment actions exist on every viewport, not only under the
+   narrow overlay: a tablet shows the same Add menu, and with no native item to
+   mirror they fell back to an unstyled UA button box (bordered, centred). Keep
+   this fallback outside the overlay query so the rows read like native ones. */
+.dsh-mobile-media-action { box-sizing:border-box; display:flex; align-items:center; justify-content:flex-start; gap:8px; width:100%; min-width:0; min-height:40px; padding:8px 10px; border:0; border-radius:10px; background:transparent; color:var(--dsw-alias-label-primary,inherit); cursor:pointer; font:inherit; font-size:14px; line-height:22px; text-align:left; touch-action:manipulation; }
+.dsh-mobile-media-action:active { opacity:.72; }
+.dsh-mobile-media-action:focus-visible { outline:2px solid var(--dsw-alias-state-business-primary,#4c82f7); outline-offset:1px; }
+.dsh-mobile-media-action:disabled { cursor:default; opacity:.38; }
+.dsh-mobile-media-action svg { flex:none; width:16px; height:16px; color:var(--dsw-alias-label-tertiary,currentColor); }
+.dsh-mobile-media-action span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 @media ${NATIVE_MOBILE_OVERLAY_QUERY} {
   html.dsh-native-mobile-active,html.dsh-native-mobile-active body { width:100%; height:100%; overflow:hidden; }
   html.dsh-native-mobile-active { --dsh-mobile-motion-duration:200ms; --dsh-mobile-motion-ease:cubic-bezier(.22,1,.36,1); }
@@ -237,14 +248,6 @@ export const NATIVE_MOBILE_STYLES = `
   [data-dsh-mobile-center] [role="dialog"][aria-label*="Context"] :is(dt,dd) { white-space:nowrap !important; word-break:keep-all !important; }
   .dsh-mobile-branch-toast,.dsh-mobile-media-toast { display:block; position:fixed; z-index:330; top:max(12px,env(safe-area-inset-top)); left:50%; max-width:calc(100vw - 32px); box-sizing:border-box; padding:7px 14px; border:1px solid rgb(15 23 42 / 10%); border-radius:999px; background:rgb(15 23 42 / 92%); color:#fff; font-size:13px; line-height:20px; text-align:center; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; opacity:0; pointer-events:none; transform:translate(-50%,-8px); transition:opacity 160ms ease,transform 160ms ease; }
   .dsh-mobile-branch-toast[data-visible="true"],.dsh-mobile-media-toast[data-visible="true"] { opacity:1; transform:translate(-50%,0); }
-  /* Fallback only: when the native Add group has no item to clone, keep the
-     camera action on the same row metrics and tokens as the native menu. */
-  .dsh-mobile-media-action { box-sizing:border-box; display:flex; align-items:center; justify-content:flex-start; gap:8px; width:100%; min-width:0; min-height:40px; padding:8px 10px; border:0; border-radius:10px; background:transparent; color:var(--dsw-alias-label-primary,inherit); cursor:pointer; font:inherit; font-size:14px; line-height:22px; text-align:left; touch-action:manipulation; }
-  .dsh-mobile-media-action:active { opacity:.72; }
-  .dsh-mobile-media-action:focus-visible { outline:2px solid var(--dsw-alias-state-business-primary,#4c82f7); outline-offset:1px; }
-  .dsh-mobile-media-action:disabled { cursor:default; opacity:.38; }
-  .dsh-mobile-media-action svg { flex:none; width:16px; height:16px; color:var(--dsw-alias-label-tertiary,currentColor); }
-  .dsh-mobile-media-action span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   [data-dsh-mobile-center] [class*="_composer"] { padding-left:8px !important; padding-right:8px !important; padding-bottom:max(8px,env(safe-area-inset-bottom)) !important; }
   /* Collapse the scroll viewport only; the editor, draft and attachments stay
      owned by DSH. Toolbar focus keeps the card expanded during menu taps. */
@@ -333,6 +336,20 @@ export function resolveNativeMobileFrame(root: ParentNode, dedicatedCenter: HTML
       && firstByClassSuffix(candidate, '_sidebarCol') !== undefined
       && firstByClassSuffix(candidate, '_centerCol') !== undefined
   })
+}
+
+/**
+ * Mirror the classes of the stock Add-menu item on an injected attachment action.
+ *
+ * An empty class name is not nullish: trusting it would strip the plugin's own
+ * fallback class and leave a bordered, centred UA button on that Host version.
+ * A stock item that does carry classes still wins, so the injected action keeps
+ * following the native menu's spacing, colours and dark-mode states.
+ */
+export function mediaActionClassName(nativeItem: Pick<Element, 'className'> | undefined): string {
+  const nativeClass = nativeItem?.className
+  const trimmed = typeof nativeClass === 'string' ? nativeClass.trim() : ''
+  return trimmed === '' ? 'dsh-mobile-media-action' : trimmed
 }
 
 /** Mark every mounted settings dialog so its mobile layout does not depend on the conversation shell. */
@@ -1457,7 +1474,7 @@ export function installNativeMobileSurface(backServices: NativeMobileBackService
       return undefined
     })()
     for (const button of [cameraButton, galleryButton]) {
-      const className = nativeItem?.className ?? 'dsh-mobile-media-action'
+      const className = mediaActionClassName(nativeItem)
       if (button.className !== className) button.className = className
       const icon = button.firstElementChild
       const caption = button.lastElementChild
@@ -1657,6 +1674,7 @@ export function installNativeMobileSurface(backServices: NativeMobileBackService
   document.addEventListener('focusin', onStripFocus, true)
   document.addEventListener('click', onStripClickCapture, true)
   document.addEventListener('click', onBranchClick, true)
+  const sidebarScrollMemory = installMobileSidebarScrollMemory()
   let frame: HTMLElement | undefined
   let sidebar: HTMLElement | undefined
   let sidebarRoot: HTMLElement | undefined
@@ -1901,7 +1919,7 @@ export function installNativeMobileSurface(backServices: NativeMobileBackService
       const lastColumn = frame?.style.gridTemplateColumns.trim().split(/\s+/).at(-1)
       details.dataset.open = String(lastColumn !== undefined && lastColumn !== '0px' && lastColumn !== '0')
     }
-    if (sidebar === undefined) return
+    if (sidebar === undefined) { sidebarScrollMemory.sync(); return }
     sidebar.dataset.dshMobileSidebar = 'true'
     toggle = firstByClassSuffix(sidebar, '_toggle') as HTMLButtonElement | undefined
     let candidate = toggle?.parentElement
@@ -1917,6 +1935,7 @@ export function installNativeMobileSurface(backServices: NativeMobileBackService
     // class describes its fade animation, not the drawer's logical state.
     if (frame !== undefined) sidebar.dataset.open = String(!classToken(sidebarRoot, '_collapsed'))
     backdrop.hidden = frame === undefined || !drawerScrimVisible(classToken(sidebarRoot, '_collapsed'), overlayQuery.matches)
+    sidebarScrollMemory.sync()
   }
   const schedule = (): void => { if (scheduled === 0) scheduled = requestAnimationFrame(sync) }
   const observer = new MutationObserver(schedule)
@@ -1972,6 +1991,7 @@ export function installNativeMobileSurface(backServices: NativeMobileBackService
   return () => {
     disposed = true
     stopStockBack()
+    sidebarScrollMemory.dispose()
     disposeTaskWatcher()
     mediaRequestGeneration += 1
     mediaPickerAbortController.abort()

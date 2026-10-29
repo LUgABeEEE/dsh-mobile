@@ -596,10 +596,20 @@ body:has(.dshm-shell) :is(input,textarea,[contenteditable=true],[contenteditable
 }
 @media(min-width:900px){
 .dshm-shell{grid-template-columns:auto minmax(0,1fr)}
-.dshm-main{grid-area:1/2}
-.dshm-drawer{position:static;grid-area:1/1;box-shadow:none}
+/* The wide drawer is a static grid column, not an overlay: it occupies its own
+   track and never overlaps the conversation. Keeping a z-index here made it
+   outrank the conversation column, so a dialog a plugin mounts inside the
+   composer's own stacking context lost its left edge behind the opaque rail.
+   A static column needs no layer, so it stays in normal flow order. */
+.dshm-drawer{position:static;grid-area:1/1;box-shadow:none;z-index:auto}
 .dshm-drawer[data-open=true]{width:340px;box-shadow:none}
 .dshm-drawer[data-open=false]{width:56px}
+/* The conversation column outranks that column so an in-shell modal opened from
+   it is not clipped by the navigation rail. It stays below the scrim (65), the
+   detail panel (80) and the shell overlay (90), so a modal shell surface still
+   dims and covers it. Only the wide grid needs this: on a phone the drawer is a
+   floating overlay and must keep covering the conversation. */
+.dshm-main{grid-area:1/2;z-index:1}
 }
 @media(prefers-reduced-motion:reduce){.dshm-drawer,.dshm-details,.dshm-scrim,.dshm-drawer>*,.dshm-main{transition:none!important}}
 `

@@ -2,6 +2,10 @@
 
 Notable changes are recorded here. GitHub Releases provide the downloadable packages and generated commit notes.
 
+## Unreleased
+
+- Remember the mobile sidebar's session-list position when closing and reopening the drawer. Restore a visible session anchor across row movement, keep search positions separate, and reveal the current session when no position is available. Memory stays in the current page; rows hidden behind DSH's reset **More** watermark are not automatically expanded.
+
 ## 0.7.1 - 2026-10-29
 
 - Reorganize **Mobile access** into a compact channel list and configuration pane, stacked on narrow screens. Device management has its own LAN/remote tabs beside Diagnostics; keyboard focus and Escape follow the open panel.
