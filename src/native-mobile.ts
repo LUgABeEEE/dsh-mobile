@@ -338,6 +338,20 @@ export function resolveNativeMobileFrame(root: ParentNode, dedicatedCenter: HTML
   })
 }
 
+/**
+ * Mirror the classes of the stock Add-menu item on an injected attachment action.
+ *
+ * An empty class name is not nullish: trusting it would strip the plugin's own
+ * fallback class and leave a bordered, centred UA button on that Host version.
+ * A stock item that does carry classes still wins, so the injected action keeps
+ * following the native menu's spacing, colours and dark-mode states.
+ */
+export function mediaActionClassName(nativeItem: Pick<Element, 'className'> | undefined): string {
+  const nativeClass = nativeItem?.className
+  const trimmed = typeof nativeClass === 'string' ? nativeClass.trim() : ''
+  return trimmed === '' ? 'dsh-mobile-media-action' : trimmed
+}
+
 /** Mark every mounted settings dialog so its mobile layout does not depend on the conversation shell. */
 export function markNativeMobileSettings(root: ParentNode): number {
   let marked = 0
@@ -1460,11 +1474,7 @@ export function installNativeMobileSurface(backServices: NativeMobileBackService
       return undefined
     })()
     for (const button of [cameraButton, galleryButton]) {
-      // An item without a class name must not wipe our own fallback class:
-      // an empty className is not nullish, and the button would fall back to
-      // the UA box (bordered, centred) on that Host version.
-      const nativeClass = nativeItem?.className.trim() ?? ''
-      const className = nativeClass === '' ? 'dsh-mobile-media-action' : nativeClass
+      const className = mediaActionClassName(nativeItem)
       if (button.className !== className) button.className = className
       const icon = button.firstElementChild
       const caption = button.lastElementChild

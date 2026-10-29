@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { activeSessionForSoftEnter, applyNativeMobileLanguageMarker, BROWSER_COMPOSER_EDITOR_QUERY, bindBrowserComposerSoftEnter, bindComposerSoftEnter, bindHistoryAutoLoadGate, composerIsLandingHero, createDocumentCompositionGuard, createHeaderStripPanController, createHistoryAutoLoadGate, createSwitchComputerHold, dispatchComposerImageDrop, drawerScrimVisible, HISTORY_INTENT_LISTENER_OPTIONS, HISTORY_SCROLL_QUIET_MS, installNativeMobileSurface, installStockMobileBack, isBrowserTouchEnterLineBreak, isComposerMediaOriginCurrent, isSoftKeyboardEnterLineBreak, markNativeMobileSettings, measureHeaderStripOverflow, nativeAppOwnsComposerEnter, NATIVE_MOBILE_OVERLAY_QUERY, NATIVE_MOBILE_STYLES, NATIVE_MOBILE_TOGGLE_QUERY, preflightComposerImageDrop, resolveBrowserComposerEditor, resolveComposerSessionOrigin, resolveHistoryGateIdentity, resolveNativeMobileFrame, resolveNativeMobileLanguage, shouldAutoLoadEarlier, stockMainPanelOpen, syncHistoryLoaderLabel, SWITCH_COMPUTER_CLICK_SUPPRESSION_MS, SWITCH_COMPUTER_LONG_PRESS_MS, SWITCH_COMPUTER_MOVE_TOLERANCE_PX, SWITCH_COMPUTER_NATIVE_ACTION } from '../src/native-mobile.js'
+import { activeSessionForSoftEnter, applyNativeMobileLanguageMarker, BROWSER_COMPOSER_EDITOR_QUERY, bindBrowserComposerSoftEnter, bindComposerSoftEnter, bindHistoryAutoLoadGate, composerIsLandingHero, createDocumentCompositionGuard, createHeaderStripPanController, createHistoryAutoLoadGate, createSwitchComputerHold, dispatchComposerImageDrop, drawerScrimVisible, HISTORY_INTENT_LISTENER_OPTIONS, HISTORY_SCROLL_QUIET_MS, installNativeMobileSurface, installStockMobileBack, isBrowserTouchEnterLineBreak, isComposerMediaOriginCurrent, isSoftKeyboardEnterLineBreak, markNativeMobileSettings, measureHeaderStripOverflow, mediaActionClassName, nativeAppOwnsComposerEnter, NATIVE_MOBILE_OVERLAY_QUERY, NATIVE_MOBILE_STYLES, NATIVE_MOBILE_TOGGLE_QUERY, preflightComposerImageDrop, resolveBrowserComposerEditor, resolveComposerSessionOrigin, resolveHistoryGateIdentity, resolveNativeMobileFrame, resolveNativeMobileLanguage, shouldAutoLoadEarlier, stockMainPanelOpen, syncHistoryLoaderLabel, SWITCH_COMPUTER_CLICK_SUPPRESSION_MS, SWITCH_COMPUTER_LONG_PRESS_MS, SWITCH_COMPUTER_MOVE_TOLERANCE_PX, SWITCH_COMPUTER_NATIVE_ACTION } from '../src/native-mobile.js'
 
 interface FakeElementOptions {
   readonly children?: readonly HTMLElement[]
@@ -53,6 +53,18 @@ describe('native mobile presentation', () => {
     expect(shared).toContain('.dsh-mobile-media-action:disabled { cursor:default; opacity:.38; }')
     const [, overlay] = NATIVE_MOBILE_STYLES.split(`@media ${NATIVE_MOBILE_OVERLAY_QUERY}`)
     expect(overlay).not.toContain('.dsh-mobile-media-action {')
+  })
+
+  it('keeps the plugin fallback class when the stock Add item has no class of its own', () => {
+    // An empty className is not nullish. Trusting it left the injected action
+    // with no class at all, so it rendered as a bordered, centred UA button.
+    expect(mediaActionClassName(undefined)).toBe('dsh-mobile-media-action')
+    expect(mediaActionClassName({ className: '' })).toBe('dsh-mobile-media-action')
+    expect(mediaActionClassName({ className: '   ' })).toBe('dsh-mobile-media-action')
+    // A stock item that does carry classes still wins, so the action follows
+    // the native menu's own spacing, colours and dark-mode states.
+    expect(mediaActionClassName({ className: 'VOzbGW_item VOzbGW_camera' })).toBe('VOzbGW_item VOzbGW_camera')
+    expect(mediaActionClassName({ className: '  VOzbGW_item  ' })).toBe('VOzbGW_item')
   })
 
   it('reserves the full settings close target inside its padded header', () => {
@@ -554,7 +566,7 @@ describe('native mobile presentation', () => {
     expect(source).toContain('active.isContentEditable')
     expect(source).toContain('label("Scatta foto", "Take photo", "拍照")')
     expect(source).toContain('button.setAttribute("role", "option")')
-    expect(source).toContain('nativeItem?.className')
+    expect(source).toContain('mediaActionClassName(nativeItem)')
     expect(source).toContain('label("Galleria", "Gallery", "相册")')
     expect(source).toContain('multiple: true')
     expect(source).toContain('galleryButton.addEventListener("click", chooseGallery)')

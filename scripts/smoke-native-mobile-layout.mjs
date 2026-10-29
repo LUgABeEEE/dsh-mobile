@@ -227,5 +227,91 @@ try {
       }
     }
   }
-  console.log(`Native folded flow, dock entries, static values, accessible disclosures and desktop geometry passed in ${cases} layouts`)
+  // Injected attachment actions (issue #312). The fallback style must apply on
+  // every viewport, not only below the overlay query, and it must stay scoped to
+  // the plugin's own class: a stock item's classes, an unrelated control and the
+  // surrounding menu keep their own styling.
+  for (const viewport of [
+    { width: 390, height: 844 }, { width: 719, height: 900 }, { width: 720, height: 900 },
+    { width: 721, height: 900 }, { width: 1200, height: 900 },
+  ]) {
+    for (const theme of ['light', 'dark']) {
+      const context = await browser.newContext({ viewport, colorScheme: theme, reducedMotion: 'reduce' })
+      try {
+        const page = await context.newPage()
+        await page.setContent(`<!doctype html><html data-theme="${theme}"><head><meta name="viewport" content="width=device-width,initial-scale=1"><style>
+          html{--dsw-alias-label-primary:${theme === 'dark' ? '#f4f5f7' : '#171a21'};--dsw-alias-label-tertiary:${theme === 'dark' ? '#c0c6d0' : '#596273'};--dsw-alias-state-business-primary:#4c82f7}
+          body{margin:0;font:16px/1.4 system-ui;background:${theme === 'dark' ? '#171a21' : '#fff'}}
+          #menu{display:flex;flex-direction:column;gap:2px;width:320px;padding:8px}
+          .Stock_item{display:flex;align-items:center;gap:8px;min-height:40px;padding:8px 10px;border:0;border-radius:10px;background:rgb(1 2 3);color:rgb(4 5 6)}
+          .Unrelated_control{display:inline-block;min-height:30px;padding:2px 4px;border:1px solid rgb(7 8 9);border-radius:2px;background:rgb(10 11 12)}
+        </style></head><body>
+          <div id="menu" role="menu">
+            <div id="section-title" role="presentation">Attach</div>
+            <button id="native-item" class="Stock_item" role="option" aria-selected="false">File</button>
+            <button id="fallback" class="dsh-mobile-media-action" role="option" aria-selected="false"><span>icon</span><span>Take photo</span></button>
+            <button id="mirrored" class="Stock_item" role="option" aria-selected="false"><span>icon</span><span>Gallery</span></button>
+            <button id="fallback-disabled" class="dsh-mobile-media-action" role="option" aria-selected="false" disabled><span>icon</span><span>Busy</span></button>
+          </div>
+          <button id="unrelated" class="Unrelated_control">Other plugin control</button>
+        </body></html>`)
+        await page.addStyleTag({ content: nativeStyles })
+        const value = await page.evaluate(() => {
+          const css = selector => getComputedStyle(document.querySelector(selector))
+          const box = selector => document.querySelector(selector).getBoundingClientRect()
+          const fallback = css('#fallback')
+          const disabled = css('#fallback-disabled')
+          const mirrored = css('#mirrored')
+          const unrelated = css('#unrelated')
+          return {
+            display: fallback.display, minHeight: fallback.minHeight, borderWidth: fallback.borderTopWidth,
+            radius: fallback.borderTopLeftRadius, textAlign: fallback.textAlign, background: fallback.backgroundColor,
+            color: fallback.color, cursor: fallback.cursor, width: box('#fallback').width, menuWidth: box('#menu').width,
+            disabledOpacity: disabled.opacity, disabledCursor: disabled.cursor,
+            mirroredBackground: mirrored.backgroundColor, mirroredBorder: mirrored.borderTopWidth,
+            unrelatedBackground: unrelated.backgroundColor, unrelatedBorder: unrelated.borderTopWidth,
+            unrelatedRadius: unrelated.borderTopLeftRadius,
+          }
+        })
+        const name = `${viewport.width}x${viewport.height}/${theme}`
+        assert.equal(value.display, 'flex', `${name}: fallback action is not a flex row (${value.display})`)
+        assert(Number.parseFloat(value.minHeight) >= 40, `${name}: fallback action lost its row height (${value.minHeight})`)
+        assert.equal(value.borderWidth, '0px', `${name}: fallback action kept a UA border (${value.borderWidth})`)
+        assert.equal(value.radius, '10px', `${name}: fallback action lost its radius (${value.radius})`)
+        assert.equal(value.textAlign, 'left', `${name}: fallback action is centred like a UA button (${value.textAlign})`)
+        assert.equal(value.background, 'rgba(0, 0, 0, 0)', `${name}: fallback action paints its own fill (${value.background})`)
+        assert(Math.abs(value.width - value.menuWidth) <= 17, `${name}: fallback action does not fill the menu row (${value.width}/${value.menuWidth})`)
+        assert.equal(value.cursor, 'pointer', `${name}: fallback action lost its pointer cursor`)
+        assert.equal(value.disabledOpacity, '0.38', `${name}: disabled action lost its muted state (${value.disabledOpacity})`)
+        assert.equal(value.disabledCursor, 'default', `${name}: disabled action kept a pointer cursor`)
+        // The plugin fallback must not restyle stock items or other plugins' controls.
+        assert.equal(value.mirroredBackground, 'rgb(1, 2, 3)', `${name}: the fallback rule leaked onto a stock item`)
+        assert.equal(value.mirroredBorder, '0px', `${name}: a stock item lost its own border model`)
+        assert.equal(value.unrelatedBackground, 'rgb(10, 11, 12)', `${name}: the fallback rule leaked onto another control`)
+        assert.equal(value.unrelatedBorder, '1px', `${name}: another control lost its border`)
+        assert.equal(value.unrelatedRadius, '2px', `${name}: another control lost its radius`)
+        // Keyboard focus stays visible on the injected control.
+        await page.locator('#fallback').focus()
+        await page.keyboard.press('Shift+Tab')
+        await page.keyboard.press('Tab')
+        const focus = await page.evaluate(() => {
+          const node = document.querySelector('#fallback')
+          const css = getComputedStyle(node)
+          return { focused: document.activeElement === node, outlineWidth: css.outlineWidth, outlineStyle: css.outlineStyle }
+        })
+        assert.equal(focus.focused, true, `${name}: the injected action is not keyboard focusable`)
+        assert(Number.parseFloat(focus.outlineWidth) >= 2 && focus.outlineStyle !== 'none',
+          `${name}: keyboard focus is invisible on the injected action (${JSON.stringify(focus)})`)
+        // A real tap still reaches the injected control through its own row.
+        await page.evaluate(() => {
+          const node = document.querySelector('#fallback')
+          node.addEventListener('click', () => { node.dataset.clicked = 'true' })
+        })
+        await page.locator('#fallback').click()
+        assert.equal(await page.locator('#fallback').getAttribute('data-clicked'), 'true', `${name}: the injected action was not clickable`)
+        cases++
+      } finally { await context.close() }
+    }
+  }
+  console.log(`Native folded flow, dock entries, static values, accessible disclosures, injected attachment actions and desktop geometry passed in ${cases} layouts`)
 } finally { await browser.close() }
