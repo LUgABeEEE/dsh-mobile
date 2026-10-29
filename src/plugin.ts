@@ -683,7 +683,15 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
     },
     async logout(owner) {
       const service = await currentPushGatewayService()
-      if (service !== undefined) await service.logout(owner)
+      if (service !== undefined) { await service.logout(owner); return }
+      // A missing optional Host is not proof that persisted consent is disabled.
+      // Do not open a competing writer while its runtime is starting or draining.
+      if (activePushRuntimeGeneration !== undefined || pushRegistry !== undefined) throw new Error('push_unavailable')
+      const saved = await new JsonPushStore(join(stateDirectory, 'mobile-push', 'push-state.json')).load()
+      if (activePushRuntimeGeneration !== undefined || pushRegistry !== undefined || saved.registrations.some(row =>
+        row.enabled && row.scopeId === owner.scopeId && row.deviceId === owner.deviceId && row.origin === owner.origin)) {
+        throw new Error('push_unavailable')
+      }
     },
     async test(owner, installationId) { await (await requiredPushGatewayService()).test(owner, installationId) },
     async resolve(owner, reference) { return (await requiredPushGatewayService()).resolve(owner, reference) },

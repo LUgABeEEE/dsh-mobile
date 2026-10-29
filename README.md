@@ -18,6 +18,7 @@
 <p align="center">
   <a href="#能做什么">能做什么</a> ·
   <a href="#快速开始">快速开始</a> ·
+  <a href="#iphone-与-ipad主屏幕-web-apppwa">iPhone / iPad</a> ·
   <a href="#连接教程">连接教程</a> ·
   <a href="#扩展与自定义">扩展与自定义</a> ·
   <a href="#设备管理">设备管理</a> ·
@@ -26,7 +27,7 @@
   <a href="#兼容性">兼容性</a> ·
   <a href="docs/README.md">文档</a> ·
   <a href="#贡献者">贡献者</a> ·
-  <a href="https://github.com/saya-ch/dsh-mobile/releases/tag/v0.7.1">更新记录</a> ·
+  <a href="https://github.com/saya-ch/dsh-mobile/releases/tag/v0.8.0">更新记录</a> ·
   <a href="README.en.md">English</a>
 </p>
 
@@ -34,7 +35,7 @@
 >
 > **使用 iPhone 或 iPad？** 可以用 Safari 访问，或[添加到主屏幕作为 Web App（PWA）使用](<#iphone-与-ipad主屏幕-web-apppwa>)，无需下载原生 iOS App。
 >
-> **当前正式版本：0.7.1**。整理移动访问面板与设备管理，改善 cloudflared 配置、配对码有效期和折叠侧栏；新增 iroh 下载组件清理与 VPN 排障说明。Android App 继续使用独立发布的 0.7.0，现有配对无需重建。[插件更新与下载](https://github.com/saya-ch/dsh-mobile/releases/tag/v0.7.1) · [完整更新记录](CHANGELOG.md)。
+> **当前正式版本：0.8.0**。新增 **iPhone / iPad 主屏幕 Web App 引导与网页推送通知**，支持问题、计划、审批、回复、目标和失败六类提醒；同时改善会话列表位置保持、附件操作和慢链路传输。[插件更新与下载](https://github.com/saya-ch/dsh-mobile/releases/tag/v0.8.0) · [完整更新记录](CHANGELOG.md)。
 >
 > **版本说明**：自插件 **0.6.2** 起，Android App 与插件独立编号、独立发布，版本号无需一致；插件升级不代表 App 需要同步升级。[兼容说明](#兼容性)。
 
@@ -50,17 +51,16 @@ DSH Mobile 是一个 DeepSeek Harness 插件，让手机浏览器或 Android App
 
 它还能在 DSH 对话里用 `/mobile <需求>` 定制手机端。
 
-开发版会记住本页移动侧栏的列表位置，切换会话后重新打开可回到原处；无记录时尝试显示当前会话。搜索列表独立记忆，刷新页面后清空；DSH 收起到“更多”中的会话不会被自动展开。
-
 ## 能做什么
 
 - **在手机上继续电脑端的工作**：同一份会话、工作区、消息和工具，实时同步。
 - **用对话定制手机端**：在 DSH 对话里提出布局、交互或功能需求；文件修改完成后，自定义资源通常会自动更新。
-- **专属触屏布局**：会话抽屉、工具详情、设置、提问卡片和输入栏都按手机重新组织；App 跟随系统语言（简/英/意），插件界面跟随 DSH 语言。
+- **专属触屏布局**：会话抽屉、工具详情、设置、提问卡片和输入栏都按手机重新组织；侧栏列表在本页内记住位置，切换会话再打开不会总跳回顶部。App 跟随系统语言（简/英/意），插件界面跟随 DSH 语言。
 - **多种远程通道**：Tailscale、cpolar、cloudflared 快速/命名隧道、自建 FRP、自有反向代理，以及无需域名和公网端口的实验性 iroh；Windows/Linux x64 还可由插件托管 Caddy HTTPS 与证书。
 - **配对与多设备**：扫码、链接或密钥配对一次；切换 Wi-Fi、热点或 IP 后通常自动恢复；App 在一个列表中显示局域网和远程配对的电脑，定期检测可达状态，并支持切换、重新配对或删除本地记录。
 - **一键诊断与放行**：检查版本、网关、网卡、防火墙和远程通道，生成脱敏报告；被拦截的第三方插件连接按确切路径一键放行。
-- **任务系统通知**：Android 的任务完成与待输入提醒可在 App 内 DSH“通用设置”中开启，锁屏文本脱敏。独立的 [iPhone/iPad 网页推送候选](<docs/WEB_PUSH.md>)尚未发布，仅面向具备能力的 Safari 主屏幕 App 明确启用；iPad 与其他设备／系统验证仍待完成。
+- **iPhone / iPad 网页推送**：将页面添加到主屏幕后，在 DSH“通用设置”中主动开启；支持六类提醒和分类开关，页面关闭或锁屏后也可接收，锁屏文字不含会话正文。[使用条件与设置](docs/WEB_PUSH.md)。
+- **Android 任务通知**：在 App 内 DSH“通用设置”中开启任务完成与待输入提醒，使用独立的原生通知通道，锁屏文本脱敏。
 - **纵深安全**：局域网固定私有 CA，公开远程入口使用受信任 HTTPS；自签 FRP 入口由 0.4.6 App 固定远程 CA。凭据存 Keystore，设备令牌只发往精确 Origin，第三方 WS 默认拦截。
 
 配对设备可以操作电脑上的 DSH，应视为完全受信任的设备。局域网只在可信网络开启；远程访问应使用可靠的 HTTPS 通道。手机丢失时，请立即从电脑端撤销设备。
@@ -126,7 +126,7 @@ dsh plugin --profile web add dshmarket
 
 不添加图标也可以继续使用 Safari。电脑、DSH 与 Mobile Gateway 须保持运行且手机能够连接；添加 Web App **不会**提供离线 DSH。隧道域名改变后，不会自动迁移配对或推送同意。
 
-**可选通知（尚未发布的候选）：**普通访问无需推送。具备能力的 iOS/iPadOS **18.4+ Safari 主屏幕 App** 可在 **DSH 页面内的设置 → 通用设置**中明确启用[网页推送](<docs/WEB_PUSH.md#明确启用>)。可用性以能力检测为准；iPad、其他设备／系统组合与最终提交复查仍待完成。受信任 HTTPS、分类、测试与排障要求见指南。
+**开启网页推送：**从主屏幕图标进入 DSH，打开 **设置 → 通用设置 → 网页推送通知**，点击**启用**并允许通知，再按需选择六类提醒。目标环境为具备页面级推送能力的 iOS/iPadOS **18.4+**，需要受信任的 HTTPS；普通 Safari 标签页和 Android App 不显示此入口。通知是可选功能，不影响日常访问。[完整指南与排障](docs/WEB_PUSH.md)。
 
 ## 连接教程
 
@@ -218,7 +218,7 @@ dsh plugin --profile web add dshmarket
 <details>
 <summary>远程通知、服务器运维与安全限制</summary>
 
-> **远程通知说明**：Android 任务提醒保留原有页面／SSE 路径，须在 App 内 DSH **设置 → 通用设置** 中开启，并保持 WebView 存活。尚未发布的 [iPhone/iPad Declarative Web Push 候选](<docs/WEB_PUSH.md>) 是独立的明确启用功能，仅面向受信任 HTTPS 下具备能力的 iOS/iPadOS **Safari** 主屏幕 App，不提供 Service Worker 降级。作者在开发期间于 iPhone 17 Pro Max（iOS 27.0.1）上完整执行过验收矩阵（回溯性观察，未保留逐次构建来源）；iPad、其他设备／系统组合与最终提交复查仍待完成，因此不是保证送达的后台警报。主机端推送密钥重置作用于整个注册表：之后旧的浏览器订阅可能让普通重新启用失败，需明确修复；已独立配置的 dsh-ping 等服务端通道保持不变。
+> **远程通知说明**：Android 任务提醒使用页面／SSE 路径，须保持 App 的 WebView 存活；[iPhone/iPad 网页推送](docs/WEB_PUSH.md)则由具备能力的 Safari 主屏幕 App 主动启用，不依赖页面一直打开。两者都需要电脑端 DSH 运行，通知可能受网络、专注模式和系统调度影响，不是保证送达的警报服务。独立配置的 dsh-ping 等通道不受影响。
 
 Funnel 的运行组件把公开监听生命周期绑定到父进程和受限控制通道；父进程退出、控制通道关闭或显式停止时会结束当前代次并清理资源。中国大陆 VPS 上的未备案域名可能被云厂商拦截，此时可使用公网 IPv4 模式。插件会校验按需下载的固定版本组件；本机托管的配置与程序保存在 `$DSH_HOME/mobile-access/`，可在面板中清理。VPS 侧的文件须按自建连接指南单独清理。
 
@@ -365,7 +365,7 @@ excludedClientModules:
 | 方式 | 适合场景 | 说明 |
 | --- | --- | --- |
 | Android App | 日常使用 | 首次配对时分别提供局域网与远程入口；局域网自动发现，公开远程证书由系统验证，自签 FRP 入口由 App 固定 CA |
-| iPhone/iPad Safari 或主屏幕 Web App（PWA） | iOS 日常浏览器访问 | [用 Safari 配对并添加主屏幕图标](<#iphone-与-ipad主屏幕-web-apppwa>)，无需下载原生 iOS App；可选推送尚未发布且按能力检测，iPad／其他设备验证仍开放 |
+| iPhone/iPad Safari 或主屏幕 Web App（PWA） | iOS 日常访问与可选推送 | [用 Safari 配对并添加主屏幕图标](<#iphone-与-ipad主屏幕-web-apppwa>)，无需原生 iOS App；具备能力的主屏幕 App 可开启[网页推送](docs/WEB_PUSH.md) |
 | 手机浏览器 | 日常或跨平台访问 | 打开“移动访问”卡片显示的 HTTPS 地址；局域网私有证书可能需要手动确认，公开远程证书不应出现警告。绕过证书警告不等于满足网页推送条件 |
 
 Android App 只是 Kotlin WebView 薄壳，不内置另一份网页；手机浏览器访问的是同一页面。开发者可在已认证移动地址后追加 `?frontend=stock` 诊断启动与布局行为；该入口跳过专用移动启动改写和模块选择，但仍可能加载客户端移动适配及已认证定制，并非不含插件的对照页。部分 API 操作可能被拒绝，不能代替正常移动入口。详见[皮肤与移动布局](docs/SKIN_COMPATIBILITY.md)。

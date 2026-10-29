@@ -32,7 +32,9 @@ import { FrpController, type FrpControllerOptions } from '../src/frp.js'
 import type { MobileAccessGateway } from '../src/gateway.js'
 import { PushGatewayCoordinator, type PushGatewayOriginBinding } from '../src/mobile-push/gateway.js'
 import { PushDelivery } from '../src/mobile-push/delivery.js'
-import { PushRegistry } from '../src/mobile-push/registry.js'
+import { PushRegistry, vapidFingerprint } from '../src/mobile-push/registry.js'
+import { JsonPushStore } from '../src/mobile-push/store.js'
+import { createVapidKeys } from '../src/mobile-push/sender.js'
 
 const contexts: Context[] = []
 const temporaryDirectories: string[] = []
@@ -361,7 +363,7 @@ async function mobileGatewayRequest(
   port: number,
   origin: string,
   path: string,
-  options: { method?: 'GET' | 'POST'; body?: Record<string, unknown>; cookie?: string } = {},
+  options: { method?: 'GET' | 'POST'; body?: Record<string, unknown>; cookie?: string; csrf?: string } = {},
 ): Promise<{ status: number; headers: IncomingHttpHeaders; body: Record<string, unknown> }> {
   const body = options.body === undefined ? undefined : JSON.stringify(options.body)
   return new Promise((resolve, reject) => {
@@ -372,6 +374,7 @@ async function mobileGatewayRequest(
         origin,
         'sec-fetch-site': 'same-origin',
         ...(options.cookie === undefined ? {} : { cookie: options.cookie }),
+        ...(options.csrf === undefined ? {} : { 'x-dsh-mobile-csrf': options.csrf }),
         ...(body === undefined ? {} : { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) }),
       },
     }, response => {
@@ -1044,6 +1047,41 @@ describe('stock DSH lifecycle', () => {
     expect(localControl.status).toBe(200)
     expect(JSON.parse(localControl.body)).toMatchObject({ running: false })
     await expect(readFile(join(mounted.directory, 'mobile-push', 'push-state.json'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it.each([false, true])('checks saved push consent before logout without optional Host services (enabled=%s)', async enabled => {
+    const mounted = await mount(true)
+    const control = await invoke(mounted.route, 'GET', '/api/mobile-access/lan/control')
+    const origin = responseString(JSON.parse(control.body) as Record<string, unknown>, 'origin')
+    const port = Number(new URL(origin).port)
+    const opened = await invoke(mounted.route, 'POST', '/api/mobile-access/lan/pairing/open', '{}')
+    const token = responseString(JSON.parse(opened.body) as Record<string, unknown>, 'token')
+    const paired = await mobileGatewayRequest(port, origin, '/mobile-access/auth/pair', { method: 'POST', body: { token } })
+    expect(paired.status).toBe(201)
+    const cookie = paired.headers['set-cookie']?.map(value => value.split(';', 1)[0] ?? '').join('; ')
+    const csrf = responseString(paired.body, 'csrfToken')
+    const keys = createVapidKeys()
+    const fingerprint = vapidFingerprint(keys)
+    const store = new JsonPushStore(join(mounted.directory, 'mobile-push', 'push-state.json'))
+    await store.save({
+      version: 1, keys: { ...keys, fingerprint }, ownerGenerations: [], pending: [], receipts: [], references: [],
+      registrations: [{
+        scopeId: join(mounted.directory, 'devices.json'), deviceId: responseString(paired.body, 'deviceId'), origin,
+        installationId: '11111111-1111-4111-8111-111111111111',
+        subscription: { endpoint: 'https://web.push.apple.com/owned-logout-test', keys: { p256dh: keys.publicKey, auth: Buffer.alloc(16).toString('base64url') } },
+        locale: 'en', preferences: { question: true, plan: true, approval: true, response: true, goal: true, failure: true },
+        generation: 1, keyFingerprint: fingerprint, enabled, health: 'ready',
+      }],
+    })
+    const result = await mobileGatewayRequest(port, origin, '/mobile-access/auth/logout', { method: 'POST', body: {}, cookie, csrf })
+    expect(result.status).toBe(enabled ? 503 : 200)
+    if (enabled) {
+      expect(result.body).toEqual({ error: 'push_unavailable' })
+      expect(result.headers['set-cookie']).toBeUndefined()
+      const stillAuthenticated = await mobileGatewayRequest(port, origin, '/mobile-access/push/config?installationId=11111111-1111-4111-8111-111111111111', { cookie })
+      expect(stillAuthenticated.status).toBe(200)
+    } else expect(result.body).toEqual({ loggedOut: true })
+    expect((await store.load()).registrations[0]?.enabled).toBe(enabled)
   })
 
   it('closes the single push runtime on normal plugin unload', async () => {
