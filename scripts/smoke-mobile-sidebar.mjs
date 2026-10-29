@@ -30,6 +30,8 @@ const fixtureName = 'dsh-mobile-sidebar-fixture'
 const record = { geometry: [], checks: [], errors: [], prompts: 0 }
 const failures = []
 let browser, dsh, phone, bootDiagnostics, stage = 'installation', observedNegative = false, sequence = 0
+// Names the active frontend in failure diagnostics before a check can throw.
+let currentFrontend = 'unknown'
 
 // Public additive slots stress the actual SidebarRoot and WorkspaceBrowser.
 // No stock rows, handlers or styles are copied into this fixture.
@@ -133,7 +135,48 @@ async function revealSessionRow(sessionId) {
     })
     if (!moved) break
   }
-  throw new Error('Actual Workspace virtual list did not reveal the requested owned Session')
+  throw new Error(`Actual Workspace virtual list did not reveal the requested owned Session\n${JSON.stringify(await sidebarRetentionDiagnostics(currentFrontend, sessionId), null, 1)}`)
+}
+
+/**
+ * Capture the facts that separate a broken scroll restoration from a row that is
+ * simply not in the mounted window: the scroll owners and their rects, every
+ * mounted keyed row, the visible groups and any "More" control. Without them a
+ * failed reveal cannot be attributed.
+ */
+async function sidebarRetentionDiagnostics(frontend, id) {
+  return phone.evaluate(({ frontend, id }) => {
+    const rect = node => {
+      if (node === null || node === undefined) return null
+      const box = node.getBoundingClientRect()
+      return [Math.round(box.left), Math.round(box.top), Math.round(box.width), Math.round(box.height)]
+    }
+    const root = document.querySelector('[data-dsh-mobile-sidebar-root]')
+    if (root === null) return { frontend, target: `session:${id}`, root: null, viewport: { width: innerWidth, height: innerHeight } }
+    const region = root.querySelector('[class*="_regionArea"]')
+    const list = [...(region === null ? [] : region.querySelectorAll('[class]'))]
+      .find(node => [...node.classList].some(token => token.endsWith('_list'))) ?? null
+    const rows = list === null ? [] : [...list.querySelectorAll('[data-row-key]')].map(node => node.dataset.rowKey)
+    const target = rows.includes(`session:${id}`) ? list.querySelector(`[data-row-key="session:${id}"]`) : null
+    return {
+      frontend,
+      target: `session:${id}`,
+      targetMounted: target !== null,
+      mountedRows: rows.length,
+      rows,
+      groups: list === null ? [] : [...list.querySelectorAll('[class*="_groupSection"]')].map(node => (node.textContent ?? '').trim().slice(0, 48)).slice(0, 8),
+      moreControls: [...root.querySelectorAll('button')].map(node => (node.textContent ?? '').trim())
+        .filter(text => /more|更多|altro|altre/i.test(text)).slice(0, 4),
+      scrollOwners: {
+        list: list === null ? null : { top: list.scrollTop, client: list.clientHeight, scroll: list.scrollHeight,
+          overflowY: getComputedStyle(list).overflowY, rect: rect(list) },
+        outer: { top: root.scrollTop, client: root.clientHeight, scroll: root.scrollHeight,
+          overflowY: getComputedStyle(root).overflowY, rect: rect(root) },
+      },
+      targetRect: rect(target),
+      viewport: { width: innerWidth, height: innerHeight },
+    }
+  }, { frontend, id })
 }
 
 async function checkSidebarScrollMemory(frontend, sessions) {
@@ -175,13 +218,7 @@ async function checkSidebarScrollMemory(frontend, sessions) {
         && Math.abs(root.scrollTop - before.outer) <= 2
         && Math.abs(row.getBoundingClientRect().top - list.getBoundingClientRect().top - before.offset) <= 2
     }, { id, before }, { timeout: 5000 }).catch(async error => {
-      const after = await phone.evaluate(id => {
-        const root = document.querySelector('[data-dsh-mobile-sidebar-root]')
-        const list = [...root.querySelectorAll('[class*="_regionArea"] [class]')].find(node => [...node.classList].some(token => token.endsWith('_list')))
-        const row = list && [...list.querySelectorAll('[data-row-key]')].find(node => node.dataset.rowKey === `session:${id}`)
-        return { top: list?.scrollTop, outer: root.scrollTop, offset: row && row.getBoundingClientRect().top - list.getBoundingClientRect().top,
-          rows: list && [...list.querySelectorAll('[data-row-key]')].map(row => row.dataset.rowKey) }
-      }, id)
+      const after = await sidebarRetentionDiagnostics(frontend, id)
       throw new Error(`${frontend}: sidebar retention failed ${JSON.stringify({ before, after })}`, { cause: error })
     })
     assert.equal(await phone.locator('[data-composer-input]').evaluate(node => node.contains(document.activeElement)), false, 'Session switching unexpectedly focused the composer')
@@ -349,6 +386,7 @@ try {
   record.stockScope = 'Authenticated stock DSH preview on its private server; not the raw frontend=stock Gateway route, which skips mobile boot/trust'
   const desktopBefore = await desktop.locator('[class*="_frame"]').first().evaluate(node => ({ pointer: getComputedStyle(node).pointerEvents, width: node.clientWidth }))
   for (const frontend of ['dedicated', 'stock']) {
+    currentFrontend = frontend
     stage = `${frontend}-boot`
     if (frontend === 'stock') {
       // The diagnostic raw Gateway route omits mobile trust/boot. Use the
