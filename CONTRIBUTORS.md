@@ -163,7 +163,7 @@ Thanks [@xhwxt](https://github.com/xhwxt) for the document-picker proposal in [#
 | [@jonaskilli](https://github.com/jonaskilli) | [#198](https://github.com/saya-ch/dsh-mobile/issues/198) |
 | [@jueruibo](https://github.com/jueruibo) | [#101](https://github.com/saya-ch/dsh-mobile/issues/101) |
 | [@KMGTPEZY](https://github.com/KMGTPEZY) | [#95](https://github.com/saya-ch/dsh-mobile/issues/95) |
-| [@luoyangchan](https://github.com/luoyangchan) | [#187](https://github.com/saya-ch/dsh-mobile/issues/187) |
+| [@luoyangshovel](https://github.com/luoyangshovel) | [#187](https://github.com/saya-ch/dsh-mobile/issues/187) |
 | [@LWping](https://github.com/LWping) | [#94](https://github.com/saya-ch/dsh-mobile/issues/94) |
 | [@miqian-nomad](https://github.com/miqian-nomad) | [#97](https://github.com/saya-ch/dsh-mobile/issues/97) |
 | [@MLYR](https://github.com/MLYR) | [#193](https://github.com/saya-ch/dsh-mobile/issues/193) |

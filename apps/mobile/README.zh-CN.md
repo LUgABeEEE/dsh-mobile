@@ -4,14 +4,14 @@
 
 DeepSeek Harness 是这个社区维护的 Android WebView App 的显示名称。它直接打开插件提供的已认证 HTTPS 页面，不打包另一套 DSH 前端；App 与手机浏览器获得相同的 DSH 功能，以及电脑端配置的移动页面定制。
 
-当前正式 App 为 **0.6.8**；构建号为 84。npm 插件与 Android App 独立编号、独立更新；插件升级不代表需要重新安装 APK。此次改进见 [0.6.8 更新](#068-更新)。
+当前正式 App 为 **0.7.0**；构建号为 85。npm 插件与 Android App 独立编号、独立更新；插件升级不代表需要重新安装 APK。此次改进见 [0.7.0 更新](#070-更新)。
 
 支持 Android 10 及以上系统。iOS 本地实验不属于已发布或受支持的客户端。
 
 ## 安装与配对
 
 1. 按[项目快速开始](../../README.md#快速开始)安装并启用插件。局域网配置可通过命令行或电脑端的 **移动访问** 面板完成。
-2. 从 [GitHub Releases](https://github.com/saya-ch/dsh-mobile/releases/tag/android-v0.6.8) 安装已签名 APK。正式版沿用相同发布签名，可原位升级并保留配对；不同签名的 Debug 包不能直接覆盖正式版，不要为绕过签名不匹配而卸载或清除数据。
+2. 从 [GitHub Releases](https://github.com/saya-ch/dsh-mobile/releases/tag/android-v0.7.0) 安装已签名 APK。原有 HTTPS 通道可选兼容版 `.apk`；arm64-v8a/x86_64 设备使用实验性 iroh 时选完整版 `-iroh.apk`。两包使用相同包名和正式签名，选一个原位升级即可保留配对；不同签名的 Debug 包不能直接覆盖正式版，不要为绕过签名不匹配而卸载或清除数据。
 3. 在电脑 **移动访问 → 局域网访问** 中生成密钥／配对链接，或配置远程通道并生成远程配对二维码。在 App 选择对应方式，扫码或粘贴链接。
 4. 为电脑命名。每条局域网或远程配对单独保存；手机无需安装 cpolar、Cloudflare 或 Tailscale App。
 
@@ -35,6 +35,12 @@ DeepSeek Harness 是这个社区维护的 Android WebView App 的显示名称。
 页面缩放影响整个网页，与按地址保存的文字偏好不同。App 专属操作只在原生 Bridge 支持时显示。原生页面跟随 Android 系统语言，支持简体中文、英文和意大利文；网页跟随 DSH 选择的语言，当前 DSH 尚未提供意大利语。
 
 删除本机记录会移除保存的设备令牌和固定 CA，不等于撤销电脑授权或清除所有 WebView 短期 Cookie。需要立即终止访问时，请在电脑的 **移动访问** 中撤销设备。Android“清除应用数据”会删除全部配对和网页数据，不是普通重连的处理步骤。
+
+## 0.7.0 更新
+
+App 0.7.0／构建 85 在完整版中增加可选的实验性 iroh 配对和原生传输，配合插件 0.7.0 及以上版本使用。兼容版不含原生库，保留现有 HTTPS 通道并继续支持 32 位设备。旧版更新入口默认下载兼容版；使用 iroh 时请主动选择完整版。两包均保留设备列表、HTTPS 配对和原有正式签名。独立实验 App 的记录不会自动迁移。
+
+iroh 默认关闭。电脑端安装经过校验的组件后，在 **移动访问 → 远程 → iroh（实验性）** 中生成专属配对二维码。直连和中继可用性取决于两端网络，手机浏览器不能直接使用这条传输，详见 [iroh 使用说明](../../docs/IROH.md)。
 
 ## 0.6.8 更新
 
@@ -151,11 +157,24 @@ Set-Location apps/mobile/android
 
 Debug APK 位于 `app/build/outputs/apk/debug/app-debug.apk`。正式发布沿用只保存在仓库 Secrets 中的签名密钥，本地未签名 Release 构建或 Debug 安装不能替代正式签名核验。
 
+每次构建默认自带实验性 iroh 传输。需要 Rust 1.99.1（含 `aarch64-linux-android` 与 `x86_64-linux-android` 目标）与明确指定的 NDK：
+
+```powershell
+Set-Location apps/mobile/android
+./gradlew.bat :app:assembleDebug -PirohNdk=C:/Android/Sdk/ndk/25.2.9519653 -x :app:lintAnalyzeDebugUnitTest -x :app:lintAnalyzeDebugAndroidTest
+```
+
+传 `-PirohNative=false` 可走免工具链的快速通道，构建的是原 HTTPS 外壳：没有 iroh 配对入口，`IrohNative` 会报告自身不可用。传输库生成在 `app/build/generated/iroh/jniLibs/` 下，永不提交。启用原生库的构建不改变包名与既定正式签名；实验阶段的独立 alpha 签名在这里不使用。
+
+原生构建还会从固定提交的官方 Maven 归档引入与 `native/Cargo.lock` 匹配的 JVM TLS 校验组件。必须保留其 JNI／Proguard 规则，仅打包 `.so` 不足以完成接入。APK 验证会检查 Debug 和压缩后的 Release 是否保留所需 JVM 类和原生入口名称。
+
 当前源码的 Debug 构建使用包名 `io.github.sayach.dshmobile.debug` 与 `-debug` 版本后缀，可与正式 App 并存，存储和配对彼此独立。它不会升级或迁移旧版无后缀 Debug 应用；切换包名时应保留旧应用和数据，不要为此卸载或清除。Release 构建继续使用 `io.github.sayach.dshmobile` 与既定正式签名。
 
-已核验的正式版本为 [Android 0.6.8](https://github.com/saya-ch/dsh-mobile/releases/tag/android-v0.6.8)，构建 84，SHA-256：`c3d1fe43c0a39619527949c37341baf3f0d54decb2ef27ee0f9b12ae022169e2`。下载的 APK 沿用正式发布签名及包名 `io.github.sayach.dshmobile`。旧版本历史集中在 [CHANGELOG](../../CHANGELOG.md)。
+已核验的正式版本为 [Android 0.7.0](https://github.com/saya-ch/dsh-mobile/releases/tag/android-v0.7.0)，构建 85。兼容版与完整版分别附有对应的 `.sha256` 校验文件；两个公开下载均沿用正式发布签名及包名 `io.github.sayach.dshmobile`。旧版本历史集中在 [CHANGELOG](../../CHANGELOG.md)。
 
 ## 验收与已知限制
+
+- App 0.7.0 的两份公开 APK 均通过校验值、Manifest、正式签名、许可文本和对齐检查；完整版另检查两个 ABI 及保留的 JVM TLS／JNI 入口，兼容版确认没有原生库。此前的 arm64 开发构建有不依赖 ADB 转发的原生 iroh 网关／定制资源真机链路证据；最后补齐 JVM TLS 依赖后尚未新增真机公网中继回归，不能仅凭中继连接存在宣称数据已走中继。
 
 - App 0.6.8 的公开 APK 已核验身份、校验值和既定正式签名。Debug 包同签名原位升级后可打开 DSH，并保留原设备记录；受控慢链路故障注入在配对前中断，不计为通过。
 

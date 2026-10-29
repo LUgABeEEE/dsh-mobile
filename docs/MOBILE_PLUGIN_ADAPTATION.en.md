@@ -116,6 +116,14 @@ Constrain overlays to their actual container and visible area, rather than using
 
 Add `env(safe-area-inset-*)` only where content really reaches a screen edge and the host has not already handled it, avoiding duplicate space. Save, Cancel and errors must remain visible or reachable by scrolling with the keyboard open. An independent scroll area should not move the page underneath.
 
+### Overlay layering and portals
+
+The dedicated mobile shell uses `isolation:isolate` so its drawer and panels share a local stacking context. A positioned menu portalled directly to `document.body` with a positive `z-index` can paint above that shell; its value does not have to exceed the drawer's internal value. The stock-layout adapter retains its existing layer values.
+
+This is not a guarantee that every body child outranks every dialog. Negative values, zero/auto paint order, ancestor stacking contexts, and the browser's top layer affect the result. Menus inside the shell remain constrained by their ancestors. Prefer the host's overlay facilities where available, and dismiss a menu when its owning panel closes or a modal takes focus. Do not globally raise third-party widgets or change DSH's dialog layers.
+
+Verify actual visibility, focus and `document.elementFromPoint()` while the drawer, detail panel and settings are open, in narrow and wide layouts. The owned `smoke:plugin-portal-layers` fixture checks positive-z-index body menus and a top-layer dialog; it is not acceptance of every community plugin.
+
 ## Verification: what code checks, browsers and devices establish
 
 ### Structural checks

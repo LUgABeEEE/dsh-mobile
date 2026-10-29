@@ -4,14 +4,14 @@
 
 DeepSeek Harness is the display name of this community-maintained Android WebView app. It opens the plugin's authenticated HTTPS page rather than bundling another DSH frontend. The app and mobile browsers receive the same DSH features and computer-side mobile customizations.
 
-The current stable app is **0.6.8** (build 84). The npm plugin and Android App have independent versions: a plugin update does not automatically require another APK. See the [0.6.8 changes](#068-update).
+The current stable app is **0.7.0** (build 85). The npm plugin and Android App have independent versions: a plugin update does not automatically require another APK. See the [0.7.0 changes](#070-update).
 
 Android 10 or later is supported. The local iOS experiment is not a published or supported client.
 
 ## Install and pair
 
 1. Install and enable the plugin using the [project quick start](../../README.en.md#quick-start). Complete LAN setup from the command line or the computer's **Mobile Access** panel.
-2. Install the signed Android APK from [GitHub Releases](https://github.com/saya-ch/dsh-mobile/releases/tag/android-v0.6.8). Upgrade an official installation in place using the same release signer to retain its pairings. A differently signed Debug APK cannot replace it; do not uninstall or clear data just to bypass that mismatch.
+2. Install a signed Android APK from [GitHub Releases](https://github.com/saya-ch/dsh-mobile/releases/tag/android-v0.7.0). Choose the compatibility `.apk` for existing HTTPS channels, or the full `-iroh.apk` for experimental iroh on arm64-v8a/x86_64. Both have the same package ID and official signer; install only one and upgrade in place to retain pairings. A differently signed Debug APK cannot replace it; do not uninstall or clear data just to bypass that mismatch.
 3. On the computer, generate a pairing key/link under **Mobile Access → Local network**, or configure a remote provider and generate its remote pairing QR code. In the app, choose the matching connection mode and scan or paste the link.
 4. Name the computer. The app stores each LAN or remote pairing as its own record. The phone does not need a cpolar, Cloudflare or Tailscale app.
 
@@ -35,6 +35,12 @@ The **Paired computers** list shows names, connection types, addresses, reachabi
 Page zoom changes the whole page and is separate from per-address text preferences. App-only actions are shown only when the native bridge supports them. Native screens follow the Android system language in Simplified Chinese, English or Italian; webpage copy follows DSH's selected locale. DSH does not currently expose Italian.
 
 Deleting a local record removes its saved token and pinned CA, not the computer's authorization or every short-lived WebView cookie. Use **Mobile Access** on the computer to revoke access immediately. A full Android clear-app-data reset removes all pairings and web data and is not a normal reconnection step.
+
+## 0.7.0 update
+
+App 0.7.0/build 85 adds optional experimental iroh pairing and native transport in the full APK, working with plugin 0.7.0 or later. The compatibility APK retains existing HTTPS channels without native libraries, including on 32-bit devices. Legacy updates download compatibility by default; choose the full APK explicitly when using iroh. Both retain the device list, HTTPS pairings and established signer. Records from the separate experimental App do not migrate automatically.
+
+iroh is off by default. The computer installs a verified component, then generates a dedicated pairing QR code under **Mobile access → Remote → iroh (Experimental)**. Direct/relayed connectivity depends on both networks; mobile browsers cannot use this transport directly. See the [iroh guide](../../docs/IROH.en.md).
 
 ## 0.6.8 update
 
@@ -151,11 +157,24 @@ Set-Location apps/mobile/android
 
 The Debug APK is `app/build/outputs/apk/debug/app-debug.apk`. Official releases use the established signing key stored only in repository Secrets. A local unsigned Release build or a Debug install is not official-signer evidence.
 
+Every build ships the experimental iroh transport by default. It requires Rust 1.99.1 with the `aarch64-linux-android` and `x86_64-linux-android` targets plus an explicitly selected NDK:
+
+```powershell
+Set-Location apps/mobile/android
+./gradlew.bat :app:assembleDebug -PirohNdk=C:/Android/Sdk/ndk/25.2.9519653 -x :app:lintAnalyzeDebugUnitTest -x :app:lintAnalyzeDebugAndroidTest
+```
+
+Pass `-PirohNative=false` for a fast toolchain-free lane that builds the original HTTPS shell: the iroh pairing entry is absent and `IrohNative` reports itself unavailable. The transport libraries are generated under `app/build/generated/iroh/jniLibs/` and never committed. A native-enabled build does not change the package identity or the established signer; the independent alpha signer from the iroh experiment is not used here.
+
+Native builds also include the JVM TLS verifier matching `native/Cargo.lock`, from the revision-pinned official Maven archive. Preserve its JNI/Proguard rules: compiling and packaging the `.so` alone is insufficient. The APK verifier checks the retained JVM classes and native entry names in both Debug and minified Release builds.
+
 Current-source Debug builds use package `io.github.sayach.dshmobile.debug` with a `-debug` version suffix. They install beside the official App with separate storage and pairings. They do not upgrade or migrate an older unsuffixed Debug installation; preserve that app and its data rather than uninstalling or clearing it to switch packages. Release builds keep `io.github.sayach.dshmobile` and the established signer.
 
-The verified stable release is [Android 0.6.8](https://github.com/saya-ch/dsh-mobile/releases/tag/android-v0.6.8), build 84, SHA-256 `c3d1fe43c0a39619527949c37341baf3f0d54decb2ef27ee0f9b12ae022169e2`. The downloaded APK retains the established release signer and package `io.github.sayach.dshmobile`. Earlier release history belongs in [CHANGELOG](../../CHANGELOG.md).
+The verified stable release is [Android 0.7.0](https://github.com/saya-ch/dsh-mobile/releases/tag/android-v0.7.0), build 85. The compatibility and full APKs each have a matching `.sha256` asset. Both public downloads retain the established release signer and package `io.github.sayach.dshmobile`. Earlier release history belongs in [CHANGELOG](../../CHANGELOG.md).
 
 ## Acceptance and known limits
+
+- Both public App 0.7.0 APKs passed checksum, manifest, signer, notice and alignment checks. The full APK additionally passed ABI and retained JVM TLS/JNI entry checks; compatibility contains no native libraries. Earlier arm64 development evidence covers native iroh Gateway/custom-resource traffic without ADB forwarding. The final JVM TLS dependency correction has not had a new physical-device/public-relay run; a relay socket alone does not prove relayed payload traffic.
 
 - App 0.6.8's public APK passed identity, checksum and established-signer verification. A matching-signer Debug upgrade opened DSH and retained the saved device; controlled slow-link fault injection was interrupted before pairing and is not counted as passed.
 

@@ -517,8 +517,9 @@ class ThemePresenter {
 
 export const MOBILE_LAYOUT_STYLES = `
 html,body,#root{width:100%;height:100%;overflow:hidden}
-/* The definite root height bounds the transcript on engines without dvh. */
-.dshm-shell{position:relative;display:grid;grid-template-rows:minmax(0,1fr);width:100%;height:100%;height:100dvh;min-width:0;overflow:hidden;background:var(--dsw-alias-bg-base,#fff)}
+/* Definite height bounds the transcript on engines without dvh. Isolation keeps
+   shell descendants below positive-z-index portals attached to document.body. */
+.dshm-shell{position:relative;isolation:isolate;display:grid;grid-template-rows:minmax(0,1fr);width:100%;height:100%;height:100dvh;min-width:0;overflow:hidden;background:var(--dsw-alias-bg-base,#fff)}
 /* The mobile root owns its Grid geometry. Layered important rules keep broad
    unlayered skin rules from collapsing virtualized views to the header height. */
 @layer dsh-mobile-layout{
@@ -532,8 +533,13 @@ html,body,#root{width:100%;height:100%;overflow:hidden}
 /* Draw above the native absolute panel without consuming its width or
    intercepting controls; only docked mode needs this column separator. */
 .dshm-shell[data-rightbar-docked=true] .dshm-details::after{content:"";position:absolute;inset:0 auto 0 0;width:.5px;background:var(--dsw-alias-border-l4);z-index:11;pointer-events:none}
+/* The native panel paints itself at 100vw in fullscreen mode. Inside the
+   docked overlay (94vw/460px, overflow:hidden) that layout was clipped to the
+   right edge of the track, so the header slid out of view and the body showed
+   only clipped line tails. A fullscreen panel owns the whole viewport. */
+.dshm-shell[data-rightbar-fullscreen=true] .dshm-details{inset:0;width:100vw;max-width:100vw;box-shadow:none}
 .dshm-main>*,.dshm-main>*>*{min-width:0}
-.dshm-drawer{position:fixed;z-index:70;inset:0 auto 0 0;box-sizing:border-box;width:56px;max-width:100%;padding-top:env(safe-area-inset-top);overflow:hidden;background:var(--dsw-alias-bg-layer-1,#f8fafc);box-shadow:none;will-change:width;transition:width 240ms cubic-bezier(.22,1,.36,1),box-shadow 240ms ease}
+.dshm-drawer{position:fixed;z-index:70;inset:0 auto 0 0;box-sizing:border-box;width:56px;max-width:100%;padding-top:env(safe-area-inset-top);overflow:hidden;background-color:Canvas;background-image:linear-gradient(var(--dsw-alias-bg-layer-1,#f8fafc),var(--dsw-alias-bg-layer-1,#f8fafc));box-shadow:none;will-change:width;transition:width 240ms cubic-bezier(.22,1,.36,1),box-shadow 240ms ease}
 .dshm-drawer[data-open=true]{width:min(88vw,340px);box-shadow:18px 0 46px rgb(15 23 42 / 18%)}
 .dshm-drawer[data-open=false]{pointer-events:auto;visibility:visible}
 .dshm-drawer>*{width:100%!important;height:100%!important;transform:translateX(-6px);opacity:.94;transition:transform 220ms cubic-bezier(.22,1,.36,1),opacity 160ms ease-out}
@@ -541,7 +547,7 @@ html,body,#root{width:100%;height:100%;overflow:hidden}
 .dshm-drawer[data-open=false]>*{width:56px!important}
 /* display:none also suppresses fixed descendants installed by the phone adapter. */
 .dshm-drawer[data-right-modal=true]{display:none!important}
-.dshm-details{position:fixed;z-index:80;inset:0 0 0 auto;box-sizing:border-box;width:min(94vw,460px);max-width:100%;padding-top:env(safe-area-inset-top);overflow:hidden;background:var(--dsw-alias-bg-layer-1,#fff);box-shadow:-18px 0 46px rgb(15 23 42 / 18%);transform:translateX(104%);transition:transform 190ms cubic-bezier(.22,1,.36,1)}
+.dshm-details{position:fixed;z-index:80;inset:0 0 0 auto;box-sizing:border-box;width:min(94vw,460px);max-width:100%;padding-top:env(safe-area-inset-top);overflow:hidden;background-color:Canvas;background-image:linear-gradient(var(--dsw-alias-bg-layer-1,#fff),var(--dsw-alias-bg-layer-1,#fff));box-shadow:-18px 0 46px rgb(15 23 42 / 18%);transform:translateX(104%);transition:transform 190ms cubic-bezier(.22,1,.36,1)}
 .dshm-details[data-open=true]{transform:translateX(0)}
 .dshm-details[data-open=false]{pointer-events:none;visibility:hidden;transition:transform 190ms cubic-bezier(.22,1,.36,1),visibility 0s linear 190ms}
 @media(max-width:899px){.dshm-details{width:100%;max-width:100%;box-shadow:none}.dshm-details [data-sidebar-right-toggle],.dshm-details [data-sidebar-right-mode]{min-width:48px;min-height:48px}}
@@ -549,7 +555,7 @@ html,body,#root{width:100%;height:100%;overflow:hidden}
 .dshm-scrim[data-open=true]{opacity:1;pointer-events:auto}
 .dshm-overlay{position:fixed;z-index:90;inset:0;pointer-events:none}.dshm-overlay>*{pointer-events:auto}
 /* Reserve navigation space instead of covering a panel's own save controls. */
-.dshm-panelNav{display:flex;align-items:center;flex-shrink:0;min-height:56px;box-sizing:border-box;padding:max(4px,env(safe-area-inset-top)) max(12px,env(safe-area-inset-right)) 4px max(68px,env(safe-area-inset-left));border-bottom:.5px solid var(--dsw-alias-border-l4);background:var(--dsw-alias-bg-base,#fff)}
+.dshm-panelNav{display:flex;align-items:center;flex-shrink:0;min-height:56px;box-sizing:border-box;padding:max(4px,env(safe-area-inset-top)) max(12px,env(safe-area-inset-right)) 4px max(68px,env(safe-area-inset-left));border-bottom:.5px solid var(--dsw-alias-border-l4);background-color:Canvas;background-image:linear-gradient(var(--dsw-alias-bg-base,#fff),var(--dsw-alias-bg-base,#fff))}
 .dshm-panelBack{display:inline-flex;align-items:center;gap:8px;min-width:48px;min-height:48px;padding:8px 12px;border:0;border-radius:8px;background:transparent;color:var(--dsw-alias-label-primary,#171a21);font:inherit;font-size:14px;line-height:1.4;text-align:left;cursor:pointer}
 .dshm-panelBack:hover{background:var(--dsw-alias-interactive-bg-hover,#f1f3f6)}
 .dshm-panelBack:active{background:var(--dsw-alias-interactive-bg-active,#e9ecef)}
@@ -647,7 +653,14 @@ function MobileAppFrame(props: MobileRootProps & {
     state.rightbarFullscreen,
   )
   const rightbarDocked = state.detailsOpen && rightbar.docked
-  const rightbarFullWidth = state.detailsOpen && !rightbarDocked && !wideViewport
+  // DSH reports a fullscreen panel through the layout service; the overlay has
+  // to hand over the whole viewport instead of its docked track (see the
+  // `data-rightbar-fullscreen` rule). Phones derive fullscreen from their
+  // width, so the flag is already set there.
+  const rightbarFullscreen = state.detailsOpen && state.rightbarFullscreen
+  // The panel owns the viewport on phones (no column fits) and in fullscreen on
+  // a wider screen, so the conversation behind it is inert and needs no scrim.
+  const rightbarFullWidth = state.detailsOpen && !rightbarDocked && (!wideViewport || rightbarFullscreen)
   const [documentLanguage, setDocumentLanguage] = useState(document.documentElement.lang)
   const browserLanguages = navigator.languages.length > 0 ? navigator.languages : [navigator.language]
   const language = resolveMobileLayoutLanguage(documentLanguage, browserLanguages)
@@ -787,6 +800,7 @@ function MobileAppFrame(props: MobileRootProps & {
   return createElement('div', {
     className: 'dshm-shell', lang: language,
     'data-rightbar-docked': rightbarDocked,
+    'data-rightbar-fullscreen': rightbarFullscreen,
     style: { '--dshm-rightbar-width': `${rightbar.width}px` },
   },
     createElement('main', {

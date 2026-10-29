@@ -704,13 +704,24 @@ describe('dedicated mobile layout boot', () => {
     expect(MOBILE_LAYOUT_STYLES).toContain('.dshm-details [data-sidebar-right-toggle],.dshm-details [data-sidebar-right-mode]{min-width:48px;min-height:48px}')
     expect(MOBILE_LAYOUT_STYLES).toContain('.dshm-shell[data-rightbar-docked=true] .dshm-details{position:absolute;width:var(--dshm-rightbar-width)')
     const source = readFileSync(new URL('../src/mobile-layout.ts', import.meta.url), 'utf8')
-    expect(source).toContain('const rightbarFullWidth = state.detailsOpen && !rightbarDocked && !wideViewport')
     expect(source).toContain('const scrimOpen = !rightbarFullWidth && isMobileScrimOpen(')
     expect(source).toContain("rightbarFullWidth ? { inert: '', 'aria-hidden': true } : {}")
   })
 
   it('draws a theme-aware docked separator without changing geometry or hit targets', () => {
     expect(MOBILE_LAYOUT_STYLES).toContain('.dshm-shell[data-rightbar-docked=true] .dshm-details::after{content:"";position:absolute;inset:0 auto 0 0;width:.5px;background:var(--dsw-alias-border-l4);z-index:11;pointer-events:none}')
+  })
+
+  it('lets a fullscreen right panel own the whole viewport instead of the docked track', () => {
+    // The native panel paints itself at 100vw; clipped to the 94vw/460px
+    // overlay, a tablet only saw the right strip of its header and body.
+    expect(MOBILE_LAYOUT_STYLES).toContain('.dshm-shell[data-rightbar-fullscreen=true] .dshm-details{inset:0;width:100vw;max-width:100vw;box-shadow:none}')
+    const source = readFileSync(new URL('../src/mobile-layout.ts', import.meta.url), 'utf8')
+    expect(source).toContain('const rightbarFullscreen = state.detailsOpen && state.rightbarFullscreen')
+    expect(source).toContain("'data-rightbar-fullscreen': rightbarFullscreen")
+    // A fullscreen panel covers the conversation: it must not stay tabbable or
+    // need a scrim behind it, exactly like the phone overlay already behaves.
+    expect(source).toContain('const rightbarFullWidth = state.detailsOpen && !rightbarDocked && (!wideViewport || rightbarFullscreen)')
   })
 
   it('suppresses the fixed whale toggle only while the right modal is open', () => {
@@ -727,6 +738,24 @@ describe('dedicated mobile layout boot', () => {
     expect(MOBILE_LAYOUT_STYLES).toContain('.dshm-main{grid-area:1/2}')
     expect(MOBILE_LAYOUT_STYLES).toContain('.dshm-drawer{position:static')
     expect(MOBILE_LAYOUT_STYLES).toContain('.dshm-drawer[data-open=true]{width:340px')
+  })
+
+  it('keeps its own chrome opaque when a skin makes the theme layers translucent', () => {
+    // The drawer and the details panel sit above the conversation on a phone.
+    // A skin may set --dsw-alias-bg-layer-1 translucent, or leave it unresolved,
+    // which is invalid at computed-value time. Compositing the theme color over
+    // the CSS Canvas system color keeps conversation text from bleeding through.
+    for (const selector of ['.dshm-drawer{position:fixed', '.dshm-details{position:fixed']) {
+      const start = MOBILE_LAYOUT_STYLES.indexOf(selector)
+      expect(start).toBeGreaterThan(-1)
+      const rule = MOBILE_LAYOUT_STYLES.slice(start, MOBILE_LAYOUT_STYLES.indexOf('}', start))
+      expect(rule).toContain('background-color:Canvas')
+      expect(rule).toContain('background-image:linear-gradient(var(--dsw-alias-bg-layer-1')
+    }
+    const navStart = MOBILE_LAYOUT_STYLES.indexOf('.dshm-panelNav{display:flex')
+    const nav = MOBILE_LAYOUT_STYLES.slice(navStart, MOBILE_LAYOUT_STYLES.indexOf('}', navStart))
+    expect(nav).toContain('background-color:Canvas')
+    expect(nav).toContain('background-image:linear-gradient(var(--dsw-alias-bg-base')
   })
 
   it('sets a minimum editable font while preserving the content-font preference', () => {

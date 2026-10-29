@@ -53,6 +53,31 @@ Select **Save and start backend**. An active backend reloads its settings. The p
 
 For a separate proxy host, configure routing and a firewall rule limited to its actual private source yourself. This provider does not change the firewall.
 
+### When you already run cloudflared yourself
+
+If you already configured a named tunnel the official way (`cloudflared tunnel`, possibly as a systemd unit, a launchd job or a Windows service), **you do not need the plugin to install a second copy, and you do not need to store a tunnel Token in it**. Use the own-reverse-proxy provider above and point your existing tunnel at the plugin's HTTP backend:
+
+1. In **Mobile access → Remote → Self-hosted → Own reverse proxy**, fill in: the public HTTPS address as your tunnel's public hostname (for example `https://dsh.example.com`), the private listen IP as `127.0.0.1`, an unused backend port (default `3444`), and the allowed source as `127.0.0.0/8`.
+2. Select **Save and start backend** and copy the HTTP backend address the panel shows.
+3. For a locally managed tunnel, update the matching `ingress` entry's `service` while keeping your existing tunnel identity, credentials and other routes. This is an excerpt, not a replacement configuration:
+
+   ```yaml
+   tunnel: <your tunnel ID>
+   ingress:
+     - hostname: dsh.example.com
+       service: http://127.0.0.1:3444
+     - service: http_status:404
+   ```
+
+4. Apply the change using your existing deployment procedure, restarting the service if required. For a dashboard-managed tunnel, edit the public hostname's service in Cloudflare instead of creating a local configuration file. **The plugin never starts, stops, reloads or removes that service, and never reads its configuration or Token.**
+
+The split is deliberate: **you own the tunnel, DNS and public certificate; the plugin owns device pairing and DSH authentication.** The backend still enforces device pairing, exact Host/Origin checks and CSRF, so pointing a tunnel at it does not expose a bare DSH to the internet.
+
+Two things to watch:
+
+- **Avoid the port clash.** The plugin's own cloudflared component also defaults to `3444`. Only one remote provider should run at a time; stop the plugin-managed one before switching, or pick a different port here.
+- **Use the HTTP backend address shown by the panel.** The original DSH Web port (which may differ from `3080`) is not this protected backend. The LAN HTTPS entry (commonly `3443`) has separate trust and pairing and is not the HTTP backend for this mode; do not assume that the panel rejects every incorrect external tunnel target.
+
 ### Nginx and IPv6
 
 The phone's public IPv6 connection to Nginx and Nginx's HTTP connection to DSH Mobile are separate connections. **An IPv6 public entry does not require an IPv6 backend.** On the same computer, Nginx can accept public IPv6 and forward to `http://127.0.0.1:3444`; the source CIDR remains IPv4 loopback. For an explicit `::1` backend, use `http://[::1]:3444` and `::1/128` instead.

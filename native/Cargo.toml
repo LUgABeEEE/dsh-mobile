@@ -1,0 +1,5 @@
+# Shared Rust workspace for the vendored iroh transport crates.
+# Members build independently (`cargo build -p <name>`) but resolve one lockfile.
+[workspace]
+resolver = "2"
+members = ["iroh-host", "iroh-core", "iroh-android-transport"]

@@ -2,6 +2,8 @@
 
 [中文指南](CLOUDFLARE_TUNNEL.md)
 
+> Already running cloudflared or a system service? Use the [own-reverse-proxy mode](SELF_HOSTED_ORIGIN.en.md#when-you-already-run-cloudflared-yourself) and route that tunnel to the protected HTTP backend shown in the panel, without another component installation or a tunnel Token stored by the plugin. The instructions below describe the separate plugin-managed option.
+
 The built-in cloudflared provider runs in one of two modes, chosen in the panel under **Mobile access → Remote → cloudflared → Tunnel type**:
 
 | | Quick tunnel (default) | Named tunnel |

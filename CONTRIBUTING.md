@@ -30,6 +30,8 @@ Browser checks consume built client files. Run `npm run build` and `npx playwrig
 | Question cards | `npm run smoke:question-fixes` |
 | Layout, drawers and panels | `npm run smoke:native-layout` |
 | Mobile root geometry under broad skin rules | `npm run smoke:layout-ownership` |
+| Opaque drawer, details panel and return bar under translucent skin tokens | `npm run smoke:opaque-chrome` |
+| Fullscreen right panel owns the viewport instead of the docked track | `npm run smoke:rightbar-fullscreen` |
 | Conversation scrollport and older viewport units | `node scripts/smoke-conversation-scroll.mjs` |
 | History auto-load stability (Playwright Chromium required) | `npm run smoke:history-scroll` |
 | Composer focus and keyboard | `npm run smoke:composer-keyboard` |
@@ -52,6 +54,7 @@ Browser checks consume built client files. Run `npm run build` and `npx playwrig
 | Local extension Worker execution and explicit recovery | `npm run smoke:extension-workers` |
 | Real sidebar rows, short drawers and additive panel/footer/overlay slots | `npm run smoke:mobile-sidebar` |
 | Paired customization, stock ownership and retained-page failure recovery | `npm run smoke:custom-assets` |
+| Host restart, authentication renewal and visible customization failure | `npm run smoke:session-restart` |
 | Upstream picker composition and dedicated Mobile folder selection | `npm run smoke:directory-picker` |
 | Browse-capable host keeps DSH's own picker and its folder creation | `npm run smoke:directory-picker-browse` |
 | Same-origin/Blob media and external-source CSP rejection | `npm run smoke:blob-media` |
@@ -155,7 +158,7 @@ Release preparation is not publication. Keep the candidate marked unreleased and
 
 If npm already contains the tagged version after partial publication, the workflow compares its public `dist.integrity` with the candidate tarball before continuing GitHub publication. Matching bytes permit completion; a mismatch or registry error stops the workflow. Keep the already published package intact and reconcile the completed stages before retrying.
 
-For native changes, increase Android `versionName` and `versionCode`, document the App changes, complete Android validation and use an `android-v<app-version>` tag. [The Android workflow](.github/workflows/android-release.yml) builds and publishes the signed APK independently, without publishing npm or replacing GitHub's latest plugin release. The APK name remains `dsh-mobile-android-v<app-version>.apk`.
+For native changes, increase Android `versionName` and `versionCode`, document the App changes, complete Android validation and use an `android-v<app-version>` tag. [The Android workflow](.github/workflows/android-release.yml) builds and publishes two signed APKs independently, without publishing npm or replacing GitHub's latest plugin release. `dsh-mobile-android-v<app-version>.apk` is the compatibility build without JNI libraries and remains the legacy update target; `dsh-mobile-android-v<app-version>-iroh.apk` is the full arm64-v8a/x86_64 build. Both retain the application identity and established signer. Preserve the full APK before rebuilding compatibility, then verify both signatures, sizes and checksums and reject leftover native libraries in compatibility.
 
 After verifying the published APK's checksum, identity, versionCode and established signer, copy the generated `dsh-mobile-android-release.json` into `apps/mobile/release.json` in a reviewed commit and update the App manuals and root APK links. This descriptor names an already published APK; do not advance it for an unpublished candidate. Its legacy `v<app-version>` tags remain valid, so existing downloads do not move. The plugin checks the public descriptor and falls back to its bundled copy when that lookup is unavailable.
 

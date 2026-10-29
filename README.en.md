@@ -32,14 +32,14 @@
 
 > DSH Mobile is a DeepSeek Harness community plugin; the native app supports Android only.
 >
-> **Current stable release: 0.6.18**. Create folders from the remote directory picker, with compact navigation and controls that leave more room for folders. Recover from stale module choices that prevented the page from opening, and optionally administer a NAS from an authenticated, controlled network. Independently released App **0.6.8** fixes repeated first-load restarts; plugin features remain compatible with App 0.6.7. [Plugin release notes and downloads](https://github.com/saya-ch/dsh-mobile/releases/tag/v0.6.18) · [Full changelog](CHANGELOG.md).
+> **Current stable release: 0.7.0**. Add experimental iroh connections, improve sidebars under translucent skins, third-party menu layering and fullscreen-panel exit, and offer recovery feedback when mobile customization fails to load. Existing HTTPS channels and older Apps remain usable; iroh requires the full App with native transport. [Plugin release notes and downloads](https://github.com/saya-ch/dsh-mobile/releases/tag/v0.7.0) · [Full changelog](CHANGELOG.md).
 >
 > **Version policy**: since plugin **0.6.2**, the Android app and plugin use independent version numbers and releases. Their numbers do not need to match, and a plugin update does not imply an app update. [Compatibility notes](#compatibility).
 
 <p align="center">
-  <a href="https://github.com/saya-ch/dsh-mobile/releases/download/android-v0.6.8/dsh-mobile-android-v0.6.8.apk"><img src="https://raw.githubusercontent.com/saya-ch/dsh-mobile/main/assets/brand/app-icon-rounded.svg" alt="DSH Mobile Android app icon" width="72" height="72"></a><br>
-  <a href="https://github.com/saya-ch/dsh-mobile/releases/download/android-v0.6.8/dsh-mobile-android-v0.6.8.apk"><strong>Download Android app 0.6.8</strong></a><br>
-  <sub><a href="https://github.com/saya-ch/dsh-mobile/releases/tag/android-v0.6.8">Release notes and checksums</a></sub>
+  <a href="https://github.com/saya-ch/dsh-mobile/releases/download/android-v0.7.0/dsh-mobile-android-v0.7.0.apk"><img src="https://raw.githubusercontent.com/saya-ch/dsh-mobile/main/assets/brand/app-icon-rounded.svg" alt="DSH Mobile Android app icon" width="72" height="72"></a><br>
+  <a href="https://github.com/saya-ch/dsh-mobile/releases/download/android-v0.7.0/dsh-mobile-android-v0.7.0.apk"><strong>Download Android app 0.7.0 (compatibility)</strong></a><br>
+  <sub><a href="https://github.com/saya-ch/dsh-mobile/releases/download/android-v0.7.0/dsh-mobile-android-v0.7.0-iroh.apk">64-bit full APK (experimental iroh)</a> · <a href="https://github.com/saya-ch/dsh-mobile/releases/tag/android-v0.7.0">Release notes and checksums</a></sub>
 </p>
 
 DSH Mobile is a DeepSeek Harness plugin that lets a mobile browser or the Android app connect over a protected LAN or an optional Tailscale Funnel, cpolar, cloudflared, self-hosted FRP, or own reverse-proxy remote path. Both routes reach the same sessions, Workspaces, messages, and tools. The computer manages their switches and pairing authorizations separately; the Android app lists paired computers together. The plugin does not modify DeepSeek Harness source.
@@ -207,7 +207,7 @@ See [Compatibility](#compatibility) for the supported components and platforms. 
 
 ### Experimental iroh connection
 
-[dsh-mobile-iroh](https://github.com/saya-ch/dsh-mobile-iroh) is being developed independently to explore iroh connections while retaining DSH Mobile's pairing, device list and WebView experience. The local development candidate connects the Rust transport and Android app, with local QUIC/HTTPS/WSS checks and Android builds passing. It has not been integrated into this plugin or formally released; the desktop management UI, automatic certificate setup and physical cross-network acceptance remain unfinished. It is not yet a connection option in the current stable app.
+Plugin 0.7.0 integrates the experimental connection from [dsh-mobile-iroh](https://github.com/saya-ch/dsh-mobile-iroh): encrypted direct or relayed access without a public domain, port forwarding or a tunnel account. Select **Mobile access → Remote → iroh (Experimental)** on the computer, install and verify the official component, enable it, then scan its dedicated QR code with the full App. LAN and existing HTTPS channels remain available; mobile browsers cannot connect through iroh directly. See the [iroh guide](docs/IROH.en.md) for platforms, pairing and troubleshooting.
 
 ## Extend and customize
 
@@ -410,6 +410,7 @@ The plugin retains DSH host peer declarations without rejecting installation or 
 | Self-hosted FRP | Yes (on-demand) | Yes (on-demand) | Yes (on-demand) | Yes (on-demand) |
 | Own reverse proxy | Yes (config only) | Yes (config only) | Yes (config only) | Yes (config only) |
 | Managed Caddy | Yes (on-demand) | Yes (on-demand) | No | No |
+| iroh (Experimental) | Yes (on-demand) | Yes (on-demand) | No | No |
 
 On macOS, local network, cloudflared, self-hosted FRP and the own reverse proxy work; Funnel and cpolar have no managed macOS component yet. The diagnostics firewall check currently covers Windows only and reports “not applicable” elsewhere.
 
@@ -423,6 +424,7 @@ On macOS, local network, cloudflared, self-hosted FRP and the own reverse proxy 
 | `0.6.16` | `0.2.1-rc.2`: Gallery selection, plain-text draft transfer through public DSH input APIs, real mux recovery and cross-client pending questions; CI additionally covered `0.1.7-alpha.2`, `0.1.7-rc.1`, `0.1.7-rc.2`, `0.2.0-rc.1`, `0.2.0-rc.2`, `0.2.1-alpha.2` and `0.2.1-alpha.3` |
 | `0.6.17` | `0.2.0-rc.2` and `0.2.1-rc.2`: 15 real packed Chromium directory-picker checks, the old-WebView missing-API simulation and Workspace mux reads; the published package was then installed into official Desktop `0.2.1-rc.2` and its files matched byte for byte |
 | `0.6.18` | `0.2.1-rc.2`: 18 real packed Chromium directory-picker checks, including compact layout, folder creation and cancellation; the candidate was installed in local official Desktop `0.2.1-rc.3` with LAN and Cloudflare gateways running |
+| `0.7.0` | Packed-browser CI across eight DSH versions (`0.1.7-alpha.2`–`0.2.1-rc.2`), Windows/Linux Gateway and iroh Host checks, both Android ABIs and compatibility APK checks. See the [iroh guide](docs/IROH.en.md) for device and network limits |
 
 <details>
 <summary>Historical version checks</summary>

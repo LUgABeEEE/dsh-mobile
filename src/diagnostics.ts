@@ -15,7 +15,7 @@ export type DiagnosticReason =
   | 'lan-setup-required' | 'network-unavailable' | 'network-interface' | 'network-fixed'
   | 'lan-ready' | 'lan-off'
   | 'firewall-ready' | 'firewall-missing' | 'firewall-unknown'
-  | 'remote-off' | 'remote-ready' | 'remote-origin-ready' | 'remote-rate-limited' | 'remote-fake-ip' | 'remote-unreachable'
+  | 'remote-off' | 'remote-ready' | 'remote-origin-ready' | 'remote-iroh-ready' | 'remote-rate-limited' | 'remote-fake-ip' | 'remote-unreachable'
   | 'remote-needs-login' | 'remote-connecting' | 'remote-controller-error'
   | 'competing-remote-channel'
   | 'phone-network-unknown'
@@ -502,7 +502,7 @@ export async function collectConnectionDiagnostics(
   probes: DiagnosticProbes = {},
 ): Promise<ConnectionDiagnostics> {
   const checks: DiagnosticCheck[] = []
-  const remoteProbe = snapshot.remote.provider !== 'origin' && snapshot.remote.running && snapshot.remote.state === 'ready' && snapshot.remote.origin !== undefined
+  const remoteProbe = snapshot.remote.provider !== 'origin' && snapshot.remote.provider !== 'iroh' && snapshot.remote.running && snapshot.remote.state === 'ready' && snapshot.remote.origin !== undefined
     ? (probes.remote ?? defaultRemoteProbe)(snapshot.remote.origin)
     : Promise.resolve<RemoteObservation>({ state: 'not-applicable' })
   const [firewall, remoteObservation] = await Promise.all([
@@ -566,6 +566,11 @@ export async function collectConnectionDiagnostics(
       '私网 HTTP 后端已就绪；未检测公网 HTTPS、证书或 WebSocket 连通性。',
       '在手机上经反向代理验证连接；代理须保留原始 Host（含端口）并支持 WebSocket。',
       { provider: 'origin' }))
+  } else if (snapshot.remote.provider === 'iroh' && snapshot.remote.state === 'ready') {
+    checks.push(check('remote', 'info', 'remote-iroh-ready', '远程通道',
+      'iroh 通道已就绪；端点身份为回环 TLS，不从电脑端探测手机可达性。',
+      '在手机上用配对二维码验证连接；二维码过期或通道报错时重新生成并重连。',
+      { provider: 'iroh' }))
   } else if (snapshot.remote.state === 'ready' && snapshot.remote.origin !== undefined) {
     const endpointSuffix = remoteSuffix(snapshot.remote.origin)
     const facts = {

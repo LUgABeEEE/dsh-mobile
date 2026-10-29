@@ -202,7 +202,7 @@ describe.each(['cpolar', 'cloudflared', 'frp', 'funnel'])('%s durable remote swi
       close: async () => {},
     })
     const coordinator = new RemoteProviderCoordinator('tailscale', {
-      tailscale: controller, cpolar: inactive(), cloudflared: inactive(), frp: inactive(), origin: inactive(),
+      tailscale: controller, cpolar: inactive(), cloudflared: inactive(), frp: inactive(), origin: inactive(), iroh: inactive(),
     }, { save: async () => {} })
     await coordinator.select('cpolar')
     expect(coordinator.selected).toBe('cpolar')
