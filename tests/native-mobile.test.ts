@@ -47,6 +47,14 @@ describe('native mobile presentation', () => {
     expect(overlay).not.toContain('[data-shell-overlay] > * { pointer-events:auto')
   })
 
+  it('styles the injected attachment actions on every viewport, not only the narrow overlay', () => {
+    const shared = NATIVE_MOBILE_STYLES.slice(0, NATIVE_MOBILE_STYLES.indexOf('@media'))
+    expect(shared).toContain('.dsh-mobile-media-action { box-sizing:border-box; display:flex;')
+    expect(shared).toContain('.dsh-mobile-media-action:disabled { cursor:default; opacity:.38; }')
+    const [, overlay] = NATIVE_MOBILE_STYLES.split(`@media ${NATIVE_MOBILE_OVERLAY_QUERY}`)
+    expect(overlay).not.toContain('.dsh-mobile-media-action {')
+  })
+
   it('reserves the full settings close target inside its padded header', () => {
     const shared = NATIVE_MOBILE_STYLES.slice(0, NATIVE_MOBILE_STYLES.indexOf('@media'))
     expect(shared).toContain('html.dsh-native-mobile-active [data-dsh-mobile-settings-header] { box-sizing:border-box !important; height:56px !important; min-height:56px !important; padding:4px 12px !important; }')
