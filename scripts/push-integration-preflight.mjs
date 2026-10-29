@@ -28,12 +28,13 @@
  * by the guards (the tripwire throws instead of delegating, the helper answers synthetically).
  */
 import { writeFileSync } from 'node:fs'
+import { isAbsolute } from 'node:path'
 import dns from 'node:dns'
 import https from 'node:https'
 import { lookup as promiseLookupBinding } from 'node:dns/promises'
 
 const evidencePath = process.env.DSH_GUARD_BOOTSTRAP_EVIDENCE
-if (typeof evidencePath !== 'string' || !evidencePath.startsWith('/')) {
+if (typeof evidencePath !== 'string' || !isAbsolute(evidencePath)) {
   throw new Error('guard_bootstrap_not_configured')
 }
 const nonce = process.env.DSH_PUSH_TRANSPORT_NONCE

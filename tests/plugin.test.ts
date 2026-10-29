@@ -1059,6 +1059,7 @@ describe('stock DSH lifecycle', () => {
     const paired = await mobileGatewayRequest(port, origin, '/mobile-access/auth/pair', { method: 'POST', body: { token } })
     expect(paired.status).toBe(201)
     const cookie = paired.headers['set-cookie']?.map(value => value.split(';', 1)[0] ?? '').join('; ')
+    if (cookie === undefined) throw new Error('Owned logout fixture did not receive pairing cookies')
     const csrf = responseString(paired.body, 'csrfToken')
     const keys = createVapidKeys()
     const fingerprint = vapidFingerprint(keys)

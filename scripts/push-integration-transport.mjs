@@ -5,6 +5,7 @@
  * Node DNS/HTTPS traffic through unchanged. Never load this in the main test process.
  */
 import { writeFileSync } from 'node:fs'
+import { isAbsolute } from 'node:path'
 import dns from 'node:dns'
 import https from 'node:https'
 import { syncBuiltinESMExports } from 'node:module'
@@ -15,7 +16,7 @@ import { createHash } from 'node:crypto'
 const nonce = process.env.DSH_PUSH_TRANSPORT_NONCE
 const evidencePath = process.env.DSH_PUSH_TRANSPORT_EVIDENCE
 if (typeof nonce !== 'string' || !/^[a-f0-9]{48}$/u.test(nonce)
-  || typeof evidencePath !== 'string' || !evidencePath.startsWith('/')) {
+  || typeof evidencePath !== 'string' || !isAbsolute(evidencePath)) {
   throw new Error('push_transport_fixture_not_configured')
 }
 

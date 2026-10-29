@@ -30,6 +30,7 @@
  * native/kernel sandbox.
  */
 import { writeFileSync } from 'node:fs'
+import { isAbsolute } from 'node:path'
 import dns from 'node:dns'
 import net from 'node:net'
 import tls from 'node:tls'
@@ -43,7 +44,7 @@ import { lookup as promiseLookupFacadeProbe } from 'node:dns/promises'
 import { request as httpsRequestFacadeProbe } from 'node:https'
 
 const evidencePath = process.env.DSH_GUARD_TRIPWIRE_EVIDENCE
-if (typeof evidencePath !== 'string' || !evidencePath.startsWith('/')) {
+if (typeof evidencePath !== 'string' || !isAbsolute(evidencePath)) {
   throw new Error('guard_tripwire_not_configured')
 }
 

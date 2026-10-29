@@ -4,6 +4,7 @@ import { createECDH, randomBytes, randomUUID, createHash, X509Certificate } from
 import { spawn } from 'node:child_process'
 import { createServer } from 'node:http'
 import { connect } from 'node:net'
+import { createSecureContext } from 'node:tls'
 import { createRequire } from 'node:module'
 import { copyFile, lstat, mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, unlink, writeFile } from 'node:fs/promises'
 import { closeSync, openSync, writeSync } from 'node:fs'
@@ -327,17 +328,17 @@ async function configureOwnedHttps(root, home, listenPort) {
   assert(Number.isInteger(listenPort) && listenPort > 0 && listenPort <= 65_535)
   const selfsigned = createRequire(join(repository, 'package.json'))('selfsigned')
   const ca = await selfsigned.generate([{ name: 'commonName', value: 'Task8 owned loopback fixture CA' }], {
-    keyType: 'ec', curve: 'P-256', days: 1,
+    algorithm: 'sha256', keyType: 'ec', curve: 'P-256', days: 1,
     extensions: [{ name: 'basicConstraints', cA: true }, { name: 'keyUsage', keyCertSign: true, cRLSign: true }],
   })
   const intermediate = await selfsigned.generate([{ name: 'commonName', value: 'Task8 owned loopback fixture intermediate' }], {
-    keyType: 'ec', curve: 'P-256', days: 1, ca: { key: ca.private, cert: ca.cert },
+    algorithm: 'sha256', keyType: 'ec', curve: 'P-256', days: 1, ca: { key: ca.private, cert: ca.cert },
     extensions: [{ name: 'basicConstraints', cA: true, pathLenConstraint: 0 },
       { name: 'keyUsage', keyCertSign: true, cRLSign: true }],
   })
   // The public authority is an owned reserved-.test name; the listener itself stays bound to explicit loopback.
   const leaf = await selfsigned.generate([{ name: 'commonName', value: FIXTURE_AUTHORITY_HOST }], {
-    keyType: 'ec', curve: 'P-256', days: 1, ca: { key: intermediate.private, cert: intermediate.cert },
+    algorithm: 'sha256', keyType: 'ec', curve: 'P-256', days: 1, ca: { key: intermediate.private, cert: intermediate.cert },
     extensions: [{ name: 'basicConstraints', cA: false },
       { name: 'subjectAltName', altNames: [{ type: 2, value: FIXTURE_AUTHORITY_HOST }, { type: 2, value: 'localhost' }, { type: 7, ip: '127.0.0.1' }] },
       { name: 'keyUsage', digitalSignature: true, keyEncipherment: true }, { name: 'extKeyUsage', serverAuth: true }],
@@ -351,6 +352,7 @@ async function configureOwnedHttps(root, home, listenPort) {
   assert.equal(leafCertificate.checkHost(FIXTURE_AUTHORITY_HOST), FIXTURE_AUTHORITY_HOST)
   assert.equal(leafCertificate.checkIP('127.0.0.1'), '127.0.0.1')
   assert(leafCertificate.checkIssued(intermediateCertificate) && leafCertificate.verify(intermediateCertificate.publicKey))
+  createSecureContext({ cert: leaf.cert, key: leaf.private, ca: intermediate.cert })
   const tlsRoot = join(root, 'owned-loopback-tls')
   await mkdir(tlsRoot, { recursive: true })
   const certFile = join(tlsRoot, 'loopback-leaf.pem'), keyFile = join(tlsRoot, 'loopback-leaf-key.pem')
@@ -1099,7 +1101,7 @@ async function runFullSmoke({ negativeControl = false, pairDiagnostic = false } 
   catch (error) { await failClosedSetup(`diagnostics-dir-create:${error?.code ?? error?.name ?? 'Error'}`) }
   try {
     identity = { runId: pairDiagnosticRunId, at: new Date().toISOString(), mode: pairDiagnostic ? 'pair-diagnostic' : negativeControl ? 'negative-control-owner' : 'positive',
-      smokeSha256: await fileSha256(new URL(import.meta.url).pathname), tarballSha256,
+      smokeSha256: await fileSha256(fileURLToPath(import.meta.url)), tarballSha256,
       dshVersion, runtimeCli: binary, transportHelperSha256: await fileSha256(transportPath),
       networkGuardSha256: await fileSha256(networkGuardPath), preflightSha256: await fileSha256(preflightPath) }
   } catch (error) { await failClosedSetup(`run-identity:${error?.code ?? error?.name ?? 'Error'}`) }

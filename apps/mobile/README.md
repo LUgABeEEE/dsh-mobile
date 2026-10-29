@@ -148,7 +148,7 @@ Computer-side `host.mjs` extensions are trusted Node.js code, separate from this
 
 ## Build
 
-Use Android Studio or Android SDK 36 and JDK 17. The repository includes the Gradle 9.7.1 Wrapper.
+Use Android Studio or Android SDK 36 and JDK 17. The repository includes the Gradle 9.8.2 Wrapper.
 
 ```powershell
 Set-Location apps/mobile/android
