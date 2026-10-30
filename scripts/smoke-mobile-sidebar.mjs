@@ -180,7 +180,7 @@ async function sidebarRetentionDiagnostics(frontend, id) {
 }
 
 async function checkSidebarScrollMemory(frontend, sessions) {
-  // Sessions are newest-first; use older rows in a short, supported viewport.
+  // Workspace displays sessions newest-first; use lower visible rows in a short viewport.
   await phone.setViewportSize({ width: 659, height: 393 })
   // Both layouts can keep older rows behind More. Exercise the lower part of
   // the default five rows; preserving or forcing group expansion is not part
