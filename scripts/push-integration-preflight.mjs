@@ -1,10 +1,6 @@
 /**
  * Owned-child PRE-MAIN hard attestation preflight for the packed push smoke (test fixture; not a product file).
  *
- * Promoted without behavioral change from the independently audited resume-guard bootstrap-assert
- * (sha256 6e2fa051bd2c9a5bdc76addbf3ba7c68dc6945360198e4cc022d5c5ff99c3795d): checks, markers,
- * error strings and evidence shape are identical; only the artifact name and this header differ.
- *
  * Loaded LAST in the preload chain — `--import=network-guard --import=transport --import=preflight`
  * — so it runs after both guards are installed and, because `--import` modules are awaited before
  * the main entry, it aborts the child BEFORE any DSH/plugin module is imported or executed if the

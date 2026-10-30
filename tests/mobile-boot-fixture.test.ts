@@ -81,7 +81,7 @@ function onboardingPhone(dialogs: readonly OnboardingDialog[], { hiddenModalsBef
   return { phone, clicked, waited }
 }
 
-function settingsPhone(generation: 'direct' | 'account' | 'unknown', hasSettings = true) {
+function settingsPhone(generation: 'direct' | 'account' | 'unknown', hasSettings = true, alreadyOpen = false) {
   const clicked: string[] = []
   const item = { count: async () => hasSettings ? 1 : 0, click: async () => { clicked.push('settings menu item') } }
   const menu = { waitFor: async () => {}, getByRole: () => ({ filter: () => item }) }
@@ -102,7 +102,8 @@ function settingsPhone(generation: 'direct' | 'account' | 'unknown', hasSettings
     getByRole: () => account,
   }
   const phone = {
-    locator: () => drawer,
+    locator: (selector: string) => selector === '.dsh-mobile-settings_row'
+      ? { first: () => ({ isVisible: async () => alreadyOpen }) } : drawer,
     waitForFunction: async () => {},
     getByRole: () => menu,
     getByText: () => ({}),
@@ -111,6 +112,12 @@ function settingsPhone(generation: 'direct' | 'account' | 'unknown', hasSettings
 }
 
 describe('owned Mobile development fixture', () => {
+  it('keeps restored General settings open without clicking a covered launcher', async () => {
+    const state = settingsPhone('account', true, true)
+    await fixture.openMobileSettings(state.phone)
+    expect(state.clicked).toEqual([])
+  })
+
   it('opens the earlier direct Settings trigger without using an account action', async () => {
     const state = settingsPhone('direct')
     await fixture.openMobileSettings(state.phone)
@@ -125,7 +132,10 @@ describe('owned Mobile development fixture', () => {
 
   it('uses the supplied stock sidebar without locating a dedicated drawer', async () => {
     const state = settingsPhone('account')
-    const phone = { ...state.phone, locator: () => { throw new Error('Dedicated drawer is not mounted') } }
+    const phone = { ...state.phone, locator: (selector: string) => {
+      if (selector !== '.dsh-mobile-settings_row') throw new Error('Dedicated drawer is not mounted')
+      return state.phone.locator(selector)
+    } }
     await fixture.openMobileSettings(phone, { sidebar: state.sidebar })
     expect(state.clicked).toEqual(['account menu', 'settings menu item'])
   })

@@ -1,10 +1,9 @@
 /**
  * Owned-child OUTER fail-fast network tripwire for the packed push smoke (test fixture; not a product file).
  *
- * Promoted without behavioral change from the independently audited resume-guard tripwire v3
- * (sha256 66c195143d87b25ff7cd9998df6681fa1b7a5fc4954cdf315f0a8cf9c933b4aa): classification,
- * markers, error strings, counters and evidence shape are identical; only the artifact name and
- * this header differ.
+ * Hostname lookups and non-loopback TCP/TLS requests are rejected. Literal-IP lookup is local
+ * address parsing, so it remains available for UDP wildcard/broadcast binding; it does not
+ * authorize a connection to that address. Evidence paths must be absolute on the current OS.
  *
  * Loaded through NODE_OPTIONS --import BEFORE the Task8 transport helper, so the helper's
  * "original" references point at this tripwire. Any DNS or connect attempt that the helper does not
