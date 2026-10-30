@@ -612,6 +612,19 @@ body:has(.dshm-shell) :is(input,textarea,[contenteditable=true],[contenteditable
 .dshm-main{grid-area:1/2;z-index:1}
 }
 @media(prefers-reduced-motion:reduce){.dshm-drawer,.dshm-details,.dshm-scrim,.dshm-drawer>*,.dshm-main{transition:none!important}}
+/* Plugin panels keep their own layout, but a control too small to hit is a host problem on
+   a touch screen. When a main-slot panel is open, give its controls a 44px hit area (a
+   minimum height, never a visual size), cap a 100vw/fixed-width panel root, and let the
+   pane scroll instead of chaining the gesture. A panel that deliberately ships its own
+   touch geometry opts out with data-dsh-adapt="off" on its root. */
+.dshm-main[data-dsh-panel="1"]{overflow-y:auto;overscroll-behavior:contain}
+.dshm-main[data-dsh-panel="1"] .dshm-mainContent{overflow-y:auto;overscroll-behavior:contain}
+.dshm-main[data-dsh-panel="1"] .dshm-mainContent>[data-slot="main"]>*{max-width:100%;box-sizing:border-box}
+@media(pointer:coarse){
+.dshm-main[data-dsh-panel="1"] [data-slot="main"]>*:not([data-dsh-adapt="off"]) :is(button,[role="button"],select){min-height:44px!important}
+.dshm-main[data-dsh-panel="1"] [data-slot="main"]>*:not([data-dsh-adapt="off"]) :is(input:not([type=checkbox]):not([type=radio]),textarea){min-height:44px!important}
+.dshm-main[data-dsh-panel="1"] [data-slot="main"]>*:not([data-dsh-adapt="off"]) :is(button,[role="button"],a){touch-action:manipulation}
+}
 `
 
 function MobileAppFrame(props: MobileRootProps & {
@@ -823,6 +836,9 @@ function MobileAppFrame(props: MobileRootProps & {
       // Legacy dsh-web community plugins use semantic pane attributes as their
       // compatibility path when the stock CSS-module column names are absent.
       'data-pane': 'conversation',
+      // A third-party panel is open: the host owes its controls a touch-sized hit area
+      // (see the plugin-panel block in MOBILE_LAYOUT_STYLES).
+      'data-dsh-panel': state.panelInfo.activePanelId === null ? '0' : '1',
     },
       state.panelInfo.activePanelId !== null && !wideViewport ? createElement('div', {
         className: 'dshm-panelNav',

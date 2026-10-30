@@ -124,6 +124,22 @@ This is not a guarantee that every body child outranks every dialog. Negative va
 
 Verify actual visibility, focus and `document.elementFromPoint()` while the drawer, detail panel and settings are open, in narrow and wide layouts. The owned `smoke:plugin-portal-layers` fixture checks positive-z-index body menus and a top-layer dialog; it is not acceptance of every community plugin.
 
+## Host-provided touch floor
+
+When a third-party panel is open in the main slot, the mobile layer provides three safety measures:
+
+- on a coarse pointer, `button`, `[role="button"]`, `select` and single-line `input` / `textarea` inside the panel get a **44px minimum hit area** (height only, never a visual size);
+- a panel root that is `width:100vw` or a fixed pixel width is capped to the available width instead of overflowing;
+- the pane scrolls and contains the gesture; the plugin's own scroll container still wins.
+
+This is a **floor, not a substitute for adapting the plugin**. A panel that ships its own touch geometry opts out on its root:
+
+```html
+<main data-dsh-adapt="off">…</main>
+```
+
+The rules only apply to coarse pointers; a mouse is unaffected. To go further, follow the checklist above for L1 / L2.
+
 ## Verification: what code checks, browsers and devices establish
 
 ### Structural checks
