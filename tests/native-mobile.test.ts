@@ -350,6 +350,25 @@ describe('native mobile presentation', () => {
     expect(options.getAttribute('data-dsh-mobile-settings-options')).toBe('true')
   })
 
+  it('keeps the four-seat upstream settings grid while marking its close header', () => {
+    const title = fakeElement(['SettingsRoot_a1_navTitle'])
+    const nav = fakeElement(['SettingsRoot_a1_nav'])
+    const header = fakeElement(['SettingsRoot_a1_header'])
+    const options = fakeElement(['SettingsRoot_a1_options'])
+    const settings = fakeElement(['SettingsRoot_a1_panel'], { children: [title, nav, header, options] })
+    settings.setAttribute('data-shortcut-modal', 'settings')
+    const unrelated = fakeElement(['OtherPanel_b2_panel'], { children: ['_navTitle', '_nav', '_header', '_options']
+      .map(suffix => fakeElement([`OtherPanel_b2${suffix}`])) })
+
+    expect(markNativeMobileSettings(fakeRoot([], [unrelated, settings]))).toBe(1)
+    expect(settings.dataset.dshMobileSettings).toBe('grid')
+    expect(unrelated.dataset.dshMobileSettings).toBeUndefined()
+    expect(header.getAttribute('data-dsh-mobile-settings-header')).toBe('true')
+    expect(nav.dataset.dshMobileSettingsNav).toBeUndefined()
+    expect(options.getAttribute('data-dsh-mobile-settings-options')).toBeNull()
+    expect(NATIVE_MOBILE_STYLES).toContain('[data-dsh-mobile-settings="true"] { flex-direction:column')
+  })
+
   it('uses the DSH semantic text token for the compact log action in both themes', () => {
     expect(NATIVE_MOBILE_STYLES).toContain('[class*="_sessionLogButton"]::after { color:var(--dsw-alias-label-primary, #171a21)')
     expect(NATIVE_MOBILE_STYLES).not.toContain('color:var(--dsw-text, #171a21)')
