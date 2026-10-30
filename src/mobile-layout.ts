@@ -519,7 +519,7 @@ export const MOBILE_LAYOUT_STYLES = `
 html,body,#root{width:100%;height:100%;overflow:hidden}
 /* Definite height bounds the transcript on engines without dvh. Isolation keeps
    shell descendants below positive-z-index portals attached to document.body. */
-.dshm-shell{position:relative;isolation:isolate;display:grid;grid-template-rows:minmax(0,1fr);width:100%;height:100%;height:100dvh;min-width:0;overflow:hidden;background:var(--dsw-alias-bg-base,#fff)}
+.dshm-shell{-webkit-text-size-adjust:100%;text-size-adjust:100%;position:relative;isolation:isolate;display:grid;grid-template-rows:minmax(0,1fr);width:100%;height:100%;height:100dvh;min-width:0;overflow:hidden;background:var(--dsw-alias-bg-base,#fff)}
 /* The mobile root owns its Grid geometry. Layered important rules keep broad
    unlayered skin rules from collapsing virtualized views to the header height. */
 @layer dsh-mobile-layout{
