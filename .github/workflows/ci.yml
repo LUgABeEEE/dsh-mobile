@@ -51,6 +51,21 @@ jobs:
           echo "DSH_BOOT_SMOKE_BIN=$RUNNER_TEMP/dsh-runtime/node_modules/@deepseek-ai/dsh/lib/bin.js" >> "$GITHUB_ENV"
           echo "DSH_BOOT_SMOKE_MOBILE_TARBALL=$RUNNER_TEMP/plugin-package/dsh-mobile-$mobile_version.tgz" >> "$GITHUB_ENV"
       - run: npx playwright install --with-deps chromium --only-shell
+      - name: Verify passive public Web Push lifecycle contracts
+        if: matrix.dsh == '0.2.1-rc.2'
+        run: npm run smoke:push-contract
+      - name: Verify packed Declarative Web Push UI and authenticated navigation
+        if: matrix.dsh == '0.2.1-rc.2'
+        run: npm run smoke:web-push
+      - name: Reject a tap reference owned by another paired device
+        if: matrix.dsh == '0.2.1-rc.2'
+        shell: bash
+        run: |
+          if npm run smoke:web-push -- --negative-control-owner > "$RUNNER_TEMP/web-push-ownership-negative.log" 2>&1; then
+            cat "$RUNNER_TEMP/web-push-ownership-negative.log"
+            exit 1
+          fi
+          node scripts/negative-control.mjs "$RUNNER_TEMP/web-push-ownership-negative.log" "Push ownership negative control detected"
       - name: Verify same-origin Blob media without widening external CSP sources
         if: matrix.dsh == '0.2.1-rc.3'
         run: npm run smoke:blob-media
@@ -229,6 +244,74 @@ jobs:
           name: module-settings-diagnostics-${{ matrix.dsh }}
           path: local/client-module-settings-smoke/
           if-no-files-found: ignore
+
+  push-packed-rc3:
+    name: Packed push lanes (DSH 0.2.1-rc.3)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.x
+          cache: npm
+      - name: Install pnpm for the live DSH plugin manager
+        run: npm install --global pnpm@10.10.0
+      - run: npm ci
+      - run: npm run build
+      - name: Install DSH 0.2.1-rc.3 and pack the Mobile bundle
+        run: |
+          mkdir -p "$RUNNER_TEMP/plugin-package"
+          npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP/plugin-package"
+          mobile_version=$(node -p "require('./package.json').version")
+          npm install --prefix "$RUNNER_TEMP/dsh-runtime" --no-save --package-lock=false "@deepseek-ai/dsh@0.2.1-rc.3"
+          echo "DSH_BOOT_SMOKE_BIN=$RUNNER_TEMP/dsh-runtime/node_modules/@deepseek-ai/dsh/lib/bin.js" >> "$GITHUB_ENV"
+          echo "DSH_BOOT_SMOKE_MOBILE_TARBALL=$RUNNER_TEMP/plugin-package/dsh-mobile-$mobile_version.tgz" >> "$GITHUB_ENV"
+      - run: npx playwright install --with-deps chromium --only-shell
+      - name: Verify passive public Web Push lifecycle contracts
+        run: npm run smoke:push-contract
+      - name: Verify packed Declarative Web Push UI and authenticated navigation
+        run: npm run smoke:web-push
+      - name: Reject a tap reference owned by another paired device
+        shell: bash
+        run: |
+          if npm run smoke:web-push -- --negative-control-owner > "$RUNNER_TEMP/web-push-ownership-negative-rc3.log" 2>&1; then
+            cat "$RUNNER_TEMP/web-push-ownership-negative-rc3.log"
+            exit 1
+          fi
+          node scripts/negative-control.mjs "$RUNNER_TEMP/web-push-ownership-negative-rc3.log" "Push ownership negative control detected"
+
+  push-contract-platforms:
+    name: Push contract (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.x
+          cache: npm
+      - name: Install pnpm for the live DSH plugin manager
+        run: npm install --global pnpm@10.10.0
+      - run: npm ci
+      - run: npm run build
+      - name: Install DSH 0.2.1-rc.2 and pack the Mobile bundle
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/plugin-package"
+          npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP/plugin-package"
+          mobile_version=$(node -p "require('./package.json').version")
+          npm install --prefix "$RUNNER_TEMP/dsh-runtime" --no-save --package-lock=false "@deepseek-ai/dsh@0.2.1-rc.2"
+          echo "DSH_BOOT_SMOKE_BIN=$RUNNER_TEMP/dsh-runtime/node_modules/@deepseek-ai/dsh/lib/bin.js" >> "$GITHUB_ENV"
+          echo "DSH_BOOT_SMOKE_MOBILE_TARBALL=$RUNNER_TEMP/plugin-package/dsh-mobile-$mobile_version.tgz" >> "$GITHUB_ENV"
+      - name: Verify passive public Web Push lifecycle contracts
+        run: npm run smoke:push-contract
+      - name: Install browser for guarded push fixture self-tests
+        run: npx playwright install chromium --only-shell
+      - name: Verify cross-platform guarded push transport fixtures
+        run: node scripts/smoke-mobile-push.mjs --transport-self-test
 
   gateway:
     name: Gateway (${{ matrix.os }}, Node ${{ matrix.node }})

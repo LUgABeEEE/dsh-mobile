@@ -6,7 +6,7 @@ DeepSeek Harness 是这个社区维护的 Android WebView App 的显示名称。
 
 当前正式 App 为 **0.7.0**；构建号为 85。npm 插件与 Android App 独立编号、独立更新；插件升级不代表需要重新安装 APK。此次改进见 [0.7.0 更新](#070-更新)。
 
-支持 Android 10 及以上系统。iOS 本地实验不属于已发布或受支持的客户端。
+此 APK 支持 Android 10 及以上系统。iPhone 和 iPad 使用 [Safari 主屏幕 Web App 与可选网页推送](../../docs/WEB_PUSH.md)，不安装 Android 包；本项目不分发原生 iOS App。
 
 ## 安装与配对
 
@@ -148,7 +148,7 @@ Bridge 文件／相机操作串行执行，最长等待五分钟。取消、文�
 
 ## 构建
 
-使用 Android Studio 或 Android SDK 36 与 JDK 17；仓库包含 Gradle 9.7.1 Wrapper。
+使用 Android Studio 或 Android SDK 36 与 JDK 17；仓库包含 Gradle 9.8.2 Wrapper。
 
 ```powershell
 Set-Location apps/mobile/android

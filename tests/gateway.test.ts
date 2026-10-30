@@ -253,6 +253,7 @@ async function upstream(
   extraBatchedEntries = 0,
   secondApplicationBatchEntries = 0,
   bundleUrlOverride?: (id: string, url: string) => string,
+  extraHeadLinks = '',
 ): Promise<{
   port: number
   observations: UpstreamObservation[]
@@ -401,7 +402,7 @@ async function upstream(
         : { rev: 'stock', entries, batches: applicationBatches }
       const preload = boot === 'legacy' ? '' : applicationBatches
         .map(batch => `<link rel="preload" as="script" href="${batch.url.replaceAll('&', '&amp;')}">`).join('')
-      const body = `<!doctype html><html><head>${preload}<script>globalThis["__DSH_BOOT__"] = ${JSON.stringify(graph)};</script></head><body></body></html>`
+      const body = `<!doctype html><html><head>${extraHeadLinks}${preload}<script>globalThis["__DSH_BOOT__"] = ${JSON.stringify(graph)};</script></head><body></body></html>`
       response.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'content-length': Buffer.byteLength(body) })
       response.end(body)
       return
@@ -832,6 +833,284 @@ describe('HTTP gateway', () => {
     expect(revoked.status).toBe(401)
   })
 
+  it('gzips owned assets for clients that accept it, with a representation-specific validator', async () => {
+    const inner = await upstream()
+    const directory = await mkdtemp(join(tmpdir(), 'dsh-mobile-owned-gzip-'))
+    cleanups.push(() => rm(directory, { recursive: true, force: true }))
+    const mobileCompatibilityFile = join(directory, 'mobile-compat.js')
+    const customCssFile = join(directory, 'mobile.css')
+    const repeated = 'globalThis.__compatibilityProbe = true;\n'.repeat(64)
+    await writeFile(mobileCompatibilityFile, repeated, 'utf8')
+    await writeFile(customCssFile, ':root { --preview: tiny; }\n', 'utf8')
+    const instance = await gateway(inner.port, { mobileCompatibilityFile, customCssFile })
+    const paired = await pair(instance)
+    const headers = { ...browserHeaders(instance), cookie: `${SESSION_COOKIE}=${paired.session}` }
+
+    const identity = await request(instance.address().port, '/mobile-access/compat.js', { headers })
+    expect(identity.status).toBe(200)
+    expect(identity.headers['content-encoding']).toBeUndefined()
+    expect(identity.headers.vary).toBe('Accept-Encoding')
+    expect(identity.body).toBe(repeated)
+
+    const compressed = await request(instance.address().port, '/mobile-access/compat.js', {
+      headers: { ...headers, 'accept-encoding': 'gzip' },
+    })
+    expect(compressed.status).toBe(200)
+    expect(compressed.headers['content-encoding']).toBe('gzip')
+    expect(compressed.headers.vary).toBe('Accept-Encoding')
+    expect(compressed.headers['cache-control']).toBe('private, no-cache')
+    expect(compressed.headers['content-length']).toBe(String(compressed.rawBody.byteLength))
+    expect(compressed.rawBody.byteLength).toBeLessThan(identity.rawBody.byteLength)
+    expect(gunzipSync(compressed.rawBody).toString('utf8')).toBe(repeated)
+    // A representation gets its own validator, so the two encodings cannot collide.
+    expect(compressed.headers.etag).toBe(`"${String(identity.headers.etag).slice(1, -1)}-gzip"`)
+
+    const head = await request(instance.address().port, '/mobile-access/compat.js', {
+      method: 'HEAD',
+      headers: { ...headers, 'accept-encoding': 'gzip' },
+    })
+    expect(head.status).toBe(200)
+    expect(head.body).toBe('')
+    expect(head.headers.etag).toBe(compressed.headers.etag)
+    expect(head.headers['content-length']).toBe(compressed.headers['content-length'])
+
+    const revalidated = await request(instance.address().port, '/mobile-access/compat.js', {
+      headers: { ...headers, 'accept-encoding': 'gzip', 'if-none-match': String(compressed.headers.etag) },
+    })
+    expect(revalidated.status).toBe(304)
+    expect(revalidated.body).toBe('')
+    // The identity validator must not match the gzip representation.
+    const crossRepresentation = await request(instance.address().port, '/mobile-access/compat.js', {
+      headers: { ...headers, 'accept-encoding': 'gzip', 'if-none-match': String(identity.headers.etag) },
+    })
+    expect(crossRepresentation.status).toBe(200)
+    expect(crossRepresentation.headers['content-encoding']).toBe('gzip')
+
+    const refused = await request(instance.address().port, '/mobile-access/compat.js', {
+      headers: { ...headers, 'accept-encoding': 'gzip;q=0, identity' },
+    })
+    expect(refused.status).toBe(200)
+    expect(refused.headers['content-encoding']).toBeUndefined()
+    expect(refused.headers.etag).toBe(identity.headers.etag)
+
+    // Below the compression floor the asset stays identity and is not varied.
+    const small = await request(instance.address().port, '/mobile-access/custom.css', {
+      headers: { ...headers, 'accept-encoding': 'gzip' },
+    })
+    expect(small.status).toBe(200)
+    expect(small.headers['content-encoding']).toBeUndefined()
+    expect(small.headers.vary).toBeUndefined()
+    expect(small.headers['content-length']).toBe(String(small.rawBody.byteLength))
+  })
+
+  it('keeps a 304 to validators and Vary, and does not compress a body it discards', async () => {
+    const inner = await upstream()
+    const directory = await mkdtemp(join(tmpdir(), 'dsh-mobile-owned-gzip-304-'))
+    cleanups.push(() => rm(directory, { recursive: true, force: true }))
+    const mobileCompatibilityFile = join(directory, 'mobile-compat.js')
+    const repeated = 'globalThis.__compatibilityProbe = true;\n'.repeat(64)
+    await writeFile(mobileCompatibilityFile, repeated, 'utf8')
+    const instance = await gateway(inner.port, { mobileCompatibilityFile })
+    const paired = await pair(instance)
+    const headers = { ...browserHeaders(instance), cookie: `${SESSION_COOKIE}=${paired.session}` }
+
+    const compressed = await request(instance.address().port, '/mobile-access/compat.js', {
+      headers: { ...headers, 'accept-encoding': 'gzip' },
+    })
+    expect(compressed.status).toBe(200)
+    expect(compressed.headers['content-encoding']).toBe('gzip')
+
+    const revalidated = await request(instance.address().port, '/mobile-access/compat.js', {
+      headers: { ...headers, 'accept-encoding': 'gzip', 'if-none-match': String(compressed.headers.etag) },
+    })
+    expect(revalidated.status).toBe(304)
+    expect(revalidated.body).toBe('')
+    // Validators and the negotiation key stay; representation metadata for a body
+    // this response does not carry does not.
+    expect(revalidated.headers.etag).toBe(compressed.headers.etag)
+    expect(revalidated.headers.vary).toBe('Accept-Encoding')
+    expect(revalidated.headers['cache-control']).toBe('private, no-cache')
+    expect(revalidated.headers['content-encoding']).toBeUndefined()
+    expect(revalidated.headers['content-type']).toBeUndefined()
+    expect(revalidated.headers['content-length']).toBeUndefined()
+
+    // The identity representation revalidates separately and also omits the body headers.
+    const identity = await request(instance.address().port, '/mobile-access/compat.js', { headers })
+    expect(identity.status).toBe(200)
+    expect(identity.headers['content-encoding']).toBeUndefined()
+    const identityRevalidated = await request(instance.address().port, '/mobile-access/compat.js', {
+      headers: { ...headers, 'if-none-match': String(identity.headers.etag) },
+    })
+    expect(identityRevalidated.status).toBe(304)
+    expect(identityRevalidated.headers.etag).toBe(identity.headers.etag)
+    expect(identityRevalidated.headers['content-encoding']).toBeUndefined()
+
+    // A HEAD still reports the representation it would send, without a body.
+    const head = await request(instance.address().port, '/mobile-access/compat.js', {
+      method: 'HEAD',
+      headers: { ...headers, 'accept-encoding': 'gzip' },
+    })
+    expect(head.status).toBe(200)
+    expect(head.headers['content-encoding']).toBe('gzip')
+    expect(head.headers['content-length']).toBe(compressed.headers['content-length'])
+    expect(head.body).toBe('')
+  })
+
+  it('requests the compatibility bundle by content revision and serves it immutable', async () => {
+    const inner = await upstream()
+    const directory = await mkdtemp(join(tmpdir(), 'dsh-mobile-compat-revision-'))
+    cleanups.push(() => rm(directory, { recursive: true, force: true }))
+    const mobileCompatibilityFile = join(directory, 'compat.js')
+    await writeFile(mobileCompatibilityFile, 'globalThis.__compatibilityProbe = "first";\n', 'utf8')
+    const instance = await gateway(inner.port, { mobileCompatibilityFile })
+    const paired = await pair(instance)
+    const pageHeaders = { ...browserHeaders(instance), accept: 'text/html', cookie: `${SESSION_COOKIE}=${paired.session}` }
+    const assetHeaders = { ...browserHeaders(instance), cookie: `${SESSION_COOKIE}=${paired.session}` }
+    const revisionPattern = /src="(\/mobile-access\/compat-[a-f\d]{64}\.js)"/u
+
+    const page = await request(instance.address().port, '/', { headers: pageHeaders })
+    const revisioned = revisionPattern.exec(page.body)?.[1]
+    expect(revisioned).toBeDefined()
+    // The document never names the un-revisioned path, so a reload cannot revalidate it.
+    expect(page.body).not.toContain('src="/mobile-access/compat.js"')
+
+    const immutableResponse = await request(instance.address().port, revisioned!, { headers: assetHeaders })
+    expect(immutableResponse.status).toBe(200)
+    expect(immutableResponse.headers['cache-control']).toBe('private, max-age=31536000, immutable')
+    expect(immutableResponse.body).toContain('__compatibilityProbe = "first"')
+
+    // Documents delivered before this change keep a working, revalidating path.
+    const plain = await request(instance.address().port, '/mobile-access/compat.js', { headers: assetHeaders })
+    expect(plain.status).toBe(200)
+    expect(plain.headers['cache-control']).toBe('private, no-cache')
+    expect(plain.body).toContain('__compatibilityProbe = "first"')
+
+    // A new bundle gets a new revision, and the retired one is refused rather than
+    // answered with different bytes under an immutable URL.
+    await writeFile(mobileCompatibilityFile, 'globalThis.__compatibilityProbe = "second";\n', 'utf8')
+    const nextPage = await request(instance.address().port, '/', { headers: pageHeaders })
+    const nextRevision = revisionPattern.exec(nextPage.body)?.[1]
+    expect(nextRevision).toBeDefined()
+    expect(nextRevision).not.toBe(revisioned)
+    const stale = await request(instance.address().port, revisioned!, { headers: assetHeaders })
+    expect(stale.status).toBe(404)
+    const fresh = await request(instance.address().port, nextRevision!, { headers: assetHeaders })
+    expect(fresh.status).toBe(200)
+    expect(fresh.body).toContain('__compatibilityProbe = "second"')
+  })
+
+  it('never hands the start document a revision the bundle no longer matches', async () => {
+    const inner = await upstream()
+    const directory = await mkdtemp(join(tmpdir(), 'dsh-mobile-compat-revision-mtime-'))
+    cleanups.push(() => rm(directory, { recursive: true, force: true }))
+    const mobileCompatibilityFile = join(directory, 'compat.js')
+    // Two bodies of the exact same length, so only the bytes differ.
+    const firstBody = 'globalThis.__compatibilityProbe = "aaaa";\n'
+    const secondBody = 'globalThis.__compatibilityProbe = "bbbb";\n'
+    expect(firstBody).toHaveLength(secondBody.length)
+    await writeFile(mobileCompatibilityFile, firstBody, 'utf8')
+    const pinned = new Date('2020-05-01T00:00:00Z')
+    await utimes(mobileCompatibilityFile, pinned, pinned)
+
+    const instance = await gateway(inner.port, { mobileCompatibilityFile })
+    const paired = await pair(instance)
+    const pageHeaders = { ...browserHeaders(instance), accept: 'text/html', cookie: `${SESSION_COOKIE}=${paired.session}` }
+    const assetHeaders = { ...browserHeaders(instance), cookie: `${SESSION_COOKIE}=${paired.session}` }
+    const revisionPattern = /src="(\/mobile-access\/compat-[a-f\d]{64}\.js)"/u
+
+    const firstPage = await request(instance.address().port, '/', { headers: pageHeaders })
+    const firstRevision = revisionPattern.exec(firstPage.body)?.[1]
+    expect(firstRevision).toBeDefined()
+    expect((await request(instance.address().port, firstRevision!, { headers: assetHeaders })).status).toBe(200)
+
+    // Replace the bundle with different bytes of the same length, and restore the
+    // previous modification time: a signature of mtime+size cannot see this edit.
+    await writeFile(mobileCompatibilityFile, secondBody, 'utf8')
+    await utimes(mobileCompatibilityFile, pinned, pinned)
+
+    const nextPage = await request(instance.address().port, '/', { headers: pageHeaders })
+    const nextRevision = revisionPattern.exec(nextPage.body)?.[1]
+    expect(nextRevision).toBeDefined()
+    // The document must name the bytes the bundle actually has now. If it kept the
+    // old revision, the page would load a 404 script and lose the compatibility shim
+    // on exactly the old WebViews this bundle exists for.
+    const served = await request(instance.address().port, nextRevision!, { headers: assetHeaders })
+    expect(served.status).toBe(200)
+    expect(served.body).toBe(secondBody)
+    expect(nextRevision).not.toBe(firstRevision)
+  })
+
+  it('authenticates a revisioned bundle request before answering it or its 304', async () => {
+    const inner = await upstream()
+    const directory = await mkdtemp(join(tmpdir(), 'dsh-mobile-compat-revision-auth-'))
+    cleanups.push(() => rm(directory, { recursive: true, force: true }))
+    const mobileCompatibilityFile = join(directory, 'compat.js')
+    const body = 'globalThis.__compatibilityProbe = "auth";\n'
+    await writeFile(mobileCompatibilityFile, body, 'utf8')
+    const instance = await gateway(inner.port, { mobileCompatibilityFile })
+    const paired = await pair(instance)
+    const pageHeaders = { ...browserHeaders(instance), accept: 'text/html', cookie: `${SESSION_COOKIE}=${paired.session}` }
+    const assetHeaders = { ...browserHeaders(instance), cookie: `${SESSION_COOKIE}=${paired.session}` }
+    const revisionPattern = /src="(\/mobile-access\/compat-[a-f\d]{64}\.js)"/u
+
+    const page = await request(instance.address().port, '/', { headers: pageHeaders })
+    const revision = revisionPattern.exec(page.body)?.[1]
+    expect(revision).toBeDefined()
+    const etag = (await request(instance.address().port, revision!, { headers: assetHeaders })).headers.etag
+    expect(etag).toBeDefined()
+
+    // Content addressing is not authentication: an unpaired request gets 401, and a
+    // foreign Origin is still refused, for both the body and the conditional form.
+    const anonymous = await request(instance.address().port, revision!, { headers: browserHeaders(instance) })
+    expect(anonymous.status).toBe(401)
+    const anonymousConditional = await request(instance.address().port, revision!, {
+      headers: { ...browserHeaders(instance), 'if-none-match': String(etag) },
+    })
+    expect(anonymousConditional.status).toBe(401)
+    const crossOrigin = await request(instance.address().port, revision!, {
+      headers: { ...assetHeaders, origin: 'https://untrusted.example', 'sec-fetch-site': 'cross-site' },
+    })
+    expect(crossOrigin.status).toBe(403)
+
+    // Revoking the device closes the revisioned path too.
+    expect(await instance.access.revokeDevice(paired.deviceId)).toBe(true)
+    const revoked = await request(instance.address().port, revision!, { headers: assetHeaders })
+    expect(revoked.status).toBe(401)
+    // No bundle request ever reached the upstream: the only observation is the page.
+    expect(inner.observations.filter(entry => entry.url.startsWith('/mobile-access/'))).toHaveLength(0)
+  })
+
+  it('falls back to the revalidating path when the bundle is missing or unreadable', async () => {
+    const inner = await upstream()
+    const directory = await mkdtemp(join(tmpdir(), 'dsh-mobile-compat-revision-missing-'))
+    cleanups.push(() => rm(directory, { recursive: true, force: true }))
+    const mobileCompatibilityFile = join(directory, 'compat.js')
+    const instance = await gateway(inner.port, { mobileCompatibilityFile })
+    const paired = await pair(instance)
+    const pageHeaders = { ...browserHeaders(instance), accept: 'text/html', cookie: `${SESSION_COOKIE}=${paired.session}` }
+    const assetHeaders = { ...browserHeaders(instance), cookie: `${SESSION_COOKIE}=${paired.session}` }
+
+    // The document must never name a revision for a bundle it could not hash: a
+    // content-addressed URL would then 404 and drop the shim silently.
+    const page = await request(instance.address().port, '/', { headers: pageHeaders })
+    expect(page.status).toBe(200)
+    expect(page.body).toContain('src="/mobile-access/compat.js"')
+    expect(page.body).not.toMatch(/compat-[a-f\d]{64}\.js/u)
+    const plain = await request(instance.address().port, '/mobile-access/compat.js', { headers: assetHeaders })
+    expect(plain.status).toBe(503)
+    expect(JSON.parse(plain.body)).toMatchObject({ error: 'mobile_frontend_unavailable' })
+
+    // A revision the running bundle cannot satisfy is refused rather than answered
+    // with different bytes under an `immutable` URL. A missing file is the ordinary
+    // unavailable case (503); a present file with a different digest is a 404.
+    const unknown = await request(instance.address().port, `/mobile-access/compat-${'0'.repeat(64)}.js`, { headers: assetHeaders })
+    expect(unknown.status).toBe(503)
+    await writeFile(mobileCompatibilityFile, 'globalThis.__compatibilityProbe = "present";\n', 'utf8')
+    const mismatched = await request(instance.address().port, `/mobile-access/compat-${'0'.repeat(64)}.js`, { headers: assetHeaders })
+    expect(mismatched.status).toBe(404)
+    expect(inner.observations.filter(entry => entry.url.startsWith('/mobile-access/'))).toHaveLength(0)
+  })
+
   it.each([
     ['/mobile-access/custom.css', 'customCssFile'],
     ['/mobile-access/custom.js', 'customScriptFile'],
@@ -946,8 +1225,9 @@ describe('HTTP gateway', () => {
     expect(inner.observations).toHaveLength(0)
   })
 
-  it('serves the dedicated layout at the authenticated root while retaining a stock escape hatch', async () => {
-    const inner = await upstream()
+  it('serves the dedicated layout at the authenticated root while retaining stock metadata and escape hatch', async () => {
+    const upstreamMetadata = '<link rel="manifest" href="/manifest.webmanifest"><link rel="apple-touch-icon" sizes="192x192" href="/upstream-icon.png"><link rel="icon" href="/favicon.ico">'
+    const inner = await upstream('legacy', false, Buffer.alloc(0), [], undefined, undefined, 0, 0, undefined, upstreamMetadata)
     const instance = await gateway(inner.port)
     const paired = await pair(instance)
     const headers = {
@@ -963,6 +1243,13 @@ describe('HTTP gateway', () => {
     expect(mobile.body).toContain('/mobile-access/mobile-layout.js')
     expect(mobile.body).toContain('/plugins/feature.js')
     expect(mobile.body).toContain('<script src="/mobile-access/compat.js"></script>')
+    expect(mobile.body).toContain('<link rel="manifest" href="/mobile-access/push/manifest.webmanifest">')
+    expect(mobile.body).toContain('<link rel="apple-touch-icon" sizes="180x180" href="/mobile-access/push/icon-180.png">')
+    expect(mobile.body).toContain('<link rel="apple-touch-icon" sizes="192x192" href="/mobile-access/push/icon-192.png">')
+    expect(mobile.body).not.toContain('href="/manifest.webmanifest"')
+    expect(mobile.body).not.toContain('/upstream-icon.png')
+    expect(mobile.body).toContain('<link rel="icon" href="/favicon.ico">')
+    expect(mobile.body.match(/rel="manifest"/gu)).toHaveLength(1)
     expect(mobile.body.indexOf('/mobile-access/compat.js')).toBeLessThan(mobile.body.indexOf('__DSH_BOOT__'))
 
     const deepLink = await request(instance.address().port, '/?sessionId=example', { headers })
@@ -984,6 +1271,9 @@ describe('HTTP gateway', () => {
     expect(stock.body).not.toContain('__DSH_MOBILE_FRONTEND__')
     expect(stock.body).toContain('<meta name="dsh-mobile-gateway" content="authenticated">')
     expect(stock.body).toContain('/plugins/layout.js')
+    expect(stock.body).toContain(upstreamMetadata)
+    expect(stock.body).not.toContain('/mobile-access/push/manifest.webmanifest')
+    expect(stock.body).not.toContain('/mobile-access/push/icon-192.png')
     expect(stock.body).not.toContain('/mobile-access/compat.js')
     const conditionalStock = await request(instance.address().port, '/?frontend=stock', {
       headers: { ...headers, 'if-none-match': '"old-upstream-html"', 'if-modified-since': 'Wed, 14 Oct 2026 00:00:00 GMT' },

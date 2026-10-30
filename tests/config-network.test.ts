@@ -61,7 +61,9 @@ describe('gateway configuration', () => {
 
   it('keeps WebSocket compression opt-in and freezes validated paths and budgets', () => {
     const base = { stateFile, controlFile, initiallyEnabled: false, tls: { mode: 'disabled' as const } }
-    expect(parseGatewayConfig(base).websocketCompression.paths).toEqual([])
+    // The live path is compressed by default; an explicit empty list opts out.
+    expect(parseGatewayConfig(base).websocketCompression.paths).toEqual(['/api/remote.mux'])
+    expect(parseGatewayConfig({ ...base, websocketCompression: { paths: [] } }).websocketCompression.paths).toEqual([])
     const paths = ['/api/remote.mux', '/api/remote.mux']
     const value = Config({ ...base, websocketCompression: { paths, maxMessageBytes: 2048, maxQueuedBytes: 4096 } })
     const resolved = parseGatewayConfig(value).websocketCompression

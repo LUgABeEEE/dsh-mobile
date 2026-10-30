@@ -6,7 +6,7 @@ DeepSeek Harness is the display name of this community-maintained Android WebVie
 
 The current stable app is **0.7.0** (build 85). The npm plugin and Android App have independent versions: a plugin update does not automatically require another APK. See the [0.7.0 changes](#070-update).
 
-Android 10 or later is supported. The local iOS experiment is not a published or supported client.
+This APK supports Android 10 or later. iPhone and iPad use the [Safari Home Screen web app and optional Web Push](../../docs/WEB_PUSH.en.md), not this Android package; no native iOS app is distributed.
 
 ## Install and pair
 
@@ -148,7 +148,7 @@ Computer-side `host.mjs` extensions are trusted Node.js code, separate from this
 
 ## Build
 
-Use Android Studio or Android SDK 36 and JDK 17. The repository includes the Gradle 9.7.1 Wrapper.
+Use Android Studio or Android SDK 36 and JDK 17. The repository includes the Gradle 9.8.2 Wrapper.
 
 ```powershell
 Set-Location apps/mobile/android

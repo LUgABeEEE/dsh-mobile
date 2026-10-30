@@ -241,6 +241,242 @@ describe('device and Session state', () => {
   })
 })
 
+describe('persistent device authorization metadata', () => {
+  it('reads each time from the shared authoritative store instead of using a stale controller cache', async () => {
+    let current = 100_000
+    const store = new MemoryDeviceStore()
+    const writer = controller(store, () => current)
+    await writer.initialize()
+    const opened = await writer.openPairing()
+    const paired = await writer.pair('peer', opened.token)
+    const reader = controller(store, () => current)
+    await reader.initialize()
+
+    const before = store.inspect()
+    const metadata = await reader.authorizedDevices()
+    expect(metadata).toEqual([{ id: paired.deviceId, expiresAt: paired.deviceExpiresAt }])
+    expect(metadata[0]).not.toHaveProperty('tokenDigest')
+    expect(JSON.stringify(metadata)).not.toContain(paired.deviceToken)
+    expect(reader.metrics().sessions).toBe(0)
+    expect(store.inspect()).toEqual(before)
+
+    expect(await writer.revokeDevice(paired.deviceId)).toBe(true)
+    expect(reader.listDevices()).toHaveLength(1)
+    expect(await reader.authorizedDevices()).toEqual([])
+    await writer.close()
+    await reader.close()
+  })
+
+  it('returns frozen metadata only and filters persistent expiry without renewing or writing', async () => {
+    let current = 20_000
+    const backing = new MemoryDeviceStore()
+    let saves = 0
+    const store: DeviceStore = {
+      load: () => backing.load(),
+      async save(snapshot) { saves++; await backing.save(snapshot) },
+    }
+    const access = controller(store, () => current, { deviceTtlMs: 1_000 })
+    await access.initialize()
+    const opened = await access.openPairing()
+    const paired = await access.pair('peer', opened.token)
+    const before = backing.inspect()
+    const sessions = access.metrics().sessions
+    const initialSaves = saves
+    const visible = await access.authorizedDevices()
+    expect(visible).toEqual([{ id: paired.deviceId, expiresAt: 21_000 }])
+    expect(Object.keys(visible[0]!)).toEqual(['id', 'expiresAt'])
+    expect(Object.isFrozen(visible)).toBe(true)
+    expect(Object.isFrozen(visible[0])).toBe(true)
+    expect(Reflect.set(visible[0]!, 'expiresAt', 1)).toBe(false)
+    expect(await access.authorizedDevices()).toEqual([{ id: paired.deviceId, expiresAt: 21_000 }])
+    current = paired.deviceExpiresAt
+    expect(await access.authorizedDevices()).toEqual([])
+    expect(backing.inspect()).toEqual(before)
+    expect(saves).toBe(initialSaves)
+    expect(access.metrics().sessions).toBe(sessions)
+    await access.close()
+  })
+
+  it('allows a plugin removal observer to register before controller initialization', async () => {
+    const access = controller(new MemoryDeviceStore(), () => 30_000)
+    const removed: string[] = []
+    access.onDevicesRemoved(ids => { removed.push(...ids) })
+    await access.initialize()
+    const opened = await access.openPairing()
+    const paired = await access.pair('peer', opened.token)
+    await access.revokeDevice(paired.deviceId)
+    expect(removed).toEqual([paired.deviceId])
+    await access.close()
+  })
+
+  it('keeps persistent authorization after short-session logout without emitting removal', async () => {
+    const store = new MemoryDeviceStore()
+    const access = controller(store, () => 40_000)
+    await access.initialize()
+    const opened = await access.openPairing()
+    const paired = await access.pair('peer', opened.token)
+    const removed: string[] = []
+    access.onDevicesRemoved(ids => { removed.push(...ids) })
+    access.logout(access.authorizeSession(paired.sessionToken))
+    expect(await access.authorizedDevices()).toEqual([{ id: paired.deviceId, expiresAt: paired.deviceExpiresAt }])
+    expect(removed).toEqual([])
+    await access.close()
+  })
+
+  it('reports dormant and expired stored ids on revoke and reset only after durable commit', async () => {
+    let current = 50_000
+    const backing = new MemoryDeviceStore()
+    const access = controller(backing, () => current, { deviceTtlMs: 1_000 })
+    await access.initialize()
+    const firstWindow = await access.openPairing()
+    const first = await access.pair('peer-a', firstWindow.token)
+    const secondWindow = await access.openPairing()
+    const second = await access.pair('peer-b', secondWindow.token)
+    const thirdWindow = await access.openPairing()
+    const third = await access.pair('peer-c', thirdWindow.token)
+    access.logout(access.authorizeSession(first.sessionToken))
+    access.logout(access.authorizeSession(second.sessionToken))
+    access.logout(access.authorizeSession(third.sessionToken))
+
+    expect(access.metrics().sessions).toBe(0)
+    const notifications: Array<{ ids: readonly string[]; reason: string; durableCount: number; memoryCount: number }> = []
+    access.onDevicesRemoved((ids, reason) => { notifications.push({ ids, reason, durableCount: backing.inspect().devices.length, memoryCount: access.listDevices().length }) })
+    await access.revokeDevice(first.deviceId)
+    expect(notifications).toEqual([{ ids: [first.deviceId], reason: 'revoked', durableCount: 2, memoryCount: 2 }])
+    await expect(access.revokeDevice(first.deviceId)).resolves.toBe(false)
+    expect(notifications).toHaveLength(1)
+
+    current = Math.max(second.deviceExpiresAt, third.deviceExpiresAt)
+    expect(await access.authorizedDevices()).toEqual([])
+    await access.resetDevices()
+    expect(notifications).toHaveLength(2)
+    expect(notifications[1]).toEqual({ ids: [second.deviceId, third.deviceId], reason: 'reset', durableCount: 0, memoryCount: 0 })
+    expect(backing.inspect().devices).toEqual([])
+    await access.close()
+  })
+
+  it('does not emit before a slow durable revocation commits', async () => {
+    const backing = new MemoryDeviceStore()
+    let hold = false
+    let announceSave!: () => void
+    let releaseSave!: () => void
+    const saveStarted = new Promise<void>(resolve => { announceSave = resolve })
+    const saveBarrier = new Promise<void>(resolve => { releaseSave = resolve })
+    const store: DeviceStore = {
+      load: () => backing.load(),
+      async save(snapshot) { if (hold) { hold = false; announceSave(); await saveBarrier }; await backing.save(snapshot) },
+    }
+    const access = controller(store, () => 60_000)
+    await access.initialize()
+    const opened = await access.openPairing()
+    const paired = await access.pair('peer', opened.token)
+    const notifications: string[][] = []
+    access.onDevicesRemoved(ids => { notifications.push([...ids]) })
+    hold = true
+    const revoking = access.revokeDevice(paired.deviceId)
+    await saveStarted
+    expect(notifications).toEqual([])
+    releaseSave()
+    await expect(revoking).resolves.toBe(true)
+    expect(notifications).toEqual([[paired.deviceId]])
+    expect(backing.inspect().devices).toEqual([])
+    await access.close()
+  })
+
+  it('does not emit or change authorization when the durable revoke save fails at a barrier', async () => {
+    const backing = new MemoryDeviceStore()
+    let failSave = false
+    let holdFailure = false
+    let announceFailure!: () => void
+    let releaseFailure!: () => void
+    const failureStarted = new Promise<void>(resolve => { announceFailure = resolve })
+    const failureBarrier = new Promise<void>(resolve => { releaseFailure = resolve })
+    const store: DeviceStore = {
+      load: () => backing.load(),
+      async save(snapshot) {
+        if (failSave) {
+          if (holdFailure) { holdFailure = false; announceFailure(); await failureBarrier }
+          throw new Error('disk full')
+        }
+        await backing.save(snapshot)
+      },
+    }
+    const access = controller(store, () => 70_000)
+    await access.initialize()
+    const opened = await access.openPairing()
+    const paired = await access.pair('peer', opened.token)
+    const before = backing.inspect()
+    const notifications: string[][] = []
+    access.onDevicesRemoved(ids => { notifications.push([...ids]) })
+    failSave = true
+    holdFailure = true
+    const revoking = access.revokeDevice(paired.deviceId)
+    await failureStarted
+    expect(notifications).toEqual([])
+    expect(access.authorizeDevice(paired.deviceToken).deviceId).toBe(paired.deviceId)
+    releaseFailure()
+    await expect(revoking).rejects.toThrow('disk full')
+    expect(notifications).toEqual([])
+    expect(backing.inspect()).toEqual(before)
+    expect(access.authorizeDevice(paired.deviceToken).deviceId).toBe(paired.deviceId)
+    await access.close()
+  })
+
+  it('isolates synchronous and asynchronous observer failures from other observers and session cleanup', async () => {
+    const access = controller(new MemoryDeviceStore(), () => 80_000)
+    await access.initialize()
+    const opened = await access.openPairing()
+    const paired = await access.pair('peer', opened.token)
+    const ended: string[] = []
+    const observed: string[] = []
+    access.onSessionEnded(authorization => { ended.push(authorization.deviceId) })
+    access.onDevicesRemoved(() => { throw new Error('private listener error') })
+    access.onDevicesRemoved(async () => { throw new Error('private async listener error') })
+    access.onDevicesRemoved(ids => { observed.push(...ids) })
+    await expect(access.revokeDevice(paired.deviceId)).resolves.toBe(true)
+    expect(observed).toEqual([paired.deviceId])
+    expect(ended).toEqual([paired.deviceId])
+    expect(access.metrics().sessions).toBe(0)
+    await access.close()
+  })
+
+  it('rejects a failed fresh metadata load and stops disposed listeners', async () => {
+    const backing = new MemoryDeviceStore()
+    let failLoad = false
+    const store: DeviceStore = {
+      async load() { if (failLoad) throw new Error('metadata store unavailable'); return backing.load() },
+      save: snapshot => backing.save(snapshot),
+    }
+    const access = controller(store, () => 90_000)
+    await access.initialize()
+    const opened = await access.openPairing()
+    const paired = await access.pair('peer', opened.token)
+    const calls: string[] = []
+    const unsubscribe = access.onDevicesRemoved(ids => { calls.push(...ids) })
+    unsubscribe()
+    await access.revokeDevice(paired.deviceId)
+    expect(calls).toEqual([])
+
+    failLoad = true
+    await expect(access.authorizedDevices()).rejects.toThrow('metadata store unavailable')
+    await access.close()
+    expect(calls).toEqual([])
+    expect(() => access.onDevicesRemoved(() => undefined)).toThrow(/not available/u)
+    await expect(access.authorizedDevices()).rejects.toThrow(/not available/u)
+    await expect(access.revokeDevice(paired.deviceId)).rejects.toThrow(/not available/u)
+  })
+
+  it('does not emit for unknown-id revocation', async () => {
+    const access = controller(new MemoryDeviceStore(), () => 100_000)
+    await access.initialize()
+    const calls: string[] = []
+    access.onDevicesRemoved(ids => { calls.push(...ids) })
+    await expect(access.revokeDevice('a'.repeat(32))).resolves.toBe(false)
+    expect(calls).toEqual([])
+    await access.close()
+  })
+})
+
 describe('native credential identity', () => {
   it.each([1, 2] as const)('retains optional bindings and the input snapshot version %s', version => {
     const device = { ...legacySnapshot('legacy-token').devices[0]!, nativeInstanceId: 'b'.repeat(64) }

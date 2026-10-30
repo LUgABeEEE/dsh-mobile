@@ -285,9 +285,18 @@ async function runLanguageCase() {
       await page.getByRole('button', { name: /^(English|中文)$/u }).click()
       await page.getByRole('menuitem', { name: label, exact: true }).click()
       await page.waitForFunction(language => document.documentElement.lang === language, language)
-      const cookie = (await context.cookies(`${origin}/mobile-access/login`)).find(value => value.name === 'dsh_ma_ui_locale')
+      const expectedLocale = language === 'zh-CN' ? 'zh' : language
+      const cookieDeadline = Date.now() + CLIENT_TIMEOUT_MS
+      let cookie
+      // DOM language and the browser-process Cookie store have separate commits.
+      // Observe the latter before testing its fields or opening the login page.
+      do {
+        cookie = (await context.cookies(`${origin}/mobile-access/login`)).find(value => value.name === 'dsh_ma_ui_locale')
+        if (cookie?.value === expectedLocale) break
+        await new Promise(resolve => setTimeout(resolve, 20))
+      } while (Date.now() < cookieDeadline)
       assert(cookie, 'DSH language was not remembered in the browser')
-      assert.equal(cookie.value, language === 'zh-CN' ? 'zh' : language)
+      assert.equal(cookie.value, expectedLocale, 'Remembered language did not settle in the browser Cookie store')
       assert.equal(cookie.path, '/mobile-access')
       assert.equal(cookie.domain, new URL(origin).hostname, 'Preference must be host-only')
       assert.equal(cookie.secure, new URL(origin).protocol === 'https:')

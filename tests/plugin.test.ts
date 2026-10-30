@@ -3,7 +3,7 @@ import type { WebRoute, WebServer } from '@deepseek-ai/dsh-host-webserver'
 import type { CommandDefinition } from '@deepseek-ai/dsh-commands'
 import { createHash, X509Certificate } from 'node:crypto'
 import { createTestTlsChain } from './tls-fixtures.js'
-import { createServer, request as requestHttp, type IncomingMessage } from 'node:http'
+import { createServer, request as requestHttp, type IncomingHttpHeaders, type IncomingMessage } from 'node:http'
 import { request as requestHttps } from 'node:https'
 import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { connect, type AddressInfo } from 'node:net'
@@ -23,12 +23,18 @@ import { ensureFrpIngressCertificate } from '../src/frp-ingress.js'
 import { DSH_MOBILE_VERSION, MINIMUM_ANDROID_APP_VERSION } from '../src/version.js'
 import { DESKTOP_ADMIN_HEADER, DESKTOP_ADMIN_MARKER, WEB_ADMIN_HEADER, WEB_ADMIN_MARKER } from '../src/local-admin-host.js'
 import { AccessController } from '../src/access.js'
+import { SESSION_COOKIE } from '../src/http-security.js'
 import { buildExtensionWorkerEntry } from './helpers/extension-worker-build.js'
 import { parseUnavailableExtensionHosts } from '../src/extension-recovery-ui.js'
 import { CaddyComponentManager, CADDY_VERSION, type CaddyArtifact } from '../src/caddy-component.js'
 import { FunnelController, type FunnelControllerOptions } from '../src/funnel.js'
 import { FrpController, type FrpControllerOptions } from '../src/frp.js'
 import type { MobileAccessGateway } from '../src/gateway.js'
+import { PushGatewayCoordinator, type PushGatewayOriginBinding } from '../src/mobile-push/gateway.js'
+import { PushDelivery } from '../src/mobile-push/delivery.js'
+import { PushRegistry, vapidFingerprint } from '../src/mobile-push/registry.js'
+import { JsonPushStore } from '../src/mobile-push/store.js'
+import { createVapidKeys } from '../src/mobile-push/sender.js'
 
 const contexts: Context[] = []
 const temporaryDirectories: string[] = []
@@ -108,13 +114,24 @@ async function mount(
   config: Partial<PluginConfig> = {},
   requestRejection: (request: IncomingMessage) => 401 | 403 | undefined = () => 401,
   indexInjections: readonly { kind: string; text?: string }[] = [],
+  pushHostAvailable = false,
+  blockPushStoreDirectory = false,
+  scopedPushHostServices = false,
+  loaderMobileInjection = false,
+  waitForPushRuntime = true,
   authenticationUrl?: (base: string) => string,
-): Promise<{ context: Context; route: WebRoute; command: CommandDefinition; upstreamBase: string | undefined; directory: string }> {
+): Promise<{
+  context: Context; route: WebRoute; command: CommandDefinition; upstreamBase: string | undefined; directory: string;
+  pushProjectionDisposer: (() => void) | undefined; pushProjectionRegistered: Promise<void>;
+  installPushHostServices: () => Promise<{ dispose: () => Promise<void>; projectionDisposer: () => void; registered: Promise<void> }>
+}> {
   const directory = await mkdtemp(join(tmpdir(), 'dsh-mobile-plugin-'))
   temporaryDirectories.push(directory)
+  if (blockPushStoreDirectory) await writeFile(join(directory, 'mobile-push'), 'not-a-directory')
   let route: WebRoute | undefined
   let command: CommandDefinition | undefined
   let upstreamBase: string | undefined
+  let pushProjectionDisposer: (() => void) | undefined
   const context = new Context()
   contexts.push(context)
   context.provide('webServer', {
@@ -138,7 +155,47 @@ async function mount(
     },
     requestRejection,
   } as never)
-  await context.plugin({ Config, inject, apply }, {
+  let resolvePushProjectionRegistered!: () => void
+  const pushProjectionRegistered = new Promise<void>(resolve => { resolvePushProjectionRegistered = resolve })
+  let pushHostProviderSequence = 0
+  const providePushHostServices = (hostContext: Context, projectionDisposer: () => void, onRegistered: () => void): void => {
+    hostContext.provide('userQuestions', { pending: () => [] } as never)
+    hostContext.provide('approval', {} as never)
+    hostContext.provide('sessionProjections', {
+      stateOf: () => undefined,
+      snapshot: () => ({ asOfSeq: 0, values: {} }),
+      register: () => {
+        resolvePushProjectionRegistered()
+        onRegistered()
+        return projectionDisposer
+      },
+    } as never)
+    hostContext.provide('sessionQuery', {
+      observeSession: async () => ({ source: 'prepared', [Symbol.dispose]: () => undefined }),
+    } as never)
+    hostContext.provide('agents', { get: () => undefined, list: () => [], roots: () => [], isOwnedBy: () => false } as never)
+  }
+  const installPushHostServices = async (): Promise<{ dispose: () => Promise<void>; projectionDisposer: () => void; registered: Promise<void> }> => {
+    let resolveRegistered!: () => void
+    const registered = new Promise<void>(resolve => { resolveRegistered = resolve })
+    const projectionDisposer = vi.fn()
+    const providerFiber = context.plugin({
+      name: `test-push-host-services-${++pushHostProviderSequence}`,
+      apply: hostContext => providePushHostServices(hostContext, projectionDisposer, resolveRegistered),
+    })
+    await providerFiber
+    pushProjectionDisposer = projectionDisposer
+    return { dispose: () => providerFiber.dispose(), projectionDisposer, registered }
+  }
+  if (pushHostAvailable) {
+    if (scopedPushHostServices) await installPushHostServices()
+    else {
+      const projectionDisposer = vi.fn()
+      pushProjectionDisposer = projectionDisposer
+      providePushHostServices(context, projectionDisposer, () => undefined)
+    }
+  }
+  await context.plugin({ Config, inject: loaderMobileInjection ? ['webServer', 'connection'] : inject, apply }, {
     listenPort: 0,
     stateFile: join(directory, 'devices.json'),
     controlFile: join(directory, 'control.json'),
@@ -148,9 +205,19 @@ async function mount(
     tls: { mode: 'disabled' },
     ...config,
   })
+  if (pushHostAvailable && !blockPushStoreDirectory && waitForPushRuntime) {
+    const pushStatePath = join(directory, 'mobile-push', 'push-state.json')
+    await vi.waitFor(async () => {
+      const pushState = JSON.parse(await readFile(pushStatePath, 'utf8')) as { keys?: { fingerprint: string } }
+      expect(pushState.keys?.fingerprint).toMatch(/^[0-9a-f]{64}$/u)
+    })
+  }
   if (route === undefined) throw new Error('plugin did not register its control route')
   if (command === undefined) throw new Error('plugin did not register its /mobile command')
-  return { context, route, command, upstreamBase, directory }
+  return {
+    context, route, command, upstreamBase, directory, pushProjectionRegistered, installPushHostServices,
+    get pushProjectionDisposer() { return pushProjectionDisposer },
+  }
 }
 
 async function unusedOriginPort(): Promise<number> {
@@ -287,6 +354,42 @@ async function nativeGatewayRequest(
       })
     })
     request.setTimeout(5000, () => { request.destroy(new Error('Owned native request timed out')) })
+    request.once('error', reject)
+    request.end(body)
+  })
+}
+
+async function mobileGatewayRequest(
+  port: number,
+  origin: string,
+  path: string,
+  options: { method?: 'GET' | 'POST'; body?: Record<string, unknown>; cookie?: string; csrf?: string } = {},
+): Promise<{ status: number; headers: IncomingHttpHeaders; body: Record<string, unknown> }> {
+  const body = options.body === undefined ? undefined : JSON.stringify(options.body)
+  return new Promise((resolve, reject) => {
+    const request = requestHttp({
+      host: '127.0.0.1', port, path, method: options.method ?? 'GET', agent: false,
+      headers: {
+        host: new URL(origin).host,
+        origin,
+        'sec-fetch-site': 'same-origin',
+        ...(options.cookie === undefined ? {} : { cookie: options.cookie }),
+        ...(options.csrf === undefined ? {} : { 'x-dsh-mobile-csrf': options.csrf }),
+        ...(body === undefined ? {} : { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) }),
+      },
+    }, response => {
+      const chunks: Buffer[] = []
+      response.on('data', chunk => chunks.push(Buffer.from(chunk)))
+      response.once('error', reject)
+      response.once('end', () => {
+        try {
+          const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+          if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) throw new Error('Mobile Gateway response must be an object')
+          resolve({ status: response.statusCode ?? 0, headers: response.headers, body: parsed as Record<string, unknown> })
+        } catch (error) { reject(error) }
+      })
+    })
+    request.setTimeout(5000, () => { request.destroy(new Error('Owned Mobile Gateway request timed out')) })
     request.once('error', reject)
     request.end(body)
   })
@@ -765,6 +868,308 @@ describe('stock DSH lifecycle', () => {
     expect(JSON.parse(allowed.body)).toMatchObject({ running: false })
   })
 
+  it('binds optional push Host services across the scoped Loader boundary', async () => {
+    const mounted = await mount(false, 3080, {}, () => 401, [], true, false, true, true)
+    const pushState = JSON.parse(await readFile(join(mounted.directory, 'mobile-push', 'push-state.json'), 'utf8')) as {
+      keys?: { fingerprint: string }
+    }
+    expect(pushState.keys?.fingerprint).toMatch(/^[0-9a-f]{64}$/u)
+    expect(mounted.pushProjectionDisposer).toBeDefined()
+    await mounted.context.fiber.dispose()
+    expect(mounted.pushProjectionDisposer).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps an already-running Gateway attached across late Host and Registry readiness', async () => {
+    const requestRejection = vi.fn(() => undefined)
+    const mounted = await mount(true, 3080, {}, requestRejection, [], false, false, false, true)
+    let releaseRegistryInit!: () => void
+    const registryInitGate = new Promise<void>(resolve => { releaseRegistryInit = resolve })
+    let registryInitStarted!: () => void
+    const registryInitStartedPromise = new Promise<void>(resolve => { registryInitStarted = resolve })
+    const originalInitialize = PushRegistry.prototype.initialize
+    const initialize = vi.spyOn(PushRegistry.prototype, 'initialize').mockImplementation(async function (this: PushRegistry) {
+      registryInitStarted()
+      await registryInitGate
+      return originalInitialize.call(this)
+    })
+    try {
+      const status = await invoke(mounted.route, 'GET', '/api/mobile-access/lan/control')
+      const origin = responseString(JSON.parse(status.body) as Record<string, unknown>, 'origin')
+      const port = Number(new URL(origin).port)
+      const installationId = '11111111-1111-4111-8111-111111111111'
+      const opened = await invoke(mounted.route, 'POST', '/api/mobile-access/lan/pairing/open', '{}')
+      expect(opened.status).toBe(201)
+      const token = responseString(JSON.parse(opened.body) as Record<string, unknown>, 'token')
+      const paired = await mobileGatewayRequest(port, origin, '/mobile-access/auth/pair', {
+        method: 'POST', body: { token, label: 'Late push composition test' },
+      })
+      expect(paired.status).toBe(201)
+      const sessionCookie = paired.headers['set-cookie']?.map(value => value.split(';', 1)[0] ?? '')
+        .find(value => value.startsWith(`${SESSION_COOKIE}=`))
+      if (sessionCookie === undefined) throw new Error('Owned Gateway pairing did not issue a session cookie')
+
+      const before = await mobileGatewayRequest(port, origin, `/mobile-access/push/config?installationId=${encodeURIComponent(installationId)}`, { cookie: sessionCookie })
+      expect(before.status).toBe(200)
+      expect(before.body).toMatchObject({ available: false, installationId, status: 'disabled' })
+
+      await mounted.installPushHostServices()
+      await mounted.pushProjectionRegistered
+      await registryInitStartedPromise
+      const configPendingOnReadiness = mobileGatewayRequest(port, origin, `/mobile-access/push/config?installationId=${encodeURIComponent(installationId)}`, { cookie: sessionCookie })
+      releaseRegistryInit()
+      const after = await configPendingOnReadiness
+      expect(initialize).toHaveBeenCalledTimes(1)
+      expect(after.status).toBe(200)
+      expect(after.body).toMatchObject({ available: true, installationId, status: 'disabled' })
+      expect(after.body.publicKey).toMatch(/^[A-Za-z0-9_-]+$/u)
+      expect(after.body.keyFingerprint).toMatch(/^[0-9a-f]{64}$/u)
+    } finally {
+      releaseRegistryInit()
+      await mounted.context.fiber.dispose()
+    }
+  })
+
+  it('drains push initialization before parent disposal and cannot resurrect the runtime', async () => {
+    const mounted = await mount()
+    let releaseRegistryInit!: () => void
+    const registryInitGate = new Promise<void>(resolve => { releaseRegistryInit = resolve })
+    let registryInitStarted!: () => void
+    const registryInitStartedPromise = new Promise<void>(resolve => { registryInitStarted = resolve })
+    const originalInitialize = PushRegistry.prototype.initialize
+    const initialize = vi.spyOn(PushRegistry.prototype, 'initialize').mockImplementation(async function (this: PushRegistry) {
+      registryInitStarted()
+      await registryInitGate
+      return originalInitialize.call(this)
+    })
+    const closeCoordinator = vi.spyOn(PushGatewayCoordinator.prototype, 'close')
+    const closeDelivery = vi.spyOn(PushDelivery.prototype, 'close')
+    const closeRegistry = vi.spyOn(PushRegistry.prototype, 'close')
+    let disposed = false
+    try {
+      await mounted.installPushHostServices()
+      await mounted.pushProjectionRegistered
+      await registryInitStartedPromise
+      const disposal = mounted.context.fiber.dispose().then(() => { disposed = true })
+      await Promise.resolve()
+      expect(disposed).toBe(false)
+      releaseRegistryInit()
+      await disposal
+
+      expect(initialize).toHaveBeenCalledTimes(1)
+      expect(closeCoordinator).not.toHaveBeenCalled()
+      expect(closeDelivery).not.toHaveBeenCalled()
+      expect(closeRegistry).toHaveBeenCalledTimes(1)
+      expect(mounted.pushProjectionDisposer).toHaveBeenCalledTimes(1)
+    } finally {
+      releaseRegistryInit()
+      if (!disposed) await mounted.context.fiber.dispose()
+    }
+  })
+
+  it('drains replaced Host generation A before publishing generation B', async () => {
+    const mounted = await mount(true)
+    let releaseGenerationA!: () => void
+    const generationAGate = new Promise<void>(resolve => { releaseGenerationA = resolve })
+    let generationAStarted!: () => void
+    const generationAStartedPromise = new Promise<void>(resolve => { generationAStarted = resolve })
+    let generationBStarted!: () => void
+    const generationBStartedPromise = new Promise<void>(resolve => { generationBStarted = resolve })
+    const originalInitialize = PushRegistry.prototype.initialize
+    const originalClose = PushRegistry.prototype.close
+    const activeRegistries = new Set<PushRegistry>()
+    let maxConcurrentRegistries = 0
+    let initializeCount = 0
+    const initialize = vi.spyOn(PushRegistry.prototype, 'initialize').mockImplementation(async function (this: PushRegistry) {
+      const attempt = ++initializeCount
+      activeRegistries.add(this)
+      maxConcurrentRegistries = Math.max(maxConcurrentRegistries, activeRegistries.size)
+      if (attempt === 1) {
+        generationAStarted()
+        await generationAGate
+      } else if (attempt === 2) {
+        generationBStarted()
+      }
+      return originalInitialize.call(this)
+    })
+    vi.spyOn(PushRegistry.prototype, 'close').mockImplementation(async function (this: PushRegistry) {
+      try { await originalClose.call(this) } finally { activeRegistries.delete(this) }
+    })
+    const closeCoordinator = vi.spyOn(PushGatewayCoordinator.prototype, 'close')
+    let resolveOriginAttached!: () => void
+    const originAttached = new Promise<void>(resolve => { resolveOriginAttached = resolve })
+    const originalAttachOrigin = PushGatewayCoordinator.prototype.attachOrigin
+    const attachOrigin = vi.spyOn(PushGatewayCoordinator.prototype, 'attachOrigin').mockImplementation(function (
+      this: PushGatewayCoordinator,
+      binding: PushGatewayOriginBinding,
+    ) {
+      const detach = originalAttachOrigin.call(this, binding)
+      resolveOriginAttached()
+      return detach
+    })
+    let providerA: Awaited<ReturnType<typeof mounted.installPushHostServices>> | undefined
+    let providerB: Awaited<ReturnType<typeof mounted.installPushHostServices>> | undefined
+    try {
+      providerA = await mounted.installPushHostServices()
+      await providerA.registered
+      await generationAStartedPromise
+      const losingA = providerA.dispose()
+      providerB = await mounted.installPushHostServices()
+      releaseGenerationA()
+      await losingA
+      await providerB.registered
+      await generationBStartedPromise
+      await originAttached
+
+      expect(initialize).toHaveBeenCalledTimes(2)
+      expect(maxConcurrentRegistries).toBe(1)
+      expect(activeRegistries.size).toBe(1)
+      expect(providerA.projectionDisposer).toHaveBeenCalledTimes(1)
+      expect(providerB.projectionDisposer).not.toHaveBeenCalled()
+      expect(attachOrigin).toHaveBeenCalledTimes(1)
+      expect(closeCoordinator).not.toHaveBeenCalled()
+
+      await mounted.context.fiber.dispose()
+      expect(closeCoordinator).toHaveBeenCalledTimes(1)
+      expect(providerB.projectionDisposer).toHaveBeenCalledTimes(1)
+      expect(activeRegistries.size).toBe(0)
+    } finally {
+      releaseGenerationA()
+      if (providerB !== undefined) await providerB.dispose()
+      if (providerA !== undefined) await providerA.dispose()
+      await mounted.context.fiber.dispose()
+    }
+  })
+
+  it('keeps ordinary Mobile active when optional push Host services are absent', async () => {
+    const mounted = await mount()
+    expect(mounted.command.name).toBe('mobile')
+    const localControl = await invoke(mounted.route, 'GET', '/api/mobile-access/lan/control')
+    expect(localControl.status).toBe(200)
+    expect(JSON.parse(localControl.body)).toMatchObject({ running: false })
+    await expect(readFile(join(mounted.directory, 'mobile-push', 'push-state.json'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it.each([false, true])('checks saved push consent before logout without optional Host services (enabled=%s)', async enabled => {
+    const mounted = await mount(true)
+    const control = await invoke(mounted.route, 'GET', '/api/mobile-access/lan/control')
+    const origin = responseString(JSON.parse(control.body) as Record<string, unknown>, 'origin')
+    const port = Number(new URL(origin).port)
+    const opened = await invoke(mounted.route, 'POST', '/api/mobile-access/lan/pairing/open', '{}')
+    const token = responseString(JSON.parse(opened.body) as Record<string, unknown>, 'token')
+    const paired = await mobileGatewayRequest(port, origin, '/mobile-access/auth/pair', { method: 'POST', body: { token } })
+    expect(paired.status).toBe(201)
+    const cookie = paired.headers['set-cookie']?.map(value => value.split(';', 1)[0] ?? '').join('; ')
+    if (cookie === undefined) throw new Error('Owned logout fixture did not receive pairing cookies')
+    const csrf = responseString(paired.body, 'csrfToken')
+    const keys = createVapidKeys()
+    const fingerprint = vapidFingerprint(keys)
+    const store = new JsonPushStore(join(mounted.directory, 'mobile-push', 'push-state.json'))
+    await store.save({
+      version: 1, keys: { ...keys, fingerprint }, ownerGenerations: [], pending: [], receipts: [], references: [],
+      registrations: [{
+        scopeId: join(mounted.directory, 'devices.json'), deviceId: responseString(paired.body, 'deviceId'), origin,
+        installationId: '11111111-1111-4111-8111-111111111111',
+        subscription: { endpoint: 'https://web.push.apple.com/owned-logout-test', keys: { p256dh: keys.publicKey, auth: Buffer.alloc(16).toString('base64url') } },
+        locale: 'en', preferences: { question: true, plan: true, approval: true, response: true, goal: true, failure: true },
+        generation: 1, keyFingerprint: fingerprint, enabled, health: 'ready',
+      }],
+    })
+    const result = await mobileGatewayRequest(port, origin, '/mobile-access/auth/logout', { method: 'POST', body: {}, cookie, csrf })
+    expect(result.status).toBe(enabled ? 503 : 200)
+    if (enabled) {
+      expect(result.body).toEqual({ error: 'push_unavailable' })
+      expect(result.headers['set-cookie']).toBeUndefined()
+      const stillAuthenticated = await mobileGatewayRequest(port, origin, '/mobile-access/push/config?installationId=11111111-1111-4111-8111-111111111111', { cookie })
+      expect(stillAuthenticated.status).toBe(200)
+    } else expect(result.body).toEqual({ loggedOut: true })
+    expect((await store.load()).registrations[0]?.enabled).toBe(enabled)
+  })
+
+  it('closes the single push runtime on normal plugin unload', async () => {
+    vi.useFakeTimers()
+    const closeCoordinator = vi.spyOn(PushGatewayCoordinator.prototype, 'close')
+    const closeDelivery = vi.spyOn(PushDelivery.prototype, 'close')
+    const closeRegistry = vi.spyOn(PushRegistry.prototype, 'close')
+    try {
+      const mounted = await mount(false, 3080, {}, () => 401, [], true)
+      const pushState = JSON.parse(await readFile(join(mounted.directory, 'mobile-push', 'push-state.json'), 'utf8')) as {
+        keys?: { fingerprint: string }
+      }
+      expect(pushState.keys?.fingerprint).toMatch(/^[0-9a-f]{64}$/u)
+      expect(mounted.pushProjectionDisposer).toBeDefined()
+
+      await mounted.context.fiber.dispose()
+      expect(closeCoordinator).toHaveBeenCalledTimes(1)
+      expect(closeDelivery).toHaveBeenCalledTimes(1)
+      expect(closeRegistry).toHaveBeenCalledTimes(1)
+      expect(mounted.pushProjectionDisposer).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.clearAllTimers()
+      vi.useRealTimers()
+    }
+  })
+
+  it('resets the shared push key registry through the trusted Desktop route', async () => {
+    const requestRejection = vi.fn((request: IncomingMessage) => request.headers.cookie === 'dsh-session=valid' ? undefined : 401)
+    const mounted = await mount(false, 3080, {}, requestRejection, [], true)
+    const before = JSON.parse(await readFile(join(mounted.directory, 'mobile-push', 'push-state.json'), 'utf8')) as {
+      keys?: { fingerprint: string }; registrations: unknown[]; pending: unknown[]; references: unknown[]
+    }
+    const response = await invoke(mounted.route, 'POST', '/api/mobile-access/push/reset', JSON.stringify({ confirm: 'reset-web-push' }), '127.0.0.1', {
+      [DESKTOP_ADMIN_HEADER]: DESKTOP_ADMIN_MARKER, cookie: 'dsh-session=valid',
+    })
+    expect(response.status).toBe(200)
+    expect(JSON.parse(response.body)).toEqual({ reset: true })
+    const after = JSON.parse(await readFile(join(mounted.directory, 'mobile-push', 'push-state.json'), 'utf8')) as {
+      keys?: { fingerprint: string }; registrations: unknown[]; pending: unknown[]; references: unknown[]
+    }
+    expect(after.keys?.fingerprint).not.toBe(before.keys?.fingerprint)
+    expect(after.registrations).toEqual([])
+    expect(after.pending).toEqual([])
+    expect(after.references).toEqual([])
+  })
+
+  it('keeps Mobile controls alive when only push state initialization fails', async () => {
+    const requestRejection = vi.fn((request: IncomingMessage) => request.headers.cookie === 'dsh-session=valid' ? undefined : 401)
+    const mounted = await mount(false, 3080, {}, requestRejection, [], true, true)
+
+    expect(mounted.command).toBeDefined()
+    const control = await invoke(mounted.route, 'GET', '/api/mobile-access/lan/control')
+    expect(control.status).toBe(200)
+    const reset = await invoke(mounted.route, 'POST', '/api/mobile-access/push/reset', JSON.stringify({ confirm: 'reset-web-push' }), '127.0.0.1', {
+      [DESKTOP_ADMIN_HEADER]: DESKTOP_ADMIN_MARKER, cookie: 'dsh-session=valid',
+    })
+    expect(reset.status).toBe(503)
+    expect(JSON.parse(reset.body)).toEqual({ error: 'push_unavailable' })
+  })
+
+  it('protects the explicit local push key reset with Desktop trust, exact confirmation, and bounded JSON', async () => {
+    const requestRejection = vi.fn((request: IncomingMessage) => request.headers.cookie === 'dsh-session=valid' ? undefined : 401)
+    const mounted = await mount(false, 3080, {}, requestRejection)
+    const path = '/api/mobile-access/push/reset'
+    const marker = { [DESKTOP_ADMIN_HEADER]: DESKTOP_ADMIN_MARKER }
+    const valid = JSON.stringify({ confirm: 'reset-web-push' })
+
+    const unmarked = await invoke(mounted.route, 'POST', path, valid, '127.0.0.1', { 'content-type': 'application/json' })
+    expect(unmarked.status).toBe(403)
+    const unauthenticated = await invoke(mounted.route, 'POST', path, valid, '127.0.0.1', marker)
+    expect(unauthenticated.status).toBe(403)
+    const wrongConfirmation = await invoke(mounted.route, 'POST', path, JSON.stringify({ confirm: true }), '127.0.0.1', {
+      ...marker, cookie: 'dsh-session=valid',
+    })
+    expect(wrongConfirmation.status).toBe(400)
+    const extraFields = await invoke(mounted.route, 'POST', path, JSON.stringify({ confirm: 'reset-web-push', installationId: 'attacker' }), '127.0.0.1', {
+      ...marker, cookie: 'dsh-session=valid',
+    })
+    expect(extraFields.status).toBe(400)
+    const validButUnavailable = await invoke(mounted.route, 'POST', path, valid, '127.0.0.1', {
+      ...marker, cookie: 'dsh-session=valid',
+    })
+    expect(validButUnavailable.status).toBe(503)
+    expect(JSON.parse(validButUnavailable.body)).toEqual({ error: 'push_unavailable' })
+    expect(requestRejection).toHaveBeenCalled()
+  })
+
   it('wires explicit management networks to authenticated DSH requests without changing defaults', async () => {
     const authenticate = vi.fn((request: IncomingMessage) => request.headers.cookie === 'dsh-session=valid' ? undefined : 401)
     const mounted = await mount(false, 3080, { adminAllowedCidrs: ['192.168.50.23/32'] }, authenticate)
@@ -781,10 +1186,29 @@ describe('stock DSH lifecycle', () => {
     (_base: string) => 'https://foreign.example/?token=not-ours',
     (base: string) => `${base}/?other=not-a-token`,
   ])('does not open network management when upstream authentication is disabled or unsupported', async authenticationUrl => {
-    const mounted = await mount(false, 3080, { adminAllowedCidrs: ['192.168.50.23/32'] }, () => undefined, [], authenticationUrl)
+    const mounted = await mount(false, 3080, { adminAllowedCidrs: ['192.168.50.23/32'] }, () => undefined, [], false, false, false, false, true, authenticationUrl)
     const path = '/api/mobile-access/lan/control'
     expect((await invoke(mounted.route, 'GET', path, '', '192.168.50.8', {}, '192.168.50.23')).status).toBe(401)
     expect((await invoke(mounted.route, 'GET', path)).status).toBe(200)
+  })
+
+  it('keeps the destructive push key reset loopback-only while admitted NAS management stays available', async () => {
+    const authenticate = vi.fn((request: IncomingMessage) => request.headers.cookie === 'dsh-session=valid' ? undefined : 401)
+    const mounted = await mount(false, 3080, { adminAllowedCidrs: ['192.168.50.23/32'] }, authenticate, [], false, false, false, false, true,
+      base => `${base}/?token=test-launch-token`)
+    // The same explicitly admitted, Core-authenticated NAS peer keeps ordinary management…
+    expect((await invoke(mounted.route, 'GET', '/api/mobile-access/lan/control', '', '192.168.50.8', { cookie: 'dsh-session=valid' }, '192.168.50.23')).status).toBe(200)
+    // …but must not reach the state-destroying notification-key reset.
+    const reset = await invoke(mounted.route, 'POST', '/api/mobile-access/push/reset', JSON.stringify({ confirm: 'reset-web-push' }), '192.168.50.8', {
+      cookie: 'dsh-session=valid', 'content-type': 'application/json', [DESKTOP_ADMIN_HEADER]: DESKTOP_ADMIN_MARKER,
+    }, '192.168.50.23')
+    expect(reset.status).toBe(403)
+    // Loopback admission is unchanged; the unavailable-service response proves the guard admitted this caller.
+    const loopback = await invoke(mounted.route, 'POST', '/api/mobile-access/push/reset', JSON.stringify({ confirm: 'reset-web-push' }), '127.0.0.1', {
+      cookie: 'dsh-session=valid', 'content-type': 'application/json', [DESKTOP_ADMIN_HEADER]: DESKTOP_ADMIN_MARKER,
+    })
+    expect(loopback.status).toBe(503)
+    expect(JSON.parse(loopback.body)).toEqual({ error: 'push_unavailable' })
   })
 
   it('requires an authenticated Host session for official Desktop Origin-less writes', async () => {

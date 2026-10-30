@@ -84,9 +84,9 @@ Settings and defaults were checked against DSH 0.2.0-rc.2: [API gateway configur
 
 ## Optional WebSocket compression
 
-DSH Mobile 0.5.4 can compress selected live-connection paths. This suits limited bandwidth, metered links, or large Session data, trading extra CPU and memory use for reduced transfer volume. The path list is empty by default, retaining the existing uncompressed relay.
+DSH Mobile has supported compression on selected live paths since 0.5.4; **0.8.0 enables it by default on `/api/remote.mux`**. This trades extra CPU and memory for reduced transfer volume on limited-bandwidth or metered links and large Sessions. Set `paths: []` to return to the uncompressed relay.
 
-Add the following property to the existing `config` of the current `mobile-access` entry. This is a **configuration fragment, not a complete profile patch**. Keep the entry's existing interface, certificate, pairing-state, and management settings; do not replace the whole `config` with the fragment.
+It is enabled by default; to state or adjust it explicitly, add the following property to the existing `config` of the current `mobile-access` entry. This is a **configuration fragment, not a complete profile patch**. Keep the entry's existing interface, certificate, pairing-state, and management settings; do not replace the whole `config` with the fragment.
 
 ```yaml
 websocketCompression:
@@ -114,11 +114,15 @@ Compression is most useful when large, compressible live messages cross a bandwi
 
 With the default 1 KiB threshold and no-context-takeover negotiation, the tested 1,023-byte message stayed uncompressed. Incompressible 64 KiB data grew by 22 bytes and added about 1.1 ms to the local round trip. A local bandwidth-shaped test showed lower delivery latency for repetitive messages, but does not predict any particular cellular, relay or LAN result; sustained-load memory and physical-device behavior were not measured.
 
-Compare the same workload with and without compression before drawing a conclusion. HTTP history responses and `/api/remote.mux` frames are separate paths: a faster Session switch after several simultaneous upgrades cannot be attributed to WebSocket compression alone. Compression remains opt-in.
+Compare the same workload with and without compression before drawing a conclusion. HTTP history responses and `/api/remote.mux` frames are separate paths: a faster Session switch after several simultaneous upgrades cannot be attributed to WebSocket compression alone. Since 0.8.0, compression defaults on for the main live path; other paths still need explicit configuration.
 
 ## Static-resource caching and repeated downloads
 
 Owned static resources (`/mobile-access/compat.js`, `mobile-layout.js` and custom CSS/JS) use quoted content ETags and `Cache-Control: private, no-cache`. A browser may store the body but must revalidate before reuse. The gateway checks device authorization and the current resource before processing conditional GET/HEAD requests: unchanged content receives `304`, while a file edit returns the new body. Actual cache reuse still depends on browser behavior.
+
+Owned static assets of at least 1 KiB use gzip when the client accepts it, maintain `Vary: Accept-Encoding`, and use separate content ETags for gzip and identity representations. Smaller assets stay uncompressed. A `304` has no body and does not run compression. Savings depend on content and client cache behavior, not a guaranteed cellular speedup.
+
+Since 0.8.0, the start document names the compatibility bundle by content hash (`/mobile-access/compat-<sha256>.js`) with `private, max-age=31536000, immutable`. A browser retaining its cache can reuse the same revision; changed bytes get a new URL, and a digest that no longer matches returns `404`. The older `/mobile-access/compat.js` retains conditional revalidation. Requests reaching the server still require authorization; a locally cached script contains no credentials and grants no API access.
 
 The Mobile start HTML includes a page identifier bound to the current authenticated Session and remains `no-store`; it does not reuse another page's or Session's start document. Pairing pages and API responses also remain `no-store`. When the gateway applies streaming gzip to an upstream static resource, a valid upstream ETag can remain usable as a weak validator with `Vary: Accept-Encoding`. Identity lengths and range metadata are not reused as compressed-representation metadata. Failed responses are not cached, and API requests receive no new caching policy.
 

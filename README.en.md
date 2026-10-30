@@ -18,6 +18,7 @@
 <p align="center">
   <a href="#what-it-does">What it does</a> ·
   <a href="#quick-start">Quick start</a> ·
+  <a href="#iphone-and-ipad-home-screen-web-app-pwa">iPhone / iPad</a> ·
   <a href="#connection-guide">Connection guide</a> ·
   <a href="#extend-and-customize">Extend and customize</a> ·
   <a href="#device-management">Device management</a> ·
@@ -26,13 +27,15 @@
   <a href="#compatibility">Compatibility</a> ·
   <a href="docs/README.md">Documentation</a> ·
   <a href="#contributors">Contributors</a> ·
-  <a href="https://github.com/saya-ch/dsh-mobile/releases/tag/v0.7.1">Release notes</a> ·
+  <a href="https://github.com/saya-ch/dsh-mobile/releases/tag/v0.8.0">Release notes</a> ·
   <a href="README.md">简体中文</a>
 </p>
 
 > DSH Mobile is a DeepSeek Harness community plugin; the native app supports Android only.
 >
-> **Current stable release: 0.7.1**. Reorganize Mobile access and device management, improve cloudflared settings, pairing expiry and folded sidebars, and add iroh component cleanup and VPN troubleshooting. The independently released Android App remains at 0.7.0; existing pairings are kept. [Plugin release notes and downloads](https://github.com/saya-ch/dsh-mobile/releases/tag/v0.7.1) · [Full changelog](CHANGELOG.md).
+> **Using an iPhone or iPad?** Use Safari or [add DSH Mobile to your Home Screen as a web app (PWA)](<#iphone-and-ipad-home-screen-web-app-pwa>)—no native iOS download needed.
+>
+> **Current stable release: 0.8.0**. Add **iPhone / iPad Home Screen setup and Web Push notifications**, with six categories for questions, plans, approvals, responses, goals and failures. Also improve sidebar position retention, attachment actions and slow-link transfers. [Plugin release notes and downloads](https://github.com/saya-ch/dsh-mobile/releases/tag/v0.8.0) · [Full changelog](CHANGELOG.md).
 >
 > **Version policy**: since plugin **0.6.2**, the Android app and plugin use independent version numbers and releases. Their numbers do not need to match, and a plugin update does not imply an app update. [Compatibility notes](#compatibility).
 
@@ -52,11 +55,12 @@ It also lets you customize the phone from a DSH conversation: `/mobile <what you
 
 - **Continue DSH work from a phone**: the same sessions, Workspaces, messages, and tools, in real time.
 - **Customize the phone UI by talking to DSH**: request layout, interaction, or feature changes in a conversation; changed customization resources are usually picked up automatically.
-- **A dedicated touch layout**: session drawer, tool details, settings, question cards, and composer reorganized for phones; the app follows the system locale (Chinese/English/Italian), plugin UI follows DSH's locale.
+- **A dedicated touch layout**: session drawer, tool details, settings, question cards, and composer reorganized for phones. The sidebar remembers its list position within the page instead of jumping to the top after a session switch. The app follows the system locale (Chinese/English/Italian), plugin UI follows DSH's locale.
 - **Several remote options**: Tailscale, cpolar, cloudflared quick/named tunnels, self-hosted FRP, your own reverse proxy, and experimental iroh without a domain or public port; Windows/Linux x64 can also let the plugin manage Caddy HTTPS and certificates.
 - **Pairing and multi-device**: pair once via QR code, link, or key; Wi-Fi, hotspot, or IP changes normally recover automatically; the app lists LAN and remote paired computers together, checks their reachability periodically, and lets you switch, re-pair, or delete a local record.
 - **One-click diagnostics and approval**: check versions, gateway, network interface, firewall, and the remote path with a redacted report; approve blocked third-party plugin connections per exact path.
-- **Task system notifications**: completion and pending-input alerts via Android system notifications, enabled from DSH General settings inside the app, with redacted lock-screen text.
+- **iPhone / iPad Web Push**: add the page to your Home Screen and explicitly enable notifications in DSH General settings. Choose from six categories and receive alerts while the page is closed or the screen is locked, without conversation text on the lock screen. [Requirements and setup](docs/WEB_PUSH.en.md).
+- **Android task notifications**: enable completion and pending-input alerts in DSH General settings inside the app, using its separate native notification channel with redacted lock-screen text.
 - **Defense in depth**: a private CA pinned for LAN, trusted HTTPS for public remote paths, and a remote CA pinned by the 0.4.6 app for the self-signed FRP entry. Credentials are Keystore-backed, device tokens go only to their exact Origin, and third-party WebSockets are blocked by default.
 
 A paired device can operate DSH on the computer and must be treated as fully trusted. Enable LAN access only on trusted networks, and use a reliable HTTPS channel for remote access. Revoke a lost phone from the computer immediately.
@@ -105,11 +109,24 @@ Restart DSH, then search for **dsh-mobile** under **Settings → Plugin Market**
 
 `setup` automatically selects and remembers the current LAN; Wi-Fi, hotspot, and IP changes normally recover without re-pairing. Use `--address 192.168.x.x` only when automatic selection fails. Settings, certificates, devices, and customization files live under `$DSH_HOME/mobile-access/`.
 
-### Install the phone app
+### Install the Android app
 
-Download the official Android APK using the link above, or open the computer's pairing link in a mobile browser. Then choose LAN or remote access in the [connection guide](#connection-guide); the phone needs no separate tunnel client.
+Download the official Android APK using the link above. Then choose LAN or remote access in the [connection guide](#connection-guide); the phone needs no separate tunnel client. For browser access, including iOS, follow the steps below.
 
 Registry-installed plugins check for updates when the desktop UI loads and show “Update plugin” beside the access-panel title when a newer release is available. Restart DSH after installation. The app download entry shows the latest version; local development packages are not overwritten, and Android does not check for or push app-version updates.
+
+### iPhone and iPad: Home Screen web app (PWA)
+
+The plugin runs on the **computer**; Safari loads its mobile interface. There is no native iOS app to install.
+
+1. Install and enable the plugin on the computer as above. In **Mobile Access**, configure your [connection](<#connection-guide>); prefer a stable, trusted HTTPS address for a lasting Home Screen installation.
+2. Stay in that connection's panel: use **Copy pairing link** for LAN, or **Generate remote pairing QR code** then **Copy remote pairing link** for Remote. Open the resulting browser link in **Safari** and complete pairing. Use the dedicated Mobile Access link, not the computer's ordinary DSH page; Android `dsh1.`/`dsh2.` keys are not browser pairing codes.
+3. From the paired page, open Safari's **Share** menu → **Add to Home Screen**. Turn on **Open as Web App** if offered, then tap **Add**. Menu layout varies; see [Apple's iPhone instructions](<https://support.apple.com/guide/iphone/bookmark-a-website-iph42ab2f3a7/ios>).
+4. Launch the new Home Screen icon to continue the same DSH sessions and Workspaces. If it shows a **Pairing code** form, follow the [fresh-code recovery steps](<docs/WEB_PUSH.en.md#if-the-home-screen-app-shows-a-pairing-form>); Safari's first code is single-use. A normal reconnect page uses saved pairing instead. Keep existing installations and pairing/site data when troubleshooting.
+
+You can also keep using Safari without installing an icon. The computer, DSH and Mobile Gateway must stay running and reachable; adding the web app does **not** provide offline DSH. A changing tunnel hostname does not automatically transfer pairing or push consent.
+
+**Enable Web Push:** launch the Home Screen icon, open **DSH Settings → General → Web push notifications**, select **Enable**, allow notifications and choose your categories. This targets capable iOS/iPadOS **18.4+** Home Screen apps on trusted HTTPS; ordinary Safari tabs and the Android app do not show this entry. Notifications are optional and are not required for ordinary access. [Full guide and troubleshooting](docs/WEB_PUSH.en.md).
 
 ## Connection guide
 
@@ -201,7 +218,7 @@ After selecting the channel in the panel:
 <details>
 <summary>Remote notifications, server maintenance and security limits</summary>
 
-> **Remote notifications**: browser `Notification` permission is granted per Origin, and a web-page system toast appears only on the device running that page. Android task reminders are a separate 0.4.0 feature: enable them under DSH **Settings → General** in the app, and keep the WebView page alive; they are not a general background push service. For reliable background delivery, use a server-side webhook or bot channel you have configured.
+> **Remote notifications**: Android task reminders use the page/SSE path and need the app's WebView to remain alive. [iPhone/iPad Web Push](docs/WEB_PUSH.en.md) is explicitly enabled from a capable Safari Home Screen app and does not need an open page. Both require DSH to keep running on the computer; networks, Focus settings and platform scheduling can delay delivery, so neither is a guaranteed alarm service. Independently configured channels such as dsh-ping remain unchanged.
 
 The Funnel runtime ties the public listener to the parent process and a bounded control channel; parent exit, channel closure, or an explicit stop ends the current generation and cleans up its resources. An unregistered domain on a mainland-China VPS may be intercepted by the cloud provider; public IPv4 mode avoids that dependency. The plugin validates pinned on-demand components; locally managed configuration and binaries live under `$DSH_HOME/mobile-access/` and can be cleaned up from the panel. VPS files require separate cleanup through the self-hosted connection guide.
 
@@ -348,7 +365,8 @@ Selection priority is device choice → computer defaults → plugin configurati
 | Client | Best for | Notes |
 | --- | --- | --- |
 | Android app | Everyday use | Separate Local and Remote entries at first pairing; LAN discovery, system trust for public remote certificates, and app-pinned CA for the self-signed FRP entry |
-| Mobile browser | Temporary or cross-platform | Open the HTTPS origin shown by Mobile Access; a private LAN certificate may need confirmation, while a public remote certificate should not warn |
+| iPhone/iPad Safari or Home Screen web app (PWA) | Everyday iOS access and optional push | [Pair in Safari and add a Home Screen icon](<#iphone-and-ipad-home-screen-web-app-pwa>); no native iOS app. Capable Home Screen apps can enable [Web Push](docs/WEB_PUSH.en.md) |
+| Mobile browser | Everyday or cross-platform access | Open the HTTPS origin shown by Mobile Access; a private LAN certificate may need confirmation, while a public remote certificate should not warn. Continuing through a certificate warning does not make the page eligible for Web Push |
 
 The Android app is a thin Kotlin WebView shell and contains no frontend copy; mobile browsers load the same page. Developers can append `?frontend=stock` to an authenticated mobile URL to diagnose boot and layout behavior. This entry skips dedicated mobile boot rewriting and module selection, but installed client adaptation and authenticated customizations may still apply. It is not a plugin-free control; some API operations may be rejected, so it does not replace normal mobile access. See [skins and mobile layout](docs/SKIN_COMPATIBILITY.en.md).
 
@@ -409,6 +427,8 @@ The plugin retains DSH host peer declarations without rejecting installation or 
 
 ### OS support matrix
 
+This table describes the **computer running the plugin**, not the phone's OS; iPhone/iPad access uses the [browser/Home Screen route](<#iphone-and-ipad-home-screen-web-app-pwa>).
+
 | Channel | Windows x64 | Linux x64 | Linux arm64 | macOS |
 | --- | --- | --- | --- | --- |
 | Local network | Yes (firewall automated) | Yes (open the firewall yourself) | Yes | Yes |
@@ -424,13 +444,14 @@ On macOS, local network, cloudflared, self-hosted FRP and the own reverse proxy 
 
 | DSH Mobile plugin | Verified DeepSeek Harness version |
 | --- | --- |
-| `0.7.1` | Isolated packed installation, mobile sidebar and breakpoint hit tests on `0.2.1-rc.3`, plus access-panel, pairing-expiry and component-cleanup checks. See [CI](https://github.com/saya-ch/dsh-mobile/actions/workflows/ci.yml) for the automated matrix; browser checks do not establish every phone, plugin or public route |
+| `0.8.0` | Push public-contract, settings, encrypted-payload and tap-ownership checks are pinned to `0.2.1-rc.2 / rc.3`; see [CI](https://github.com/saya-ch/dsh-mobile/actions/workflows/ci.yml) for the general boot/layout matrix. iOS device results accept contributor testing; browser checks do not establish every phone, plugin or public route |
 
 <details>
 <summary>Earlier release checks</summary>
 
 | DSH Mobile plugin | Verified DeepSeek Harness version |
 | --- | --- |
+| `0.7.1` | Isolated packed installation, mobile sidebar and breakpoint hit tests on `0.2.1-rc.3`, plus access-panel, pairing-expiry and component-cleanup checks |
 | `0.6.11` | Isolated packed-browser CI on `0.1.7-alpha.2`, `0.1.7-rc.1`, `0.1.7-rc.2`, `0.2.0-rc.1`, `0.2.0-rc.2`, `0.2.1-alpha.2` and `0.2.1-alpha.3`; additional real history-pagination, viewport-preservation and manual-loading checks on `0.2.0-rc.2` and `0.2.1-alpha.3`. Browser checks do not establish acceptance of every phone engine, third-party plugin or public route |
 | `0.6.12` | Packed installation, mobile boot, missing-API simulation, Workspace streaming, retained-page transport recovery and mobile settings on `0.2.1-rc.2`; authentication/resource regression with the actual community `dsh-web-startup-auth@0.1.12` on `0.2.0-rc.2`. This does not establish physical Chromium 92, arbitrary auth-plugin or public-route acceptance |
 | `0.6.13` | Packed text/image HTTP 400 recovery, Host refusal guard and error-feedback checks on `0.2.0-rc.2` and `0.2.1-rc.2`; Gateway 408/431 classification, bounded diagnostics and four Gateway factory wiring passed local tests. DSH source, iroh P2P and Android native code are outside this release |

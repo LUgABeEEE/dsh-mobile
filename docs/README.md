@@ -7,6 +7,8 @@
 | 你想做什么 | 中文 | English |
 | --- | --- | --- |
 | 使用 Android App、了解返回键、权限与升级 | [App 手册](../apps/mobile/README.zh-CN.md) | [Android app](../apps/mobile/README.md) |
+| 用 iPhone/iPad 的 Safari 配对、添加到主屏幕（PWA） | [iPhone/iPad 入门](<../README.md#iphone-与-ipad主屏幕-web-apppwa>) | [iPhone/iPad quick start](<../README.en.md#iphone-and-ipad-home-screen-web-app-pwa>) |
+| 在 iPhone/iPad 主屏幕 App 开启六类网页推送通知（0.8.0 起） | [网页推送](WEB_PUSH.md) | [Web Push](WEB_PUSH.en.md) |
 | 使用固定 Cloudflare 域名，而非临时随机地址 | [命名隧道](CLOUDFLARE_TUNNEL.md) | [Named tunnel](CLOUDFLARE_TUNNEL.en.md) |
 | 请求 cpolar 账号已预留的固定子域名（0.6.7 起） | [固定子域名](CPOLAR_SUBDOMAIN.md) | [Reserved subdomain](CPOLAR_SUBDOMAIN.en.md) |
 | 在已有 VPS 上新部署 FRP 与 HTTPS 入口 | [自建 FRP](SELF_HOSTED_FRP.md) | [Self-hosted FRP](SELF_HOSTED_FRP.en.md) |

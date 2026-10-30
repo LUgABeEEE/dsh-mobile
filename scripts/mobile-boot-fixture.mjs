@@ -83,8 +83,17 @@ export async function within(promise, timeoutMs, failure) {
   } finally { clearTimeout(timer) }
 }
 
-/** Install the actual npm tarball and reject source or unrelated runtime fallbacks. */
-export async function createMobileProfile(root, { tarball, dshBin, excludedClientModules = [], compressedWebSocket = false, missingCompanion = false, extraPatches = [], hostExecution, packageStoreDirectory, packageImportMethod }) {
+/**
+ * Install the actual npm tarball and reject source or unrelated runtime fallbacks.
+ *
+ * `websocketCompressionPaths` states the live-path policy explicitly: omit it for the
+ * plugin's own default, `[]` for the uncompressed relay, or a path list. The boolean
+ * `compressedWebSocket` is kept for the existing callers that predate the default.
+ */
+export async function createMobileProfile(root, {
+  tarball, dshBin, excludedClientModules = [], compressedWebSocket = false, missingCompanion = false,
+  extraPatches = [], hostExecution, packageStoreDirectory, packageImportMethod, websocketCompressionPaths,
+}) {
   const home = join(root, 'home')
   const profile = join(home, 'profiles', 'web')
   const mobileState = join(home, 'mobile-access')
@@ -96,6 +105,9 @@ export async function createMobileProfile(root, { tarball, dshBin, excludedClien
     dependencies: {},
     dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app'] } },
   }, null, 2) + '\n')
+  const compression = websocketCompressionPaths === undefined
+    ? (compressedWebSocket ? { paths: ['/api/remote.mux'] } : undefined)
+    : { paths: websocketCompressionPaths }
   await writeFile(join(profile, 'cordis.patch.yml'), JSON.stringify([{
     id: 'mobile-access',
     config: {
@@ -107,7 +119,7 @@ export async function createMobileProfile(root, { tarball, dshBin, excludedClien
       initiallyEnabled: true,
       ...(hostExecution === undefined ? {} : { hostExecution }),
       ...(excludedClientModules.length > 0 ? { excludedClientModules } : {}),
-      ...(compressedWebSocket ? { websocketCompression: { paths: ['/api/remote.mux'] } } : {}),
+      ...(compression === undefined ? {} : { websocketCompression: compression }),
       listenHost: '127.0.0.1',
       listenPort: 0,
       allowedCidrs: ['127.0.0.0/8'],
@@ -247,7 +259,7 @@ export async function pairMobilePage(phone, pairUrl, logs, {
   await phone.locator('#pair-form button').waitFor({ state: 'visible', timeout: CLIENT_TIMEOUT_MS })
   await beforeSubmit?.(phone)
   await phone.locator('#pair-form button').click()
-  await phone.waitForURL(url => url.pathname === '/', { timeout: 15_000 })
+  await phone.waitForURL(url => url.pathname === '/', { timeout: 15_000, waitUntil: 'commit' })
   const result = await phone.waitForFunction(() => {
     const root = document.querySelector('#root')
     const boot = document.querySelector('[data-dsh-boot]')
@@ -266,6 +278,9 @@ export async function pairMobilePage(phone, pairUrl, logs, {
 
 /** Open upstream Settings in the supplied sidebar; activation can also inspect the real hit target. */
 export async function openMobileSettings(phone, { sidebar, activate = button => button.click() } = {}) {
+  // DSH can restore its General settings after reload; do not click a launcher
+  // behind that already-open modal. Subsequent checks still exercise its controls.
+  if (await phone.locator('.dsh-mobile-settings_row').first().isVisible()) return
   const drawer = sidebar ?? phone.locator('.dshm-drawer')
   if (sidebar === undefined && await drawer.getAttribute('data-open') !== 'true') await drawer.locator('button[data-dsh-mobile-toggle]').click()
   const direct = drawer.locator('button:has([data-slot="settings.trigger"])')
