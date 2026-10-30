@@ -105,8 +105,9 @@ export class JsonPushStore {
     } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
     const temporary = join(directory, `.${basename(this.file)}.${randomBytes(12).toString('hex')}.tmp`)
     try {
-      await writeFile(temporary, serialized, { encoding: 'utf8', flag: 'wx', mode: 0o600 })
+      await writeFile(temporary, '', { encoding: 'utf8', flag: 'wx', mode: 0o600 })
       await restrictPrivateFile(temporary)
+      await writeFile(temporary, serialized, { encoding: 'utf8', flag: 'r+' })
       await rename(temporary, this.file)
     } catch (error) {
       try { await rm(temporary, { force: true }) } catch (cleanupError) { throw new AggregateError([error, cleanupError], 'push state write and cleanup both failed') }

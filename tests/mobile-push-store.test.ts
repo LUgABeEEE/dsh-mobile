@@ -1,17 +1,35 @@
-import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join, win32 } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { dirname, join, win32 } from 'node:path'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import * as privateFiles from '../src/private-file.js'
 import { execFileText } from '../src/exec-file.js'
 import { JsonPushStore, MemoryPushStore } from '../src/mobile-push/store.js'
 import type { PushSnapshot } from '../src/mobile-push/contracts.js'
 
 const roots: string[] = []
-afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }) })
+afterEach(async () => { vi.restoreAllMocks(); for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }) })
 async function root() { const path = await mkdtemp(join(tmpdir(), 'dsh-mobile-push-store-')); roots.push(path); return path }
 const empty: PushSnapshot = { version: 1, ownerGenerations: [], registrations: [], pending: [], receipts: [], references: [] }
 
 describe('private push snapshot stores', () => {
+  it('keeps a candidate empty until private permissions succeed and preserves the prior state on denial', async () => {
+    const file = join(await root(), 'notifications', 'state-v1.json')
+    const store = new JsonPushStore(file)
+    await store.save(empty)
+    const previous = await readFile(file, 'utf8')
+    let beforePermissions: string | undefined
+    vi.spyOn(privateFiles, 'restrictPrivateFile').mockImplementation(async candidate => {
+      beforePermissions = await readFile(candidate, 'utf8')
+      throw new Error('owned fixture permission denial')
+    })
+    const withKeys: PushSnapshot = { ...empty, keys: { publicKey: 'public-A', privateKey: 'private-A', fingerprint: 'fingerprint-A' } }
+    await expect(store.save(withKeys)).rejects.toThrow('owned fixture permission denial')
+    expect(beforePermissions).toBe('')
+    expect(await readFile(file, 'utf8')).toBe(previous)
+    expect(await readdir(dirname(file))).toEqual(['state-v1.json'])
+  })
+
   it('round-trips versioned snapshots and returns defensive memory copies', async () => {
     const store = new MemoryPushStore()
     const input = structuredClone(empty)
