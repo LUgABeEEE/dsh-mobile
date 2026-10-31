@@ -18,7 +18,7 @@ import type { WebRoute } from '@deepseek-ai/dsh-host-webserver'
 import type { IncomingMessage } from 'node:http'
 import { createRequire } from 'node:module'
 import { X509Certificate } from 'node:crypto'
-import { copyFile, lstat, readFile, rm, writeFile } from 'node:fs/promises'
+import { copyFile, lstat, readFile, rm } from 'node:fs/promises'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseControlFile, parseGatewayConfig, type PluginConfig, type ResolvedGatewayConfig } from './config.js'
@@ -547,8 +547,6 @@ export function locateIrohCompanionRoots(importMetaUrl: string, environment: Nod
 export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
   const dshVersion = installedDshVersion()
   const loaded = await loadSetup(config)
-  /** Rebind overrides the managed setup at runtime; the file on disk is the source of truth on restart. */
-  let managedSetupOverride: ManagedSetup | undefined
   const mobileAccess: MobileAccessService = createMobileAccessService(ctx)
   const baseTemplate = loopbackTemplate(loaded, ctx.webServer.port)
   const upstreamLoginUrl = upstreamAuthenticatedUrl(ctx, baseTemplate.upstreamOrigin)
@@ -882,13 +880,12 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
     if (loaded.kind === 'unconfigured') throw new Error(preparedLanSetup === undefined ? 'lan_setup_required' : 'lan_setup_restart_required')
     if (loaded.kind === 'fixed') return startGateway(loaded.config)
     const following = new FollowingMobileAccessRuntime(async () => {
-      const setup = managedSetupOverride ?? loaded.setup
-      const network = selectLanNetwork(undefined, setup.networkInterface)
+      const network = selectLanNetwork(undefined, loaded.setup.networkInterface)
       return {
         key: `${network.name}\0${network.address}\0${network.cidr}`,
         start: async () => startGateway({
           ...loaded.config,
-          ...await materializeManagedSetup(setup),
+          ...await materializeManagedSetup(loaded.setup),
         }),
       }
     }, (error) => {
@@ -1400,71 +1397,6 @@ export async function apply(ctx: Context, config: PluginConfig): Promise<void> {
             throw new HttpError(409, 'lan_setup_failed')
           }
           sendJson(response, 200, await lanSetupPayload(), false)
-          return
-        }
-        if (request.method === 'GET' && target.decodedPathname === `${LOCAL_ADMIN_PREFIX}/lan/networks`) {
-          const networks = availableLanNetworks()
-          const preferred = await preferredLanInterfaceNames()
-          let recommendedAddress: string | undefined
-          try { recommendedAddress = selectLanNetwork(undefined, undefined, undefined, preferred).address } catch { /* ambiguous; the user chooses */ }
-          const currentInterface = loaded.kind === 'managed' ? loaded.setup.networkInterface : undefined
-          sendJson(response, 200, {
-            supported: loaded.kind === 'managed',
-            currentInterface,
-            listenPort: loaded.kind === 'managed' ? loaded.setup.listenPort : 3443,
-            platform: process.platform,
-            networks: networks.map(network => ({
-              name: network.name,
-              address: network.address,
-              cidr: network.cidr,
-              current: network.name === currentInterface,
-              recommended: network.address === recommendedAddress,
-            })),
-          }, false)
-          return
-        }
-        if (request.method === 'POST' && target.decodedPathname === `${LOCAL_ADMIN_PREFIX}/lan/rebind`) {
-          if (loaded.kind !== 'managed') throw new HttpError(409, 'lan_rebind_unsupported')
-          const body = await readJsonObject(request, 4096)
-          const networkInterface = typeof body.networkInterface === 'string' ? body.networkInterface : ''
-          if (networkInterface === '') throw new HttpError(400, 'bad_request')
-          const network = availableLanNetworks().find(candidate => candidate.name === networkInterface)
-          if (network === undefined) throw new HttpError(409, 'lan_rebind_network_unavailable')
-          if (loaded.setup.networkInterface === networkInterface) throw new HttpError(409, 'lan_rebind_unchanged')
-          const setupFile = loaded.setupFile
-          const wasRunning = lanController.isRunning()
-          const previousOrigin = lanGateway?.address().origin
-          const previousSetup = managedSetupOverride ?? loaded.setup
-          const previousSetupFile = await readFile(setupFile, 'utf8')
-          try {
-            if (wasRunning) await lanController.setRunning(false)
-            const result = await prepareManagedLanSetup({
-              setupFile,
-              controlFile: lanControlFile,
-              network,
-              listenPort: previousSetup.listenPort,
-              dshPort: ctx.webServer.port,
-              configureFirewall: true,
-            })
-            managedSetupOverride = result.setup
-            await lanController.setRunning(wasRunning)
-            sendJson(response, 200, {
-              origin: result.origin,
-              previousOrigin,
-              restartRequired: !wasRunning,
-              disconnected: wasRunning,
-            }, false)
-          } catch (error) {
-            logger.error('managed LAN rebind failed: %s', error instanceof Error ? error.stack ?? error.message : String(error))
-            try {
-              await writeFile(setupFile, previousSetupFile, { mode: 0o600 })
-              managedSetupOverride = previousSetup
-              await lanController.setRunning(wasRunning)
-            } catch (restoreError) {
-              logger.error('managed LAN rebind rollback failed: %s', restoreError instanceof Error ? restoreError.message : String(restoreError))
-            }
-            throw new HttpError(500, 'lan_rebind_failed')
-          }
           return
         }
         if (request.method === 'GET' && target.decodedPathname === `${LOCAL_ADMIN_PREFIX}/remote/control`) {
