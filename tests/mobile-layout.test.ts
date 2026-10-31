@@ -1505,3 +1505,15 @@ describe('composer soft-keyboard policy', () => {
     expect(isComposerActionTap(null)).toBe(false)
   })
 })
+
+it('keeps plugin panel controls tappable on coarse pointers, with an opt-out', () => {
+  expect(MOBILE_LAYOUT_STYLES).toContain('[data-dsh-panel="1"]')
+  expect(MOBILE_LAYOUT_STYLES).toContain('min-height:44px!important')
+  expect(MOBILE_LAYOUT_STYLES).toContain('data-dsh-adapt="off"')
+  expect(MOBILE_LAYOUT_STYLES).toContain('overscroll-behavior:contain')
+})
+
+it('stops Android WebView font boosting from inflating fixed-px line boxes', () => {
+  expect(MOBILE_LAYOUT_STYLES).toContain('-webkit-text-size-adjust:100%')
+  expect(MOBILE_LAYOUT_STYLES).toContain('text-size-adjust:100%')
+})
