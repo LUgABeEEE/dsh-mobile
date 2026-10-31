@@ -139,7 +139,7 @@ websocketCompression:
 ### 数据读缓存（`contentCacheTtlMs`，默认 `0`）
 
 - **只缓存白名单路径**：`contentCachePaths` 默认 `["/api/sessions"]`，按前缀匹配自身与子路径，不命中 `/api/sessions-cookie`；设为 `[]` 表示不缓存。
-- **只缓存可安全重放的内容**：状态 200、完整 JSON 正文、无 `Set-Cookie`、上游未标 `no-store`/`private`、未编码；单条 256KB。
+- **只缓存可安全重放的内容**：状态 200、完整 JSON 正文、无 `Set-Cookie`、上游未标 `no-store`/`private`、未编码；单条 256KB，条目数另有上限（`contentCacheMaxEntries`，默认 256），避免空正文或小正文堆满条目。
 - **新鲜度三道闸**：任何非 GET/HEAD 请求清空整组；条目只在窗口内直接重放；过期后若上游带 `ETag`，发 `If-None-Match` 校验，只有 `304` 才刷新并重放，否则回源。
 - 进度的写入发生在请求途中的情况由代际计数拦下：写入已清空的旧正文不会被回存。
 
@@ -148,7 +148,7 @@ websocketCompression:
 - **白名单**：`contentCacheAssetPaths` 默认 `["/plugins", "/assets", "/mobile-access"]`——插件脚本、接口资源与网关自有文件；只缓存 GET 的脚本/样式/JSON/SVG，不含 `text/event-stream` 与二进制。
 - **窗口可以长**（上限 1 小时）：这些文件要么内容寻址、要么带 ETag；过期后同样先条件校验，`304` 才重放，编辑后最多等一个窗口。
 - **写请求不会清空这一组**：它们与清单/会话状态无关，只随内容变化。
-- 单条上限 2MB；两组各有自己的字节预算，取值同为 `contentCacheMaxBytes`（默认 8MB）。
+- 单条上限 2MB；两组各有自己的字节预算与条目上限，取值同为 `contentCacheMaxBytes`（默认 8MB）与 `contentCacheMaxEntries`（默认 256）。
 
 两组的共同保证：响应仍是 `Cache-Control: no-store`（不改浏览器策略）；重放带 `Age` 与 `X-DSH-Mobile-Cache: hit`，校验后重放为 `revalidated`；重放按调用方 `Accept-Encoding` 重新压缩，存储的是 identity 正文；上传、写请求、事件流、范围请求、带 `Set-Cookie` 或需要重新认证的响应永不缓存。
 
@@ -160,6 +160,7 @@ contentCacheAssetTtlMs: 600000           # 静态资源：10 分钟
 # contentCachePaths: ["/api/sessions", "/api/changes"]
 # contentCacheAssetPaths: ["/plugins", "/assets", "/mobile-access"]
 # contentCacheMaxBytes: 8388608
+# contentCacheMaxEntries: 256
 ```
 
 判断是否生效：同一路径第二次请求出现 `X-DSH-Mobile-Cache: hit`（过期校验后为 `revalidated`），上游对应请求计数不再增加。数据组越大越省流量，但窗口内看到的是上一次读到的内容；刷新页面或任何写操作会让它回源。

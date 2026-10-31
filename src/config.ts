@@ -116,6 +116,11 @@ export interface PluginConfig {
   contentCacheTtlMs?: number
   /** Total retained bytes across devices; least-recently-used entries are evicted first. */
   contentCacheMaxBytes?: number
+  /**
+   * Retained bodies per cache group. Empty and tiny bodies barely move the byte
+   * budget, so the count cap is what stops them from piling up.
+   */
+  contentCacheMaxEntries?: number
   /** Exact `/api/` path prefixes the cache may serve; empty keeps every read live. */
   contentCachePaths?: string[]
   /**
@@ -173,6 +178,7 @@ export interface ResolvedGatewayConfig {
   readonly upstreamApiTimeoutMs: number
   readonly contentCacheTtlMs: number
   readonly contentCacheMaxBytes: number
+  readonly contentCacheMaxEntries: number
   readonly contentCachePaths: readonly string[]
   readonly contentCacheAssetTtlMs: number
   readonly contentCacheAssetPaths: readonly string[]
@@ -239,6 +245,7 @@ export const Config: z<PluginConfig> = z.object({
   upstreamApiTimeoutMs: z.natural(),
   contentCacheTtlMs: z.natural(),
   contentCacheMaxBytes: z.natural(),
+  contentCacheMaxEntries: z.natural(),
   contentCachePaths: z.array(String).default(['/api/sessions']),
   contentCacheAssetTtlMs: z.natural(),
   contentCacheAssetPaths: z.array(String).default(['/plugins', '/assets', '/mobile-access']),
@@ -473,6 +480,7 @@ export function parseGatewayConfig(raw: unknown): ResolvedGatewayConfig {
     // cache is one reopen, not a background mirror of Session state.
     contentCacheTtlMs: integer(value.contentCacheTtlMs, 'contentCacheTtlMs', 0, 0, 60_000),
     contentCacheMaxBytes: integer(value.contentCacheMaxBytes, 'contentCacheMaxBytes', 8 * 1024 * 1024, 64 * 1024, 64 * 1024 * 1024),
+    contentCacheMaxEntries: integer(value.contentCacheMaxEntries, 'contentCacheMaxEntries', 256, 1, 65_536),
     contentCachePaths: Object.freeze(normalizeContentCachePaths(value.contentCachePaths ?? ['/api/sessions'])),
     // Assets are immutable or validator-backed, so their window can be long; the
     // ceiling stays an hour so a stale copy cannot outlive an edit by much.
