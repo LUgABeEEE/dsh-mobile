@@ -145,7 +145,7 @@ export const NATIVE_MOBILE_STYLES = `
   [data-dsh-mobile-details] { position:fixed !important; z-index:250 !important; inset:0 0 0 auto !important; width:min(94vw,460px) !important; max-width:none !important; transform:translateX(100%); transition:transform var(--dsh-mobile-motion-duration) var(--dsh-mobile-motion-ease); background:var(--dsw-alias-bg-layer-1, #fff); box-shadow:-18px 0 46px rgb(15 23 42 / 18%); }
   [data-dsh-mobile-details][data-open="true"] { transform:translateX(0); }
   [data-dsh-mobile-handle] { display:none !important; }
-  [data-dsh-mobile-settings] { flex-direction:column !important; width:100vw !important; height:100dvh !important; max-width:none !important; border-radius:0 !important; animation:dsh-mobile-panel-in var(--dsh-mobile-motion-duration) var(--dsh-mobile-motion-ease); }
+  [data-dsh-mobile-settings="true"] { flex-direction:column !important; width:100vw !important; height:100dvh !important; max-width:none !important; border-radius:0 !important; animation:dsh-mobile-panel-in var(--dsh-mobile-motion-duration) var(--dsh-mobile-motion-ease); }
   [data-dsh-mobile-settings-nav] { flex:none !important; width:100% !important; padding:max(14px,env(safe-area-inset-top)) 12px 8px !important; gap:10px !important; border-bottom:1px solid var(--dsw-alias-border-l2,#e8ebef); }
   [data-dsh-mobile-settings-nav] [class*="_navTitle"] { padding:0 8px !important; font-size:18px !important; line-height:28px !important; }
   [data-dsh-mobile-settings-list] { flex-direction:row !important; gap:4px !important; overflow-x:auto !important; scrollbar-width:none; }
@@ -369,7 +369,20 @@ export function markNativeMobileSettings(root: ParentNode): number {
     const children = Array.from(dialog.children) as HTMLElement[]
     const nav = children.find(child => classToken(child, '_nav'))
     const content = children.find(child => classToken(child, '_content'))
-    if (nav === undefined || content === undefined) continue
+    if (nav === undefined) continue
+    if (content === undefined) {
+      const header = children.find(child => classToken(child, '_header'))
+      const options = children.find(child => classToken(child, '_options'))
+      const title = children.find(child => classToken(child, '_navTitle'))
+      if (dialog.getAttribute('data-shortcut-modal') !== 'settings'
+        || header === undefined || options === undefined || title === undefined) continue
+      // The four-seat shell owns responsive grid placement and navigation.
+      // Retain it; only the existing close-target treatment is shared.
+      dialog.dataset.dshMobileSettings = 'grid'
+      header.setAttribute('data-dsh-mobile-settings-header', 'true')
+      marked += 1
+      continue
+    }
     dialog.dataset.dshMobileSettings = 'true'
     nav.dataset.dshMobileSettingsNav = 'true'
     content.dataset.dshMobileSettingsContent = 'true'

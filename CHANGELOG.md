@@ -4,6 +4,8 @@ Notable changes are recorded here. GitHub Releases provide the downloadable pack
 
 ## Unreleased
 
+- Recognize the four-seat settings grid introduced in DSH 0.2.2-alpha.2. Preserve upstream navigation and grid placement while retaining Mobile's accessible close-button target; older two-column settings keep their existing mobile layout.
+- Extend upstream compatibility checks to DSH 0.2.1-rc.5 and 0.2.2-alpha.2, including settings, directory selection, attachments, sidebar, compressed Workspace traffic and public push lifecycle checks. No Android App update is needed for this web-page adjustment.
 - Give plugin panels a host-provided touch floor on coarse pointers (44px hit region, pane scroll containment, opt-out via `data-dsh-adapt="off"`), and stop WebView font boosting from breaking plugin line boxes. Thanks @LUgABeEEE for [#319](https://github.com/saya-ch/dsh-mobile/pull/319).
 - Add a bilingual **plugin mobile baseline** (L1/L2/L3 levels, number provenance, copy-paste stylesheet) as informative project guidance, not an official DSH standard. Thanks @LUgABeEEE for [#316](https://github.com/saya-ch/dsh-mobile/pull/316).
 - Android: reuse revalidated `mobile-boot` batches from a device-side content-addressed cache to cut cold-start re-downloads (~3.8 MB on the measured device); every hit revalidates by ETag and 401/403 still falls through to the WebView. Thanks @LUgABeEEE for [#314](https://github.com/saya-ch/dsh-mobile/pull/314).

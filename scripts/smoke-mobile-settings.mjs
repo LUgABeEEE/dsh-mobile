@@ -100,6 +100,25 @@ async function runCase({ width, height = 900, locale, bridgeMode }) {
       return { left: box.left, right: box.right, viewport: innerWidth }
     })
     assert(headerGeometry.left >= -1 && headerGeometry.right <= headerGeometry.viewport + 1, `Settings header clipped ${JSON.stringify(headerGeometry)}`)
+    const gridGeometry = await close.evaluate(node => {
+      const panel = node.closest('[data-dsh-mobile-settings="grid"]')
+      if (panel === null) return null
+      const children = [...panel.children]
+      const seat = suffix => children.find(child => [...child.classList].some(token => token.endsWith(suffix)))
+      const rect = element => {
+        const box = element.getBoundingClientRect()
+        return { left: box.left, right: box.right, top: box.top, bottom: box.bottom }
+      }
+      return { display: getComputedStyle(panel).display, panel: rect(panel), nav: rect(seat('_nav')),
+        options: rect(seat('_options')), viewport: innerWidth }
+    })
+    if (gridGeometry !== null) {
+      assert.equal(gridGeometry.display, 'grid', 'Mobile must retain the upstream four-seat settings grid')
+      assert(gridGeometry.panel.left >= -1 && gridGeometry.panel.right <= gridGeometry.viewport + 1,
+        `Settings grid clipped ${JSON.stringify(gridGeometry)}`)
+      assert(gridGeometry.nav.bottom <= gridGeometry.options.top + 1 || gridGeometry.nav.right <= gridGeometry.options.left + 1,
+        `Settings navigation overlaps its content ${JSON.stringify(gridGeometry)}`)
+    }
     // First-run dismissal owns its own settings write; measure only the controls under test.
     settingsWrites.length = 0
     const row = page.locator('[data-mobile-font-setting]')
