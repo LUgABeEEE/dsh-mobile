@@ -1011,6 +1011,21 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
   const lanSetupRefresh = element('button', 'dsh-mobile-control__secondary'); lanSetupRefresh.type = 'button'; lanSetupRefresh.textContent = t('lanSetupRefresh')
   const lanSetupConfigure = element('button', 'dsh-mobile-control__primary'); lanSetupConfigure.type = 'button'; lanSetupConfigure.textContent = t('lanSetupConfigure')
   const lanSetupStatus = element('p', 'dsh-mobile-control__status'); lanSetupStatus.setAttribute('role', 'status'); lanSetupStatus.setAttribute('aria-live', 'polite')
+  // Changing the bound network after setup: re-enumerate interfaces, confirm, keep CA/pairings.
+  const lanChange = element('section', 'dsh-mobile-control__lan-setup'); lanChange.hidden = true
+  const lanChangeTitle = element('h3', 'dsh-mobile-control__section-title'); lanChangeTitle.textContent = t('lanChangeTitle')
+  const lanChangeIntro = element('p', 'dsh-mobile-control__intro'); lanChangeIntro.textContent = t('lanChangeIntro')
+  const lanChangeForm = element('div', 'dsh-mobile-control__lan-setup-form')
+  const lanChangeLabel = element('label', 'dsh-mobile-control__field'); lanChangeLabel.textContent = t('lanChangeSelect')
+  const lanChangeSelect = element('select'); lanChangeSelect.setAttribute('aria-label', t('lanChangeSelect'))
+  lanChangeLabel.append(lanChangeSelect)
+  const lanChangeActions = element('div', 'dsh-mobile-control__lan-setup-actions')
+  const lanChangeRefresh = element('button', 'dsh-mobile-control__secondary'); lanChangeRefresh.type = 'button'; lanChangeRefresh.textContent = t('lanChangeRefresh')
+  const lanChangeConfirm = element('button', 'dsh-mobile-control__primary'); lanChangeConfirm.type = 'button'; lanChangeConfirm.textContent = t('lanChangeConfirm')
+  lanChangeActions.append(lanChangeRefresh, lanChangeConfirm)
+  const lanChangeStatus = element('p', 'dsh-mobile-control__status'); lanChangeStatus.setAttribute('role', 'status'); lanChangeStatus.setAttribute('aria-live', 'polite')
+  lanChangeForm.append(lanChangeLabel, lanChangeActions)
+  lanChange.append(lanChangeTitle, lanChangeIntro, lanChangeForm, lanChangeStatus)
   const trustedNetworks = element('details', 'dsh-mobile-control__details')
   const trustedNetworksSummary = element('summary'); trustedNetworksSummary.textContent = t('trustedNetworksTitle')
   const trustedNetworksHelp = element('p', 'dsh-mobile-control__component-note'); trustedNetworksHelp.textContent = t('trustedNetworksHelp')
@@ -1747,7 +1762,7 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
   const diagnosticsReport = element('pre', 'dsh-mobile-control__diagnostic-report')
   diagnosticsDetails.append(diagnosticsDetailsSummary, diagnosticsReport)
   header.append(title, headerActions); actions.append(toggle, pair, linkPair)
-  lanView.append(lanSetup, access, qrBox, lanPairingValidity, status, extensionStatus, actions, trustedNetworks)
+  lanView.append(lanSetup, lanChange, access, qrBox, lanPairingValidity, status, extensionStatus, actions, trustedNetworks)
   // Two-column remote layout: the channel list on the left, its configuration on
   // the right, so switching providers no longer scrolls the setup out of view.
   const channelPane = element('div', 'dsh-mobile-control__channel-pane')
@@ -1762,6 +1777,8 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
   let lanConfigured = true
   let lanRestartRequired = false
   let lanSetupLoaded = false
+  let lanChangeLoaded = false
+  let lanChangeBusy = false
   let remoteRunning = false
   let remoteReady = false
   let remoteProvider: MobileRemoteProvider = 'tailscale'
@@ -1959,6 +1976,8 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
     lanChoiceBadge.textContent = running ? t('lanBadgeOn') : t('lanBadgeOff')
     origin = running && typeof data.origin === 'string' ? data.origin : ''
     lanSetup.hidden = lanConfigured && !lanRestartRequired
+    lanChange.hidden = !lanConfigured || lanRestartRequired
+    if (!lanChange.hidden && !lanChangeLoaded) loadLanChange()
     lanSetupForm.hidden = lanRestartRequired
     lanSetupIntro.hidden = lanRestartRequired
     status.hidden = !lanConfigured || lanRestartRequired
@@ -2045,6 +2064,67 @@ function installControl(): { remove: () => void; toggle: () => void; isOpen: () 
       lanSetupConfigure.textContent = t('lanSetupConfigure')
       lanSetupRefresh.disabled = false
       lanSetupConfigure.disabled = lanRestartRequired || lanSetupSelect.options.length === 0
+    })
+  })
+  const lanChangeOptionCount = (): number => {
+    const options = (lanChangeSelect as HTMLSelectElement).options
+    return options === undefined ? lanChangeSelect.childElementCount : options.length
+  }
+  const renderLanChange = (data: Record<string, unknown>): void => {
+    const networks = Array.isArray(data.networks)
+      ? data.networks.filter((entry): entry is Record<string, unknown> => typeof entry === 'object' && entry !== null)
+      : []
+    if (typeof lanChangeSelect.replaceChildren === 'function') lanChangeSelect.replaceChildren()
+    else {
+      // Fake DOM nodes in tests may lack replaceChildren; emulate it.
+      try { while (lanChangeSelect.firstChild) lanChangeSelect.removeChild(lanChangeSelect.firstChild) } catch { /* keep whatever the fake DOM supports */ }
+    }
+    for (const network of networks) {
+      const name = typeof network.name === 'string' ? network.name : ''
+      const address = typeof network.address === 'string' ? network.address : ''
+      if (name === '') continue
+      const option = element('option')
+      option.value = name
+      option.textContent = `${name} · ${address}${network.current === true ? ` · ${t('lanChangeCurrent')}` : ''}`
+      if (network.current === true) option.selected = true
+      lanChangeSelect.append(option)
+    }
+    lanChangeConfirm.disabled = lanChangeOptionCount() === 0
+  }
+  const loadLanChange = (): void => {
+    lanChangeLoaded = true
+    lanChangeRefresh.disabled = true
+    void controlRequestJson('/api/mobile-access/lan/networks').then(renderLanChange, () => {
+      lanChangeStatus.textContent = t('lanChangeFailed')
+    }).finally(() => { lanChangeRefresh.disabled = false })
+  }
+  lanChangeRefresh.addEventListener('click', () => { loadLanChange() })
+  lanChangeSelect.addEventListener('change', () => { lanChangeConfirm.disabled = lanChangeOptionCount() === 0 })
+  lanChangeConfirm.addEventListener('click', () => {
+    if (lanChangeSelect.value === '' || lanChangeBusy) return
+    lanChangeBusy = true
+    lanChangeConfirm.disabled = true
+    lanChangeRefresh.disabled = true
+    lanChangeConfirm.textContent = t('lanChangeBusy')
+    lanChangeStatus.textContent = t('lanChangeBusy')
+    void controlRequestJson('/api/mobile-access/lan/rebind', {
+      method: 'POST',
+      body: JSON.stringify({ networkInterface: lanChangeSelect.value }),
+    }, LONG_CONTROL_REQUEST_TIMEOUT_MS).then(data => {
+      lanChangeStatus.textContent = data.disconnected === true ? t('lanChangeOkDisconnected') : t('lanChangeOk')
+      void controlRequestJson('/api/mobile-access/lan/setup').then(renderLanSetup, () => {})
+      if (data.disconnected === true) openPairing('key')
+    }, error => {
+      const text = String(error)
+      lanChangeStatus.textContent = text.includes('lan_rebind_unchanged') ? t('lanChangeUnchanged')
+        : text.includes('lan_rebind_network_unavailable') ? t('lanChangeUnavailable')
+        : text.includes('lan_rebind_unsupported') ? t('lanChangeUnsupported')
+        : t('lanChangeFailed')
+    }).finally(() => {
+      lanChangeBusy = false
+      lanChangeConfirm.textContent = t('lanChangeConfirm')
+      lanChangeRefresh.disabled = false
+      lanChangeConfirm.disabled = lanChangeOptionCount() === 0
     })
   })
   const clearQrTarget = (target: HTMLDivElement): void => {

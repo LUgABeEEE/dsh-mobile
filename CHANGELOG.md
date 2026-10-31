@@ -7,6 +7,7 @@ Notable changes are recorded here. GitHub Releases provide the downloadable pack
 - Give plugin panels a host-provided touch floor on coarse pointers (44px hit region, pane scroll containment, opt-out via `data-dsh-adapt="off"`), and stop WebView font boosting from breaking plugin line boxes. Thanks @LUgABeEEE for [#319](https://github.com/saya-ch/dsh-mobile/pull/319).
 - Add a bilingual **plugin mobile baseline** (L1/L2/L3 levels, number provenance, copy-paste stylesheet) as informative project guidance, not an official DSH standard. Thanks @LUgABeEEE for [#316](https://github.com/saya-ch/dsh-mobile/pull/316).
 - Android: reuse revalidated `mobile-boot` batches from a device-side content-addressed cache to cut cold-start re-downloads (~3.8 MB on the measured device); every hit revalidates by ETag and 401/403 still falls through to the WebView. Thanks @LUgABeEEE for [#314](https://github.com/saya-ch/dsh-mobile/pull/314).
+- Local network: add **Change network** in the desktop LAN panel — re-scans interfaces, keeps the private CA and paired devices, re-signs the server certificate for the new address, updates the listen address and allowed subnet, and restarts the listener when running (connected phones reconnect with a new pairing QR). [#317](https://github.com/saya-ch/dsh-mobile/issues/317)
 
 ## 0.8.0 - 2026-10-30
 
