@@ -2,6 +2,12 @@
 
 Notable changes are recorded here. GitHub Releases provide the downloadable packages and generated commit notes.
 
+## Unreleased
+
+- Give plugin panels a host-provided touch floor on coarse pointers (44px hit region, pane scroll containment, opt-out via `data-dsh-adapt="off"`), and stop WebView font boosting from breaking plugin line boxes. Thanks @LUgABeEEE for [#319](https://github.com/saya-ch/dsh-mobile/pull/319).
+- Add a bilingual **plugin mobile baseline** (L1/L2/L3 levels, number provenance, copy-paste stylesheet) as informative project guidance, not an official DSH standard. Thanks @LUgABeEEE for [#316](https://github.com/saya-ch/dsh-mobile/pull/316).
+- Android: reuse revalidated `mobile-boot` batches from a device-side content-addressed cache to cut cold-start re-downloads (~3.8 MB on the measured device); every hit revalidates by ETag and 401/403 still falls through to the WebView. Thanks @LUgABeEEE for [#314](https://github.com/saya-ch/dsh-mobile/pull/314).
+
 ## 0.8.0 - 2026-10-30
 
 - **iPhone / iPad Web Push:** add opt-in notifications for capable Safari Home Screen web apps on trusted HTTPS, targeting iOS/iPadOS 18.4+. Choose Questions, Plans, Approvals, Responses, Goals and Failures in **DSH Settings → General → Web push notifications**, and send a test without submitting a model request. No native iOS app, service worker or notification SaaS account is required. Thanks @chintoleung for [#297](https://github.com/saya-ch/dsh-mobile/pull/297).

@@ -4,7 +4,7 @@
 
 This document gives a plugin-owned WebView panel a baseline that can be accepted or rejected: three levels, the source of every number, a stylesheet to copy, and how to prove it holds. It answers "how good is good enough"; **how** to get there is in the [adaptation guide](MOBILE_PLUGIN_ADAPTATION.en.md), and this project's own visual numbers live in the [design reference](../design-system/dsh-mobile/MASTER.md).
 
-It is an **informative standard** and does not change the existing boundary: the mobile layer owns connectivity and page layout, it does not rearrange a third-party plugin's internal controls, and a panel's small-screen usability is the plugin author's responsibility. The levels are not a release gate; they exist for issue checklists, PR self-review, or an agreement between an author and their users. Missing a level is not a defect — per the [contributing guide](../CONTRIBUTING.md), a compatibility request is not a guarantee for every third-party combination.
+It is an **informative standard** and does not change the existing boundary: the mobile layer owns connectivity and page layout, it does not rearrange a third-party plugin's internal controls, and a panel's small-screen usability is the plugin author's responsibility. The levels are not a release gate; they exist for issue checklists, PR self-review, or an agreement between an author and their users. Missing a level is not a defect — per the [contributing guide](../CONTRIBUTING.md), a compatibility request is not a guarantee for every third-party combination. **This baseline is this project's adaptation guidance, not an official DSH standard, and does not represent the DSH team's position.**
 
 ## Three levels
 
