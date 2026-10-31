@@ -1477,10 +1477,12 @@ export class MobileAccessGateway {
       join(dirname(config.stateFile), `${basename(config.stateFile)}.client-modules.json`), config.excludedClientModules,
     )
     this.contentCache = new ContentCache(
-      config.contentCacheTtlMs, config.contentCacheMaxBytes, config.contentCachePaths, CONTENT_CACHE_MAX_ENTRY_BYTES,
+      config.contentCacheTtlMs, config.contentCacheMaxBytes, config.contentCacheMaxEntries,
+      config.contentCachePaths, CONTENT_CACHE_MAX_ENTRY_BYTES,
     )
     this.assetCache = new ContentCache(
-      config.contentCacheAssetTtlMs, config.contentCacheMaxBytes, config.contentCacheAssetPaths, CONTENT_CACHE_MAX_ASSET_BYTES,
+      config.contentCacheAssetTtlMs, config.contentCacheMaxBytes, config.contentCacheMaxEntries,
+      config.contentCacheAssetPaths, CONTENT_CACHE_MAX_ASSET_BYTES,
     )
     this.listenerTlsEnabled = config.tls.mode === 'provided'
     this.tlsEnabled = config.publicTls

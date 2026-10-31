@@ -4152,6 +4152,25 @@ describe('opt-in API read cache', () => {
     expect(inner.observations.filter(entry => entry.url === '/api/sessions')).toHaveLength(2)
   })
 
+  it('evicts the oldest body when the entry cap is reached', async () => {
+    const { inner, instance, headers } = await cachedGateway({
+      contentCacheTtlMs: 60_000,
+      contentCacheMaxEntries: 1,
+      contentCachePaths: ['/api/sessions', '/api/other-read'],
+    })
+    const first = await request(instance.address().port, '/api/sessions', { headers })
+    expect(first.status).toBe(200)
+    expect(first.headers['x-dsh-mobile-cache']).toBeUndefined()
+    // The only count slot is taken, so the Session body is evicted.
+    await request(instance.address().port, '/api/other-read', { headers })
+    const repeat = await request(instance.address().port, '/api/sessions', { headers })
+    expect(repeat.headers['x-dsh-mobile-cache']).toBeUndefined()
+    expect(inner.observations.filter(entry => entry.url === '/api/sessions')).toHaveLength(2)
+    // That refetch took the only slot back, so the newest body replays.
+    const live = await request(instance.address().port, '/api/sessions', { headers })
+    expect(live.headers['x-dsh-mobile-cache']).toBe('hit')
+  })
+
   it('revalidates a stored etag instead of re-downloading the body', async () => {
     const { inner, instance, headers } = await cachedGateway({ contentCacheTtlMs: 40 })
     const first = await request(instance.address().port, '/api/sessions/etag', { headers })
@@ -4275,6 +4294,13 @@ describe('content cache configuration', () => {
     const resolved = parse({ contentCacheAssetTtlMs: 600_000 })
     expect(resolved.contentCacheAssetTtlMs).toBe(600_000)
     expect(() => parse({ contentCacheAssetTtlMs: 3_600_001 })).toThrow(/contentCacheAssetTtlMs/u)
+  })
+
+  it('defaults to a bounded entry count and rejects a count outside it', () => {
+    expect(parse().contentCacheMaxEntries).toBe(256)
+    expect(parse({ contentCacheMaxEntries: 16 }).contentCacheMaxEntries).toBe(16)
+    expect(() => parse({ contentCacheMaxEntries: 0 })).toThrow(/contentCacheMaxEntries/u)
+    expect(() => parse({ contentCacheMaxEntries: 65_537 })).toThrow(/contentCacheMaxEntries/u)
   })
 
   it('accepts a bounded TTL and keeps custom paths', () => {

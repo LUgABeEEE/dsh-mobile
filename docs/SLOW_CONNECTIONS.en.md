@@ -139,7 +139,7 @@ Reads stay fresh by default: both groups are off, the gateway caches nothing, an
 ### API read cache (`contentCacheTtlMs`, default `0`)
 
 - **Allowlisted paths only**: `contentCachePaths` defaults to `["/api/sessions"]`, matching that path and its subpaths, never a sibling such as `/api/sessions-cookie`. `[]` caches nothing.
-- **Replay-safe content only**: status 200, complete JSON, no `Set-Cookie`, no upstream `no-store`/`private`, identity encoded; 256KB per entry.
+- **Replay-safe content only**: status 200, complete JSON, no `Set-Cookie`, no upstream `no-store`/`private`, identity encoded; 256KB per entry and a separate entry-count cap (`contentCacheMaxEntries`, default 256) so empty or tiny bodies cannot fill the cache.
 - **Three freshness gates**: every non-GET/HEAD request clears this group; an entry replays directly only inside the window; once expired, an upstream `ETag` is revalidated with `If-None-Match` and only a `304` refreshes and replays, otherwise the body is fetched again. A write landing mid-stream cannot resurrect the body it cleared (generation counter).
 
 ### Static resource cache (`contentCacheAssetTtlMs`, default `0`)
@@ -147,7 +147,7 @@ Reads stay fresh by default: both groups are off, the gateway caches nothing, an
 - **Allowlist**: `contentCacheAssetPaths` defaults to `["/plugins", "/assets", "/mobile-access"]` — plugin scripts, interface assets and gateway-owned files. Only GET scripts, styles, JSON and SVG are eligible; `text/event-stream` and binary bodies are not.
 - **The window can be long** (up to one hour): these files are content-addressed or ETag-validated, and expiry still revalidates before replaying, so an edit costs at most one window.
 - **A write never clears this group**: it is unrelated to list or Session state and only changes with the files themselves.
-- 2MB per entry; each group has its own byte budget, both taken from `contentCacheMaxBytes` (8MB default).
+- 2MB per entry; each group has its own byte budget and entry cap, both taken from `contentCacheMaxBytes` (8MB default) and `contentCacheMaxEntries` (256 default).
 
 Both groups share the same guarantees: responses keep `Cache-Control: no-store`, so browser policy is unchanged; replays carry `Age` and `X-DSH-Mobile-Cache: hit` (`revalidated` after a conditional check); the stored copy is identity and replays are re-compressed for the caller's `Accept-Encoding`; uploads, writes, event streams, range requests, cookie-setting or auth-dependent responses are never cached.
 
@@ -159,6 +159,7 @@ contentCacheAssetTtlMs: 600000           # static resources: 10 minutes
 # contentCachePaths: ["/api/sessions", "/api/changes"]
 # contentCacheAssetPaths: ["/plugins", "/assets", "/mobile-access"]
 # contentCacheMaxBytes: 8388608
+# contentCacheMaxEntries: 256
 ```
 
 To check it works, the second request for the same path carries `X-DSH-Mobile-Cache: hit` (`revalidated` after expiry) and the upstream request count stops increasing. A longer API window saves more bandwidth but shows the last read until it expires; reloading the page or any write returns it to the upstream.

@@ -30,6 +30,7 @@ export interface ContentCacheEntry {
 /** Counters for tests and operator diagnostics. */
 export interface ContentCacheStats {
   readonly enabled: boolean
+  readonly maxEntries: number
   readonly entries: number
   readonly bytes: number
   readonly hits: number
@@ -98,18 +99,21 @@ export class ContentCache {
   /**
    * @param ttlMs - Freshness window; `0` disables the cache entirely.
    * @param maxBytes - Total retained body bytes across every device.
+   * @param maxEntries - Retained bodies across every device; empty or small bodies
+   *   cost almost nothing per byte, so the byte budget alone lets them pile up.
    * @param paths - Normalized allowlist from `normalizeContentCachePaths`.
    * @param maxEntryBytes - Largest single body worth retaining.
    */
   constructor(
     private readonly ttlMs: number,
     private readonly maxBytes: number,
+    private readonly maxEntries: number,
     private readonly paths: readonly string[],
     private readonly maxEntryBytes: number,
   ) {}
 
   get enabled(): boolean {
-    return this.ttlMs > 0 && this.paths.length > 0 && this.maxBytes > 0
+    return this.ttlMs > 0 && this.paths.length > 0 && this.maxBytes > 0 && this.maxEntries > 0
   }
 
   /** Whether this request target is eligible for the cache at all. */
@@ -199,6 +203,7 @@ export class ContentCache {
   describe(): ContentCacheStats {
     return {
       enabled: this.enabled,
+      maxEntries: this.maxEntries,
       entries: this.entries.size,
       bytes: this.bytes,
       hits: this.hits,
@@ -215,12 +220,21 @@ export class ContentCache {
     this.bytes = Math.max(0, this.bytes - existing.body.byteLength)
   }
 
-  /** Evict expired entries first, then least-recently-used, until the byte cap holds. */
+  /** Evict expired entries, then least-recently-used entries until both caps hold. */
   private sweep(now: number): void {
     for (const [key, entry] of this.entries) {
       if (entry.expiresAt > now) continue
       this.entries.delete(key)
       this.bytes = Math.max(0, this.bytes - entry.body.byteLength)
+    }
+    // The count cap comes first: a body evicted by the byte cap below would otherwise
+    // be counted once, and a small-body flood must not survive merely because it is
+    // cheap in bytes.
+    while (this.entries.size > this.maxEntries) {
+      const oldest = this.entries.keys().next().value
+      if (oldest === undefined) break
+      this.drop(oldest)
+      this.evictions += 1
     }
     while (this.bytes > this.maxBytes) {
       const oldest = this.entries.keys().next().value
