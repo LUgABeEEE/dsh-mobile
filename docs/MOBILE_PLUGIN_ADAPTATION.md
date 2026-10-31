@@ -2,6 +2,8 @@
 
 [English](MOBILE_PLUGIN_ADAPTATION.en.md) · [返回文档索引](README.md)
 
+> 验收级别与数字出处见[插件移动端基线](MOBILE_PLUGIN_BASELINE.md)；本文负责做法与示例。
+
 这份指南面向 DSH 插件作者，目标是**小屏可用，桌面功能不回退**。DSH Mobile 提供连接、页面布局和公共入口，不会逐个重排第三方插件的内部控件。可以先用浏览器完成适配，再补充真机验证；没有 Android 设备并不妨碍开始。
 
 ## 先确认面板所在位置

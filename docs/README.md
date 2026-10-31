@@ -43,6 +43,7 @@
 ## 开发与安全 / Development and security
 
 0.6.3 的 [扩展 Worker 指南](EXTENSION_WORKERS.md)／[Worker guide](EXTENSION_WORKERS.en.md) 介绍按扩展启用、预算与显式恢复；此功能不迁移普通 Cordis 插件，也不是权限沙箱。
+[插件移动端基线](MOBILE_PLUGIN_BASELINE.md)／[Plugin mobile baseline](MOBILE_PLUGIN_BASELINE.en.md) 把「小屏可用、桌面不回退」拆成三级要求与验收证据；做法与示例见[适配指南](MOBILE_PLUGIN_ADAPTATION.md)／[guide](MOBILE_PLUGIN_ADAPTATION.en.md)。
 
 - [贡献指南](https://github.com/saya-ch/dsh-mobile/blob/main/CONTRIBUTING.md)：本地检查、浏览器与 Android 验证、发布要求。
 - [安全说明](../SECURITY.md)：配对授权、TLS、组件清理与私密漏洞反馈。
