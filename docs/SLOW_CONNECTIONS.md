@@ -176,6 +176,11 @@ contentCacheHistoryTtlMs: 8000           # 历史页：8 秒
 
 判断是否生效：同一路径第二次请求出现 `X-DSH-Mobile-Cache: hit`（过期校验后为 `revalidated`），上游对应请求计数不再增加。数据组越大越省流量，但窗口内看到的是上一次读到的内容；刷新页面或任何写操作会让它回源。
 
+### 适用范围与已验证收益
+
+- **静态资源组**在真实 DSH 0.2.1-rc.2 上实测：启动文档里 4 个 `/assets/*` 资源共 1,785,636 B，重复加载 4/4 命中（`X-DSH-Mobile-Cache: hit`），1.79 MB 不再回源。
+- **两个读组只对把读方法暴露成 HTTP 的部署有效。** DSH 0.2.x 的会话列表与历史页在 `/api/remote.mux` 的 WebSocket 帧上（`session/list`、`session/page`），默认白名单（`/api/sessions`；`/api/session` + `page`）不会命中；服务器实测这些 HTTP 路由返回 `404`，同版本存在的 `/api` 路由只有 `changes.summary`、`session.export`、`present.open`、`file`、`session/uploadFileBinary`、`remote.mux` 等。这些组默认关闭；在其它部署上开启前，先用 `X-DSH-Mobile-Cache` 确认目标路由确实存在。
+
 ## 手动压缩会话与长时间 API 请求（0.6.0）
 
 手机发出的 `/compact` 等命令要通过移动网关的 HTTP API；DSH 内部触发的自动压缩不经过这次网关请求。旧版网关对所有上游代理请求都使用默认 30 秒的 `upstreamTimeoutMs`，因此模型仍在生成摘要时，手动压缩可能先收到 `502 upstream_unavailable`。[#171](https://github.com/saya-ch/dsh-mobile/issues/171) 记录了这一情况。

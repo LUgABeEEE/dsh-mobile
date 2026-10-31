@@ -175,6 +175,11 @@ contentCacheHistoryTtlMs: 8000           # history pages: 8 seconds
 
 To check it works, the second request for the same path carries `X-DSH-Mobile-Cache: hit` (`revalidated` after expiry) and the upstream request count stops increasing. A longer API window saves more bandwidth but shows the last read until it expires; reloading the page or any write returns it to the upstream.
 
+### Where this applies, and what has been measured
+
+- **The static resource group** was measured against a real DSH 0.2.1-rc.2: the four `/assets/*` resources in its boot document total 1,785,636 B, and a repeat load hit 4/4 (`X-DSH-Mobile-Cache: hit`) — 1.79 MB not re-fetched.
+- **The two read groups only help a deployment that exposes its reads as HTTP.** DSH 0.2.x carries the Session list and history page as WebSocket frames on `/api/remote.mux` (`session/list`, `session/page`), so the default allowlists (`/api/sessions`; `/api/session` with `page`) never match; those HTTP routes return `404` on the measured servers, whose only `/api` routes are `changes.summary`, `session.export`, `present.open`, `file`, `session/uploadFileBinary`, `remote.mux` and similar. The groups stay off by default; before enabling them elsewhere, confirm the target route exists via `X-DSH-Mobile-Cache`.
+
 ## Manual compaction and long-running API requests (0.6.0)
 
 Commands such as `/compact` sent from the phone traverse the Mobile gateway's HTTP API. Automatic compaction inside DSH does not traverse that gateway request. Older gateways used the default 30-second `upstreamTimeoutMs` for every proxied request, so manual compaction could return `502 upstream_unavailable` while the model was still producing the summary. [#171](https://github.com/saya-ch/dsh-mobile/issues/171) records this case.
