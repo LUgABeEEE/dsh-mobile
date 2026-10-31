@@ -131,6 +131,20 @@ async function withControl(browser, name, options, run) {
       json(response, 200, { configured: true, running: true, origin: 'https://192.168.50.20:3443' })
       return
     }
+    if (pathname === `${prefix}/lan/networks`) {
+      json(response, 200, {
+        supported: true,
+        currentInterface: 'fixture0',
+        listenPort: 3443,
+        platform: process.platform,
+        networks: [{ name: 'fixture0', address: '192.168.50.20', cidr: '192.168.50.0/24', current: true, recommended: true }],
+      })
+      return
+    }
+    if (pathname === `${prefix}/lan/rebind` && request.method === 'POST') {
+      json(response, 200, { origin: 'https://192.168.50.21:3443', previousOrigin: 'https://192.168.50.20:3443', restartRequired: false, disconnected: true })
+      return
+    }
     if (/^\/api\/mobile-access\/(lan|remote)\/pairing\/open$/u.test(pathname) && request.method === 'POST') {
       const token = `owned-pairing-fixture-${++state.pairingSequence}`
       json(response, 201, { pairUrl: `https://fixture.example/mobile-access/pair#token=${token}`,
