@@ -1,0 +1,1292 @@
+From 722626e6cc0ac80176216d554e8019562d522c72 Mon Sep 17 00:00:00 2001
+From: LUgABeEEE <LUgABeEEE@users.noreply.github.com>
+Date: Mon, 2 Nov 2026 17:06:16 +0800
+Subject: [PATCH 1/2] feat(gateway): add an opt-in static-asset cache as a
+ local patch
+
+Upstream withdrew the three-group cache in #267 (reverted by #327) because the
+API and history groups had no reachable HTTP route: session lists and history
+are frames on /api/remote.mux. This local patch keeps only the group that has a
+real route - /plugins and /assets - and leaves the rest out on purpose.
+
+- contentCacheAssetTtlMs (0 = off), contentCacheAssetPaths (/plugins and
+  /assets only), contentCacheMaxBytes, contentCacheMaxEntries.
+- Every hit revalidates with If-None-Match; only a 304 replays the stored body
+  (Age, X-DSH-Mobile-Cache). Browser responses keep Cache-Control: no-store.
+- Writes, uploads, event streams, range requests, Set-Cookie responses and
+  oversized bodies are never cached, and a write never clears the group.
+- Gateway-owned /mobile-access routes are answered locally and never reach the
+  proxy, so they are not in the default path list.
+
+Not ready for upstream submission as-is: it still needs real-device hit and
+saving measurements. See patches/README.md.
+---
+ CHANGELOG.md                |   4 +
+ docs/SLOW_CONNECTIONS.en.md |  35 +++-
+ docs/SLOW_CONNECTIONS.md    |  38 ++++-
+ src/config.ts               |  36 +++++
+ src/content-cache.ts        | 225 ++++++++++++++++++++++++++
+ src/gateway.ts              | 164 ++++++++++++++++++-
+ tests/content-cache.test.ts | 230 +++++++++++++++++++++++++++
+ tests/gateway.test.ts       | 309 ++++++++++++++++++++++++++++++++++++
+ 8 files changed, 1035 insertions(+), 6 deletions(-)
+ create mode 100644 src/content-cache.ts
+ create mode 100644 tests/content-cache.test.ts
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index c64714b..891b971 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -2,6 +2,10 @@
+ 
+ Notable changes are recorded here. GitHub Releases provide the downloadable packages and generated commit notes.
+ 
++## Unreleased (local patch)
++
++- Add an opt-in **static-asset cache** as a local patch; upstream 0.8.1 / 0.8.2 does not contain it, and it is off by default (`contentCacheAssetTtlMs: 0`). It covers plugin bundles and interface assets under `contentCacheAssetPaths` (`/plugins`, `/assets`); gateway-owned `/mobile-access` routes are answered locally and never reach this cache. Saved changes take effect after DSH restarts or the plugin is reloaded. A repeat GET inside the window replays with `Age` and `X-DSH-Mobile-Cache: hit`; an expired entry is never replayed as fresh — it is revalidated with `If-None-Match`, and only a `304` refreshes and replays it (`revalidated`). A write never clears the group, and uploads, writes, event streams, range requests, `Set-Cookie` responses and oversized bodies are never cached. It is bounded by both `contentCacheMaxBytes` and an entry count (`contentCacheMaxEntries`, default 256), so empty or tiny responses cannot fill it, and a replay adds no browser cacheability (`Cache-Control: no-store` stays the default policy). See [slow connections](docs/SLOW_CONNECTIONS.md#可选的静态资源缓存本地补丁).
++
+ ## 0.8.1 - 2026-11-01
+ 
+ - Recognize the four-seat settings grid introduced in DSH 0.2.2-alpha.2. Preserve upstream navigation and grid placement while retaining Mobile's accessible close-button target; older two-column settings keep their existing mobile layout.
+diff --git a/docs/SLOW_CONNECTIONS.en.md b/docs/SLOW_CONNECTIONS.en.md
+index 5a5abc3..5883857 100644
+--- a/docs/SLOW_CONNECTIONS.en.md
++++ b/docs/SLOW_CONNECTIONS.en.md
+@@ -124,8 +124,7 @@ Owned static assets of at least 1 KiB use gzip when the client accepts it, maint
+ 
+ Since 0.8.0, the start document names the compatibility bundle by content hash (`/mobile-access/compat-<sha256>.js`) with `private, max-age=31536000, immutable`. A browser retaining its cache can reuse the same revision; changed bytes get a new URL, and a digest that no longer matches returns `404`. The older `/mobile-access/compat.js` retains conditional revalidation. Requests reaching the server still require authorization; a locally cached script contains no credentials and grants no API access.
+ 
+-The Mobile start HTML includes a page identifier bound to the current authenticated Session and remains `no-store`; it does not reuse another page's or Session's start document. Pairing pages and API responses also remain `no-store`. When the gateway applies streaming gzip to an upstream static resource, a valid upstream ETag can remain usable as a weak validator with `Vary: Accept-Encoding`. Identity lengths and range metadata are not reused as compressed-representation metadata. Failed responses are not cached, and API requests receive no new caching policy.
+-
++The Mobile start HTML includes a page identifier bound to the current authenticated Session and remains `no-store`; it does not reuse another page's or Session's start document. Pairing pages and API responses also remain `no-store`. When the gateway applies streaming gzip to an upstream static resource, a valid upstream ETag can remain usable as a weak validator with `Vary: Accept-Encoding`. Identity lengths and range metadata are not reused as compressed-representation metadata. Failed responses are not cached. API responses receive no new caching policy; the local static-asset cache below is the single, explicit exception, and it covers static resources only.
+ Every compressible text response uses that streaming pipeline: static assets, HTML documents and `/api/` JSON are gzipped when the phone advertises `Accept-Encoding: gzip`, with `Vary` maintained. Static assets under `/plugins/` and `/assets/` **keep their existing decision unchanged**, including paths the upstream already compressed. Outside static assets, `text/event-stream` stays identity so gzip blocks cannot buffer event frames, and a response that declares fewer than 1KB or no length at all stays identity because compressing it costs more than it saves or may be consumed incrementally. Range requests, already encoded responses and 304s keep their previous behavior, and a client that sends no `Accept-Encoding` receives the same bytes as before.
+ 
+ The Mobile start document is assembled by the gateway rather than the proxy compression pipeline. Bodies of at least 1KiB are gzipped when the request accepts gzip; both identity and gzip responses maintain `Vary: Accept-Encoding`. The document retains `no-store` because it contains boot information for the current session and module selection.
+@@ -134,6 +133,38 @@ The gateway groups upstream application modules into start batches (`/mobile-acc
+ 
+ Resources without upstream validators do not automatically acquire a reliable one. Compare the same complete resource URL during ordinary navigation, reload and app cold start: inspect `200`/`304`, cache hits, `If-None-Match`, encoding and actual transfer volume. Do not clear site data first and treat the result as normal cache behavior. Improved HTTP validation does not guarantee cache reuse in every WebView, and these headers alone do not establish a complete fix for [#107](https://github.com/saya-ch/dsh-mobile/issues/107).
+ 
++## Local patch: static-asset cache
++
++This is a **local patch**, not part of upstream 0.8.1 / 0.8.2. It keeps a single gateway-side static-asset cache group, **off by default** (`contentCacheAssetTtlMs: 0`): while it is off the gateway caches nothing and behavior is identical to an unpatched build. On a slow link an operator can enable it and accept one explicit staleness window. The setting is read when the gateway is constructed, so **saved changes take effect only after DSH restarts (or the plugin is reloaded)**.
++
++- **Covered paths**: `contentCacheAssetPaths` defaults to `["/plugins", "/assets"]` — plugin bundles (`/plugins/*.js` and module scripts) and the interface assets under `/assets/`. A prefix matches itself and its subpaths, never a sibling such as `/plugins-archive`.
++- **`/mobile-access` is not a default**: boot batches (`/mobile-access/mobile-boot/<hash>.js`), `compat*.js`, `mobile-layout.js` and `custom.css` / `custom.js` are assembled or answered locally by the gateway, so their requests never reach this proxy cache — listing the prefix in `contentCacheAssetPaths` produces no hit either (these paths never carry `X-DSH-Mobile-Cache`). `/api/` is likewise absent: lists, Session history and live frames travel over `/api/remote.mux`, which has no eligible standalone HTTP route, so this patch neither caches them nor counts them as hits.
++- **Replay-safe content only**: status 200, a complete uncompressed (identity) body, a media type of `text/*`, JavaScript, JSON (including `+json`) or SVG, and no upstream `no-store`/`private`; at most 2 MB per entry.
++- **Expiry requires a conditional check**: a repeat GET inside the window replays directly (`X-DSH-Mobile-Cache: hit`). Once an entry expires it is never replayed as fresh — the gateway asks the upstream with the stored entry's `If-None-Match: <ETag>`, and only a `304` refreshes the window and replays it (`revalidated`); otherwise the new body is fetched. An entry whose upstream sent no ETag is dropped at expiry.
++- **Writes and uploads never touch this group**: static resources change only with their own bytes, not with list or Session state, so no non-GET/HEAD request clears the group. Conversely, a write request or upload is never cached or replayed.
++- **Browser policy is unchanged**: a replay adds no browser cacheability — responses stay `Cache-Control: no-store` by default, while content-addressed or `rev`-suffixed assets keep the existing `private, max-age=…, immutable` policy. `X-DSH-Mobile-Cache` and `Age` are gateway diagnostics only.
++- **Never cached**: non-200 statuses, `Set-Cookie` responses, upstream `no-store`/`private`, already encoded bodies, `text/event-stream`, binary bodies, range requests (`Range`), client `Cache-Control: no-cache`/`no-store`, bodies above the per-entry limit, and every non-GET request.
++- **Byte and entry bounds**: `contentCacheMaxBytes` (8 MB default) bounds retained body bytes and `contentCacheMaxEntries` (256 default) bounds the entry count — empty and tiny bodies barely move the byte budget, so only the count cap stops them from piling up. When either bound is exceeded, expired entries go first and least-recently-used entries next.
++- **Per-device isolation**: the cache key includes the device id and the complete request path (query included), so one device's replay is never served to another.
++
++Configuration fragment for the existing `mobile-access` entry:
++
++```yaml
++contentCacheAssetTtlMs: 600000           # static resources: 10 minutes; 0 disables it
++# contentCacheAssetPaths: ["/plugins", "/assets"]
++# contentCacheMaxBytes: 8388608
++# contentCacheMaxEntries: 256
++```
++
++**Measuring the gain**: count only real HTTP GETs the gateway proxies. `/api/remote.mux` frames, Session history and every other `/api/` response never pass through this cache and cannot be counted as hits.
++
++- Hit rate: among repeats of the same path, the share carrying `X-DSH-Mobile-Cache: hit` (replayed inside the window) or `revalidated` (replayed after a conditional check).
++- Bytes saved: compare the complete response bytes of a resource with the replayed body (compressed for the caller's `Accept-Encoding`) and multiply by the number of replays inside the window.
++- Hit latency: compare a hit with the upstream fetch; a hit does not wait for the upstream, while `revalidated` still pays one conditional round trip.
++- Cold-start comparison: count requests and actual transferred bytes for `/plugins/*` and `/assets/*` during an app cold start and a page reload, against the same run with the patch off. Boot batches and `compat`/layout assets bypass this cache and serve only as context for total startup time.
++
++**Rollback**: set `contentCacheAssetTtlMs` to `0` to return to unpatched behavior — **saved changes take effect only after DSH restarts (or the plugin is reloaded)**, because the window is read when the gateway is constructed; retained entries disappear with the process. To remove it entirely, revert the local patch on `local/cache-patch`. Upstream 0.8.1 / 0.8.2 does not contain this feature, so upgrading upstream cannot bring it back.
++
+ ## Manual compaction and long-running API requests (0.6.0)
+ 
+ Commands such as `/compact` sent from the phone traverse the Mobile gateway's HTTP API. Automatic compaction inside DSH does not traverse that gateway request. Older gateways used the default 30-second `upstreamTimeoutMs` for every proxied request, so manual compaction could return `502 upstream_unavailable` while the model was still producing the summary. [#171](https://github.com/saya-ch/dsh-mobile/issues/171) records this case.
+diff --git a/docs/SLOW_CONNECTIONS.md b/docs/SLOW_CONNECTIONS.md
+index 9e7695e..874da2c 100644
+--- a/docs/SLOW_CONNECTIONS.md
++++ b/docs/SLOW_CONNECTIONS.md
+@@ -124,8 +124,7 @@ websocketCompression:
+ 
+ 0.8.0 起，启动文档按内容哈希引用兼容性脚本（`/mobile-access/compat-<sha256>.js`），该路径使用 `private, max-age=31536000, immutable`。浏览器保留缓存时可直接复用同版本脚本，内容变化则使用新地址；摘要与当前正文不符时返回 `404`。旧的 `/mobile-access/compat.js` 地址继续提供条件校验。服务器收到请求后仍先验证授权；本地已缓存的脚本不含凭据，也不赋予 API 访问权限。
+ 
+-移动启动 HTML 包含绑定当前认证 Session 的页面标识，保持 `no-store`，不复用其他页面或 Session 的启动文档；配对页和 API 响应也保持 `no-store`。网关对上游静态资源做流式 gzip 时，可保留合法上游 ETag 的弱校验形式，并维护 `Vary: Accept-Encoding`；不会把原始内容的长度或范围元信息当作压缩内容的元信息，也不会缓存失败响应或为 API 请求新增缓存。
+-
++移动启动 HTML 包含绑定当前认证 Session 的页面标识，保持 `no-store`，不复用其他页面或 Session 的启动文档；配对页和 API 响应也保持 `no-store`。网关对上游静态资源做流式 gzip 时，可保留合法上游 ETag 的弱校验形式，并维护 `Vary: Accept-Encoding`；不会把原始内容的长度或范围元信息当作压缩内容的元信息，不会缓存失败响应。API 响应不新增缓存；下面「本地补丁：静态资源缓存」是唯一的、需要显式开启的例外，且只覆盖静态资源。
+ 可压缩的文本响应都走这条流式管道：静态资源、HTML 文档和 `/api/` 的 JSON 都会在手机声明 `Accept-Encoding: gzip` 时压缩，并维护 `Vary`。`/plugins/`、`/assets/` 下的静态资源**沿用原有判定，行为不变**（包括上游原本就会压缩的路径）。静态路径之外，`text/event-stream` 保持不压缩，否则逐帧事件会被 gzip 块缓冲；声明长度小于 1KB 或没有声明长度的响应也保持原样，压缩开销大于收益或可能被逐段消费。范围请求、已编码响应和 304 仍按原规则处理，不带 `Accept-Encoding` 的客户端收到的字节与以前一致。
+ 
+ 移动端启动页由网关拼装，不经过上面的代理压缩流程；正文至少 1KiB 且请求接受 gzip 时会压缩，压缩和未压缩响应都维护 `Vary: Accept-Encoding`。页面仍使用 `no-store`，不复用旧启动文档；它包含当前会话与模块选择对应的启动信息。
+@@ -134,6 +133,41 @@ websocketCompression:
+ 
+ 上游未提供校验标识的资源不会因此自动得到一个可靠标识。检查重复下载时，比较同一完整资源 URL 在普通打开、重新加载和 App 冷启动中的 `200`/`304`、缓存命中、`If-None-Match`、编码与实际传输量；不要先清除站点数据再把结果当作正常缓存行为。HTTP 校验语义改善不保证每个 WebView 都会复用缓存，也不能仅凭这些响应头认定 [#107](https://github.com/saya-ch/dsh-mobile/issues/107) 已完全解决。
+ 
++<!-- CHANGELOG.md 的 Unreleased (local patch) 条目链接到这个锚点，因此保留显式 id。 -->
++<a id="可选的静态资源缓存本地补丁"></a>
++
++## 本地补丁：静态资源缓存
++
++这是**本地补丁**，不在上游 0.8.1 / 0.8.2 内。它只保留一组网关侧静态资源缓存，**默认关闭**（`contentCacheAssetTtlMs: 0`）：关闭时网关不缓存任何响应，行为与未打补丁的构建完全一致；慢链路上可以按需开启，代价是一个明确的陈旧窗口。配置在网关构造时读取，因此**保存后需重启 DSH（或重载该插件）才生效**。
++
++- **覆盖路径**：`contentCacheAssetPaths` 默认 `["/plugins", "/assets"]`——插件包（`/plugins/*.js` 与模块脚本）和 `/assets/` 下的界面资源。按路径前缀匹配自身与子路径，不会命中 `/plugins-archive` 这类同级路径。
++- **`/mobile-access` 不在默认列表**：启动批（`/mobile-access/mobile-boot/<hash>.js`）、`compat*.js`、`mobile-layout.js`、`custom.css` / `custom.js` 都由网关本地拼装或直接应答，请求不会经过这个代理缓存，所以把该前缀写进 `contentCacheAssetPaths` 也不会产生命中（可自行验证：这些路径从不出现 `X-DSH-Mobile-Cache`）。`/api/` 同理不在其中：列表、会话历史与实时帧走 `/api/remote.mux`，没有可命中的独立 HTTP 路由，本补丁不缓存它们，也不能把它们算作命中。
++- **只缓存可安全重放的内容**：状态 200、正文完整且未压缩（identity），媒体类型为 `text/*`、JavaScript、JSON（含 `+json`）或 SVG，上游未标 `no-store`/`private`；单条上限 2 MB。
++- **过期后必须条件校验**：窗口内的重复 GET 直接重放（`X-DSH-Mobile-Cache: hit`）；条目一旦过期就不再当作新鲜内容重放——网关带上已存条目的 `If-None-Match: <ETag>` 询问上游，只有 `304` 才刷新窗口并重放（`revalidated`），否则回源取新正文。上游没有发 ETag 的条目过期后直接丢弃。
++- **写请求与上传不牵动这一组**：静态资源只随文件内容变化，与清单/会话状态无关，因此任何非 GET/HEAD 请求都不会清空它；反过来，写请求与上传本身也永远不会被缓存或重放。
++- **浏览器侧策略不变**：重放不新增任何浏览器可缓存性，默认响应仍是 `Cache-Control: no-store`（内容寻址或带 `rev` 的静态资源沿用 0.8.0 起就有的 `private, max-age=…, immutable`）；`X-DSH-Mobile-Cache` 与 `Age` 只是网关自己的诊断标记。
++- **不缓存的情形**：非 200、带 `Set-Cookie`、上游 `no-store`/`private`、已编码正文、`text/event-stream`、二进制、范围请求（`Range`）、客户端 `Cache-Control: no-cache`/`no-store`、超过单条上限的正文，以及一切非 GET 请求。
++- **容量与条目双上限**：`contentCacheMaxBytes`（默认 8 MB）限制保留正文的总字节，`contentCacheMaxEntries`（默认 256）限制条目数——空正文和极小正文几乎不占字节预算，只有条目上限能挡住它们。任一上限超出时先淘汰过期条目，再按最久未使用（LRU）淘汰。
++- **按设备隔离**：缓存键包含设备 ID 与完整请求路径（含查询串），一台设备的重放不会被另一台读到。
++
++配置片段（放进现有 `mobile-access` 条目的 `config`）：
++
++```yaml
++contentCacheAssetTtlMs: 600000           # 静态资源窗口：10 分钟；0 表示关闭
++# contentCacheAssetPaths: ["/plugins", "/assets"]
++# contentCacheMaxBytes: 8388608
++# contentCacheMaxEntries: 256
++```
++
++**测量收益**：只统计经网关代理的真实 HTTP GET；`/api/remote.mux` 帧、会话历史和其他 `/api/` 响应都不经过这个缓存，不能算成命中。
++
++- 命中率：同一路径的重复请求中带 `X-DSH-Mobile-Cache: hit`（窗口内重放）与 `revalidated`（条件校验后重放）的比例。
++- 字节节省：对比同一资源的完整响应字节与重放正文（按调用方 `Accept-Encoding` 压缩后）的大小，乘以窗口内的重放次数。
++- 命中延迟：比较命中与回源的耗时；命中不再等待上游，`revalidated` 仍需一次条件往返。
++- 与冷启动对比：分别统计 App 冷启动和页面重载时 `/plugins/*`、`/assets/*` 的请求数与实际传输量，与关闭补丁时对比（启动批与 `compat`/layout 资源不经过此缓存，只能作为启动总耗时的背景数据）。
++
++**回滚**：把 `contentCacheAssetTtlMs` 设为 `0` 即回到不打补丁的行为——**保存后需重启 DSH（或重载该插件）才生效**，因为窗口在网关构造时读取；内存中的条目随进程结束消失。彻底移除则撤销 `local/cache-patch` 上的本地补丁。上游 0.8.1 / 0.8.2 不含此功能，升级上游不会把它带回来。
++
+ ## 手动压缩会话与长时间 API 请求（0.6.0）
+ 
+ 手机发出的 `/compact` 等命令要通过移动网关的 HTTP API；DSH 内部触发的自动压缩不经过这次网关请求。旧版网关对所有上游代理请求都使用默认 30 秒的 `upstreamTimeoutMs`，因此模型仍在生成摘要时，手动压缩可能先收到 `502 upstream_unavailable`。[#171](https://github.com/saya-ch/dsh-mobile/issues/171) 记录了这一情况。
+diff --git a/src/config.ts b/src/config.ts
+index 518f64d..32752ce 100644
+--- a/src/config.ts
++++ b/src/config.ts
+@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url'
+ import z from '@deepseek-ai/schemastery'
+ import { isIP } from './ip.js'
+ import { isLoopbackAddress, parseAuthority, parseCidr, type AuthoritySpec, type ParsedCidr } from './network.js'
++import { normalizeContentCachePaths } from './content-cache.js'
+ import { normalizeWebSocketPaths } from './websocket-paths.js'
+ import { resolveHostExecution, type HostExecutionConfig, type ResolvedHostExecutionConfig } from './extension-worker-config.js'
+ 
+@@ -108,6 +109,25 @@ export interface PluginConfig {
+   upstreamTimeoutMs?: number
+   /** Authenticated /api response and established DSH plugin-event stream idle timeout; zero disables it. */
+   upstreamApiTimeoutMs?: number
++  /**
++   * Freshness window, in ms, for the opt-in static-asset cache; `0` keeps it off and
++   * is the default. Only complete script, style, JSON and SVG bodies under
++   * `contentCacheAssetPaths` are kept, and every expiry is revalidated.
++   */
++  contentCacheAssetTtlMs?: number
++  /** Total retained bytes of the static-asset cache; least-recently-used entries are evicted first. */
++  contentCacheMaxBytes?: number
++  /**
++   * Retained bodies in the static-asset cache. Empty and tiny bodies barely move the
++   * byte budget, so the count cap is what stops them from piling up.
++   */
++  contentCacheMaxEntries?: number
++  /**
++   * Exact proxied path prefixes the static-asset cache may serve; empty caches no
++   * asset. The default is `/plugins` and `/assets`: gateway-owned `/mobile-access`
++   * routes are answered locally and never reach the proxy that consults this cache.
++   */
++  contentCacheAssetPaths?: string[]
+   rateLimitWindowMs?: number
+   maxPairingAttempts?: number
+   maxRateLimitKeys?: number
+@@ -153,6 +173,10 @@ export interface ResolvedGatewayConfig {
+   readonly maxBodyBytes: number
+   readonly upstreamTimeoutMs: number
+   readonly upstreamApiTimeoutMs: number
++  readonly contentCacheMaxBytes: number
++  readonly contentCacheMaxEntries: number
++  readonly contentCacheAssetTtlMs: number
++  readonly contentCacheAssetPaths: readonly string[]
+   readonly rateLimitWindowMs: number
+   readonly maxPairingAttempts: number
+   readonly maxRateLimitKeys: number
+@@ -214,6 +238,10 @@ export const Config: z<PluginConfig> = z.object({
+   maxBodyBytes: z.natural(),
+   upstreamTimeoutMs: z.natural(),
+   upstreamApiTimeoutMs: z.natural(),
++  contentCacheMaxBytes: z.natural(),
++  contentCacheMaxEntries: z.natural(),
++  contentCacheAssetTtlMs: z.natural(),
++  contentCacheAssetPaths: z.array(String).default(['/plugins', '/assets']),
+   rateLimitWindowMs: z.natural(),
+   maxPairingAttempts: z.natural(),
+   maxRateLimitKeys: z.natural(),
+@@ -441,6 +469,14 @@ export function parseGatewayConfig(raw: unknown): ResolvedGatewayConfig {
+     maxBodyBytes: integer(value.maxBodyBytes, 'maxBodyBytes', 160 * 1024 * 1024, 1024, 256 * 1024 * 1024),
+     upstreamTimeoutMs: integer(value.upstreamTimeoutMs, 'upstreamTimeoutMs', 30_000, 1_000, 300_000),
+     upstreamApiTimeoutMs: integer(value.upstreamApiTimeoutMs, 'upstreamApiTimeoutMs', 0, 0, 2_147_483_647),
++    // Assets are immutable or validator-backed, so their window can be long; the
++    // ceiling stays an hour so a stale copy cannot outlive an edit by much.
++    contentCacheAssetTtlMs: integer(value.contentCacheAssetTtlMs, 'contentCacheAssetTtlMs', 0, 0, 3_600_000),
++    contentCacheMaxBytes: integer(value.contentCacheMaxBytes, 'contentCacheMaxBytes', 8 * 1024 * 1024, 64 * 1024, 64 * 1024 * 1024),
++    contentCacheMaxEntries: integer(value.contentCacheMaxEntries, 'contentCacheMaxEntries', 256, 1, 65_536),
++    contentCacheAssetPaths: Object.freeze(normalizeContentCachePaths(
++      value.contentCacheAssetPaths ?? ['/plugins', '/assets'],
++    )),
+     rateLimitWindowMs: integer(value.rateLimitWindowMs, 'rateLimitWindowMs', 60_000, 1_000, 3_600_000),
+     maxPairingAttempts: integer(value.maxPairingAttempts, 'maxPairingAttempts', 8, 1, 100),
+     maxRateLimitKeys: integer(value.maxRateLimitKeys, 'maxRateLimitKeys', 256, 1, 4096),
+diff --git a/src/content-cache.ts b/src/content-cache.ts
+new file mode 100644
+index 0000000..67dad0b
+--- /dev/null
++++ b/src/content-cache.ts
+@@ -0,0 +1,225 @@
++/**
++ * Bounded, opt-in cache for complete static resources the gateway serves itself.
++ *
++ * It exists for one repeated cost: on a slow link a phone reopening the app
++ * re-downloads the same plugin bundles the gateway has already served. Assets
++ * change only when their bytes change, so they can be cached on their own terms:
++ *
++ *  - off unless an operator sets `contentCacheAssetTtlMs`; with it off nothing in
++ *    this file is consulted and responses are byte-for-byte what they were before;
++ *  - only paths on an explicit allowlist are eligible (`contentCacheAssetPaths`),
++ *    never every GET the gateway proxies;
++ *  - an entry past its TTL is never replayed as live. When the upstream sent an
++ *    entity tag it is revalidated with `If-None-Match` and a `304` refreshes the
++ *    stored copy; otherwise the entry is dropped;
++ *  - assets are files, not Session state: nothing here is derived from a write,
++ *    so no write can invalidate the group.
++ *
++ * Responses keep the gateway's `no-store` browser policy: this is a gateway-side
++ * replay, not a change to what any browser may cache.
++ */
++
++import type { IncomingHttpHeaders } from 'node:http'
++
++/** One stored representation; headers are the identity-encoded response headers. */
++export interface ContentCacheEntry {
++  readonly body: Buffer
++  readonly headers: Readonly<Record<string, string | string[]>>
++  readonly etag: string | undefined
++  readonly storedAt: number
++  readonly expiresAt: number
++}
++
++/** The stored value a caller may replay, with the age a client should be told. */
++export interface ContentCacheReplay {
++  readonly body: Buffer
++  readonly headers: Record<string, string | string[]>
++  readonly ageSeconds: number
++  readonly storedAt: number
++}
++
++/**
++ * Whether `url` falls under one of the allowlisted path prefixes.
++ * A prefix matches itself and its subpaths, and never matches a longer sibling
++ * (`/plugins` does not match `/plugins-archive`).
++ * @param paths - Normalized allowlist entries, each an absolute path.
++ * @param url - The raw request target; its query string is ignored.
++ */
++export function matchesContentCachePath(paths: readonly string[], url: string | undefined): boolean {
++  if (paths.length === 0) return false
++  const pathname = url?.split('?', 1)[0] ?? ''
++  if (pathname.startsWith('/') !== true) return false
++  for (const prefix of paths) {
++    if (pathname === prefix) return true
++    if (pathname.startsWith(`${prefix}/`)) return true
++  }
++  return false
++}
++
++/** Validate and normalize the configured allowlist; throws on unusable entries. */
++export function normalizeContentCachePaths(paths: readonly string[]): readonly string[] {
++  const normalized: string[] = []
++  for (const raw of paths) {
++    const candidate = raw.trim().replace(/\/+$/u, '')
++    if (candidate.startsWith('/') !== true || candidate.length <= 1) {
++      throw new Error(`cache path prefixes must be absolute: ${JSON.stringify(raw)}`)
++    }
++    if (/[?#\s]/u.test(candidate) || candidate.includes('..')) {
++      throw new Error(`content cache path entries must be plain paths: ${JSON.stringify(raw)}`)
++    }
++    if (!normalized.includes(candidate)) normalized.push(candidate)
++  }
++  return Object.freeze(normalized)
++}
++
++/**
++ * Whether a proxied upstream response may be retained for replay.
++ *
++ * Assets are scripts, styles and owned files, so only text-like media types are kept;
++ * an event stream or a binary body is never a replay candidate.
++ * @param statusCode - Upstream status; only a complete `200` is eligible.
++ * @param headers - Upstream response headers.
++ * @returns Whether a complete, identity-encoded body may be stored.
++ */
++export function isCacheableAssetResponse(statusCode: number, headers: IncomingHttpHeaders): boolean {
++  if (statusCode !== 200) return false
++  if (headers['set-cookie'] !== undefined) return false
++  // The stored copy must be the identity representation: a replayed body is
++  // re-compressed for whichever client asks for it next.
++  if (headers['content-encoding'] !== undefined) return false
++  const cacheControl = headers['cache-control']
++  const upstreamCache = (Array.isArray(cacheControl) ? '' : cacheControl ?? '').toLowerCase()
++  if (upstreamCache.includes('no-store') || upstreamCache.includes('private')) return false
++  const contentType = headers['content-type']
++  const raw = Array.isArray(contentType) ? contentType[0] : contentType
++  const mediaType = raw?.split(';', 1)[0]?.trim().toLowerCase() ?? ''
++  if (mediaType === 'text/event-stream' || mediaType === 'application/octet-stream') return false
++  return mediaType.startsWith('text/') || mediaType === 'application/javascript'
++    || mediaType === 'application/json' || mediaType.endsWith('+json') || mediaType === 'image/svg+xml'
++}
++
++export class ContentCache {
++  /** Insertion order doubles as recency order: the first key is the eviction candidate. */
++  private readonly entries = new Map<string, ContentCacheEntry>()
++  private bytes = 0
++
++  /**
++   * @param ttlMs - Freshness window; `0` disables the cache entirely.
++   * @param maxBytes - Total retained body bytes across every device.
++   * @param maxEntries - Retained bodies across every device; empty or small bodies
++   *   cost almost nothing per byte, so the byte budget alone lets them pile up.
++   * @param paths - Normalized allowlist from `normalizeContentCachePaths`.
++   * @param maxEntryBytes - Largest single body worth retaining.
++   */
++  constructor(
++    private readonly ttlMs: number,
++    private readonly maxBytes: number,
++    private readonly maxEntries: number,
++    private readonly paths: readonly string[],
++    private readonly maxEntryBytes: number,
++  ) {}
++
++  get enabled(): boolean {
++    return this.ttlMs > 0 && this.paths.length > 0 && this.maxBytes > 0 && this.maxEntries > 0
++  }
++
++  /** Whether this request target is eligible for the cache at all. */
++  matches(url: string | undefined): boolean {
++    return this.enabled && matchesContentCachePath(this.paths, url)
++  }
++
++  /** Largest body this cache will retain; a bigger response streams through uncached. */
++  get entryLimit(): number {
++    return this.maxEntryBytes
++  }
++
++  /**
++   * A live entry, refreshed to most-recently-used.
++   * @returns The replay, or `undefined` when absent, expired or disabled.
++   */
++  lookup(key: string, now: number): ContentCacheReplay | undefined {
++    if (!this.enabled) return undefined
++    const entry = this.entries.get(key)
++    if (entry === undefined || entry.expiresAt <= now) return undefined
++    this.entries.delete(key)
++    this.entries.set(key, entry)
++    return replayOf(entry, now)
++  }
++
++  /**
++   * An entry that may be revalidated: expired, but only when it carries an entity
++   * tag to ask the upstream about. Without one there is nothing to revalidate and
++   * the caller performs an ordinary fetch.
++   */
++  stale(key: string, now: number): ContentCacheEntry | undefined {
++    if (!this.enabled) return undefined
++    const entry = this.entries.get(key)
++    if (entry === undefined) return undefined
++    if (entry.expiresAt > now) return undefined
++    return entry.etag === undefined ? undefined : entry
++  }
++
++  /** After a `304`, the stored copy is current: restart its window and replay it. */
++  refresh(key: string, now: number): ContentCacheReplay | undefined {
++    const entry = this.entries.get(key)
++    if (entry === undefined) return undefined
++    const refreshed: ContentCacheEntry = { ...entry, storedAt: now, expiresAt: now + this.ttlMs }
++    this.entries.delete(key)
++    this.entries.set(key, refreshed)
++    return replayOf(refreshed, now)
++  }
++
++  /** Record one complete identity-encoded body; oversized bodies are refused. */
++  store(key: string, headers: Readonly<Record<string, string | string[]>>, body: Buffer, etag: string | undefined, now: number): void {
++    if (!this.enabled) return
++    if (body.byteLength > this.maxEntryBytes || body.byteLength > this.maxBytes) return
++    this.drop(key)
++    const entry: ContentCacheEntry = {
++      body,
++      headers,
++      etag,
++      storedAt: now,
++      expiresAt: now + this.ttlMs,
++    }
++    this.entries.set(key, entry)
++    this.bytes += body.byteLength
++    this.sweep(now)
++  }
++
++  private drop(key: string): void {
++    const existing = this.entries.get(key)
++    if (existing === undefined) return
++    this.entries.delete(key)
++    this.bytes = Math.max(0, this.bytes - existing.body.byteLength)
++  }
++
++  /** Evict expired entries, then least-recently-used entries until both caps hold. */
++  private sweep(now: number): void {
++    for (const [key, entry] of this.entries) {
++      if (entry.expiresAt > now) continue
++      this.entries.delete(key)
++      this.bytes = Math.max(0, this.bytes - entry.body.byteLength)
++    }
++    // The count cap comes first: a flood of tiny bodies must not survive merely because
++    // it is cheap in bytes, so those entries are removed before the byte cap runs.
++    while (this.entries.size > this.maxEntries) {
++      const oldest = this.entries.keys().next().value
++      if (oldest === undefined) break
++      this.drop(oldest)
++    }
++    while (this.bytes > this.maxBytes) {
++      const oldest = this.entries.keys().next().value
++      if (oldest === undefined) break
++      this.drop(oldest)
++    }
++  }
++}
++
++function replayOf(entry: ContentCacheEntry, now: number): ContentCacheReplay {
++  return {
++    body: entry.body,
++    headers: { ...entry.headers },
++    ageSeconds: Math.max(0, Math.floor((now - entry.storedAt) / 1000)),
++    storedAt: entry.storedAt,
++  }
++}
+diff --git a/src/gateway.ts b/src/gateway.ts
+index b0289d7..b3084ec 100644
+--- a/src/gateway.ts
++++ b/src/gateway.ts
+@@ -18,10 +18,11 @@ import {
+ import { createServer as createHttpsServer, type Server as HttpsServer, type ServerOptions } from 'node:https'
+ import { connect, type AddressInfo, type Socket } from 'node:net'
+ import { isIP } from './ip.js'
++import { ContentCache, isCacheableAssetResponse, type ContentCacheReplay } from './content-cache.js'
+ import { Transform, type TransformCallback } from 'node:stream'
+ import { pipeline } from 'node:stream/promises'
+ import { promisify } from 'node:util'
+-import { createGzip, gzip } from 'node:zlib'
++import { createGzip, gzip, gzipSync } from 'node:zlib'
+ import type { WebRoute } from '@deepseek-ai/dsh-host-webserver'
+ import Bonjour from 'bonjour-service'
+ import * as QRCode from 'qrcode'
+@@ -230,6 +231,8 @@ const MOBILE_BOOT_CHUNK_BYTES = 3 * 1024 * 1024
+ const MIN_COMPRESSIBLE_DOCUMENT_BYTES = 1024
+ /** Bytes the assembly emits after each entry (`body` plus `\n;\n`). */
+ const MOBILE_BOOT_SEPARATOR_BYTES = 3
++/** Largest single static response the opt-in asset cache may retain. */
++const CONTENT_CACHE_MAX_ASSET_BYTES = 2 * 1024 * 1024
+ /** Freshness window for cached upstream bundle byte sizes. */
+ /** Catalog sizes change only on a plugin rebuild or host restart. */
+ const CLIENT_MODULE_SIZE_TTL_MS = 10 * 60_000
+@@ -263,6 +266,23 @@ export function sanitizeModuleDescription(value: unknown): string | undefined {
+   return text.length <= 200 ? text : `${text.slice(0, 197)}…`
+ }
+ 
++/**
++ * Narrow proxied headers to the string values a replay can set again.
++ *
++ * `OutgoingHttpHeaders` also allows numbers and `undefined`; neither is meaningful on
++ * a stored representation, and replaying a numeric `content-length` would overwrite
++ * the recomputed one.
++ */
++function replayableResponseHeaders(headers: OutgoingHttpHeaders): Record<string, string | string[]> {
++  const replayable: Record<string, string | string[]> = {}
++  for (const [name, value] of Object.entries(headers)) {
++    if (typeof value === 'string') replayable[name] = value
++    else if (typeof value === 'number') replayable[name] = String(value)
++    else if (Array.isArray(value)) replayable[name] = value.map(item => String(item))
++  }
++  return replayable
++}
++
+ function upstreamPluginBundleUrl(source: string, upstreamOrigin: URL): URL | undefined {
+   if ((!source.startsWith('/plugins/') && !source.startsWith('plugins/')) || source.includes('#')) return undefined
+   try {
+@@ -1417,6 +1437,8 @@ export class MobileAccessGateway {
+   private readonly probeDeviceLimiter: BoundedRateLimiter
+   private readonly probeInFlight = new Set<string>()
+   private readonly clientModulePreferences: ClientModulePreferenceStore
++  /** Opt-in static-asset cache: plugin bundles and owned files, never Session state. */
++  private readonly assetCache: ContentCache
+   private readonly clientModuleSizeCache = new Map<string, { at: number; bytes: number; gzipBytes: number }>()
+   private readonly clientModuleDescriptionCache = new Map<string, { at: number; description: string }>()
+   private clientModuleMetadataRevision: string | undefined
+@@ -1451,6 +1473,10 @@ export class MobileAccessGateway {
+     this.clientModulePreferences = clientModulePreferences ?? new ClientModulePreferenceStore(
+       join(dirname(config.stateFile), `${basename(config.stateFile)}.client-modules.json`), config.excludedClientModules,
+     )
++    this.assetCache = new ContentCache(
++      config.contentCacheAssetTtlMs, config.contentCacheMaxBytes, config.contentCacheMaxEntries,
++      config.contentCacheAssetPaths, CONTENT_CACHE_MAX_ASSET_BYTES,
++    )
+     this.listenerTlsEnabled = config.tls.mode === 'provided'
+     this.tlsEnabled = config.publicTls
+     this.access = new AccessController(store, {
+@@ -3618,6 +3644,63 @@ export class MobileAccessGateway {
+     }
+   }
+ 
++  /**
++   * Build the key a request may be replayed under, if it is eligible at all.
++   *
++   * Only the opt-in static-asset group exists, and eligibility is narrow: a GET on an
++   * allowlisted prefix, no Range, and no client `no-cache`/`no-store`. The key scopes a
++   * body to one paired device and keeps the query string, because two queries are two
++   * representations.
++   * @returns The cache key, or `undefined` when this request must reach the upstream.
++   */
++  private assetCacheKey(
++    request: IncomingMessage,
++    authorization: SessionAuthorization,
++  ): string | undefined {
++    if (request.method !== 'GET') return undefined
++    if (request.headers.range !== undefined) return undefined
++    const requestCache = headerValue(request.headers, 'cache-control')?.toLowerCase() ?? ''
++    if (requestCache.includes('no-cache') || requestCache.includes('no-store')) return undefined
++    const url = request.url ?? ''
++    return this.assetCache.matches(url) ? `${authorization.deviceId}\u0000${url}` : undefined
++  }
++
++  /**
++   * Replay one stored representation with the gateway's own proxied headers.
++   *
++   * The stored copy is identity-encoded, so the caller's encoding is applied here —
++   * the same rule a fetched body follows. A compressed replay carries `Vary` and a
++   * weakened validator, exactly like the fetched path.
++   */
++  private replayCachedAsset(
++    request: IncomingMessage,
++    response: ServerResponse,
++    replay: ContentCacheReplay,
++    marker: 'hit' | 'revalidated',
++  ): void {
++    setSecurityHeaders(response, this.tlsEnabled, 'proxied')
++    const headers: Record<string, string | string[]> = { ...replay.headers }
++    let body = replay.body
++    const contentType = headers['content-type']
++    if (acceptsGzip(request.headers['accept-encoding']) && request.method !== 'HEAD'
++      && body.byteLength >= MIN_COMPRESSIBLE_BYTES
++      && typeof contentType === 'string' && isCompressibleContentType(contentType)) {
++      body = gzipSync(body)
++      headers['content-encoding'] = 'gzip'
++      headers.vary = headers.vary === undefined ? 'Accept-Encoding' : `${String(headers.vary)}, Accept-Encoding`
++      const weakened = weakenEntityTag(typeof headers.etag === 'string' ? headers.etag : undefined)
++      if (weakened === undefined) delete headers.etag
++      else headers.etag = weakened
++    }
++    response.writeHead(200, {
++      ...headers,
++      'Content-Length': String(body.byteLength),
++      Age: String(replay.ageSeconds),
++      'X-DSH-Mobile-Cache': marker,
++    })
++    response.end(body)
++  }
++
+   /**
+    * Proxy one request, retrying transient failures for plugin and asset GETs.
+    * Only bodyless GETs can be replayed, before response headers reach the client.
+@@ -3634,6 +3717,16 @@ export class MobileAccessGateway {
+     if (declared !== undefined && (!/^\d+$/u.test(declared) || Number(declared) > this.config.maxBodyBytes)) {
+       throw new HttpError(413, 'payload_too_large')
+     }
++    // Static assets carry their own validity (content hash or ETag), so a write
++    // cannot invalidate them: only the request itself decides whether it is eligible.
++    const cacheKey = this.assetCacheKey(request, authorization)
++    if (cacheKey !== undefined) {
++      const hit = this.assetCache.lookup(cacheKey, Date.now())
++      if (hit !== undefined) {
++        this.replayCachedAsset(request, response, hit, 'hit')
++        return
++      }
++    }
+     const replayable = request.method === 'GET'
+       && request.headers['transfer-encoding'] === undefined
+       && (declared === undefined || Number(declared) === 0)
+@@ -3670,7 +3763,7 @@ export class MobileAccessGateway {
+       for (let attempt = 1; attempt <= attempts; attempt++) {
+         operation.signal.throwIfAborted()
+         try {
+-          await this.proxyHttpOnce(request, response, holder, operation.signal, replayable, documentView)
++          await this.proxyHttpOnce(request, response, holder, operation.signal, replayable, cacheKey, documentView)
+           return
+         } catch (error) {
+           if (operation.signal.aborted || response.destroyed) return
+@@ -3700,15 +3793,26 @@ export class MobileAccessGateway {
+     holder: { request?: ClientRequest },
+     signal: AbortSignal,
+     replayable: boolean,
++    cacheKey: string | undefined,
+     documentView?: MobileDocumentView,
+   ): Promise<void> {
+     let bodyDone: Promise<void> | undefined
+     const projections = new Set<Promise<unknown>>()
+     try {
+       const pathname = parseRequestTarget(request.url).decodedPathname
++      const stale = cacheKey === undefined ? undefined : this.assetCache.stale(cacheKey, Date.now())
+       const upstreamHeaders = sanitizeRequestHeaders(request, this.config.upstreamOrigin)
+       delete upstreamHeaders[MOBILE_DOCUMENT_VIEW_HEADER]
+       if (documentView !== undefined) upstreamHeaders['accept-encoding'] = 'identity'
++      if (cacheKey !== undefined) {
++        // The stored copy is identity-encoded so it can be replayed and re-compressed
++        // per client. A client's own validators are dropped: a `304` may only answer
++        // our question about our copy, never stand in for the client's own cache.
++        upstreamHeaders['accept-encoding'] = 'identity'
++        delete upstreamHeaders['if-none-match']
++        delete upstreamHeaders['if-modified-since']
++        if (stale?.etag !== undefined) upstreamHeaders['if-none-match'] = stale.etag
++      }
+       // IncomingMessage removes chunk framing; GET does not opt into Node's
+       // default outgoing chunk framing, so rebuild it when forwarding its body.
+       if (request.headers['transfer-encoding'] !== undefined) {
+@@ -3745,6 +3849,21 @@ export class MobileAccessGateway {
+         }
+       })
+       const proxied = await upstreamResponse
++      if (cacheKey !== undefined && stale !== undefined && proxied.statusCode === 304) {
++        // Unchanged upstream: the stored body is current, so restart its window and
++        // replay it instead of asking the phone to re-download it.
++        proxied.resume()
++        const replay = this.assetCache.refresh(cacheKey, Date.now())
++        if (replay !== undefined) {
++          this.replayCachedAsset(request, response, replay, 'revalidated')
++          return
++        }
++        // An eviction removed the entry while we asked. Fetch it plainly instead of
++        // handing the client a `304` it never requested; the second call has no cache
++        // key, so it cannot loop.
++        await this.proxyHttpOnce(request, response, holder, signal, replayable, undefined, documentView)
++        return
++      }
+       const graphEvents = documentView !== undefined && replayable && pathname === '/plugins/events' && proxied.statusCode === 200
+         && proxied.headers['content-type']?.split(';', 1)[0]?.trim().toLowerCase() === 'text/event-stream'
+       if (documentView !== undefined && !graphEvents) {
+@@ -3776,6 +3895,14 @@ export class MobileAccessGateway {
+       this.httpFailures.recordUpstream(request.method, request.url?.split('?', 1)[0] ?? '', statusCode)
+       const cacheControl = graphEvents ? undefined : revisionedStaticCacheControl(request, statusCode)
+       if (cacheControl !== undefined) headers['cache-control'] = cacheControl
++      const assetCacheCandidate = cacheKey !== undefined && documentView === undefined
++        && isCacheableAssetResponse(statusCode, proxied.headers)
++      // Snapshot before compression rewrites these headers: the stored copy is identity.
++      const assetCacheHeaders = assetCacheCandidate ? replayableResponseHeaders(headers) : undefined
++      if (assetCacheHeaders !== undefined) {
++        delete assetCacheHeaders['content-length']
++        delete assetCacheHeaders['content-encoding']
++      }
+       // Gateway gzip buffers sparse graph frames; the SSE owner must deliver them immediately.
+       const compressible = !graphEvents && canCompressResponse(request, proxied)
+       const compressed = compressible && acceptsGzip(request.headers['accept-encoding'])
+@@ -3803,6 +3930,39 @@ export class MobileAccessGateway {
+         addVaryAcceptEncoding(headers)
+       }
+       response.writeHead(statusCode, headers)
++      if (assetCacheCandidate && assetCacheHeaders !== undefined && cacheKey !== undefined) {
++        // Stream the body through while keeping one bounded copy. A body over the entry
++        // limit is forwarded in full and simply not retained.
++        const entryLimit = this.assetCache.entryLimit
++        const collected: Buffer[] = []
++        let collectedBytes = 0
++        let overflow = false
++        const tap = new Transform({
++          transform(chunk: Buffer, _encoding: BufferEncoding, callback: TransformCallback) {
++            if (!overflow) {
++              collectedBytes += chunk.byteLength
++              if (collectedBytes > entryLimit) overflow = true
++              else collected.push(Buffer.from(chunk))
++            }
++            callback(null, chunk)
++          },
++        })
++        const gzipStream = compressed && request.method !== 'HEAD' ? createGzip() : undefined
++        await Promise.all([
++          bodyDone,
++          gzipStream === undefined ? pipeline(proxied, tap, response) : pipeline(proxied, tap, gzipStream, response),
++        ])
++        if (!overflow && response.writableEnded) {
++          this.assetCache.store(
++            cacheKey,
++            assetCacheHeaders,
++            Buffer.concat(collected),
++            typeof proxied.headers.etag === 'string' ? proxied.headers.etag : undefined,
++            Date.now(),
++          )
++        }
++        return
++      }
+       const eventTransform = !graphEvents || documentView === undefined ? undefined : createMobileGraphEventTransform(value => {
+         const task = this.projectMobileDocumentEvent(documentView, value, signal)
+         projections.add(task)
+diff --git a/tests/content-cache.test.ts b/tests/content-cache.test.ts
+new file mode 100644
+index 0000000..5194e64
+--- /dev/null
++++ b/tests/content-cache.test.ts
+@@ -0,0 +1,230 @@
++import { describe, expect, it } from 'vitest'
++import {
++  ContentCache,
++  isCacheableAssetResponse,
++  matchesContentCachePath,
++  normalizeContentCachePaths,
++} from '../src/content-cache.js'
++
++/** The default static prefix: plugin bundles are served below it. */
++const PLUGIN_PATH = '/plugins'
++/** Both prefixes the gateway caches by default; one group, several prefixes. */
++const ASSET_PATHS = ['/plugins', '/assets'] as const
++
++function cache(options: {
++  ttlMs?: number
++  maxBytes?: number
++  maxEntries?: number
++  paths?: readonly string[]
++  maxEntryBytes?: number
++} = {}): ContentCache {
++  return new ContentCache(
++    options.ttlMs ?? 1_000,
++    options.maxBytes ?? 64 * 1024,
++    options.maxEntries ?? 1_024,
++    options.paths ?? [PLUGIN_PATH],
++    options.maxEntryBytes ?? 8 * 1024,
++  )
++}
++
++function body(text: string): Buffer {
++  return Buffer.from(text)
++}
++
++describe('static-asset path allowlist', () => {
++  it('matches a configured prefix and its subpaths, never a longer sibling', () => {
++    expect(matchesContentCachePath([PLUGIN_PATH], '/plugins')).toBe(true)
++    expect(matchesContentCachePath([PLUGIN_PATH], '/plugins/feature.js?rev=1')).toBe(true)
++    expect(matchesContentCachePath([PLUGIN_PATH], '/plugins/ui/renderer.js')).toBe(true)
++    // A sibling route is a different resource, not a subpath.
++    expect(matchesContentCachePath([PLUGIN_PATH], '/plugins-archive/feature.js')).toBe(false)
++    expect(matchesContentCachePath([PLUGIN_PATH], '/assets/feature.js')).toBe(false)
++    expect(matchesContentCachePath([], '/plugins/feature.js')).toBe(false)
++  })
++
++  it('serves every configured prefix and nothing outside them', () => {
++    const paths = normalizeContentCachePaths(ASSET_PATHS)
++    expect(matchesContentCachePath(paths, '/plugins/feature.js')).toBe(true)
++    expect(matchesContentCachePath(paths, '/assets/app.css')).toBe(true)
++    // Gateway-owned /mobile-access routes are answered by the gateway itself and never
++    // reach the proxy that consults this cache, so the prefix has no hit path.
++    expect(matchesContentCachePath(paths, '/mobile-access/compat-abc.js')).toBe(false)
++    expect(matchesContentCachePath(paths, '/api/sessions')).toBe(false)
++    expect(matchesContentCachePath(paths, '/sidebar/html/preview.html')).toBe(false)
++  })
++
++  it('normalizes configured prefixes and rejects unusable ones', () => {
++    expect(normalizeContentCachePaths([' /plugins/ ', '/plugins'])).toEqual([PLUGIN_PATH])
++    expect(normalizeContentCachePaths(['/assets'])).toEqual(['/assets'])
++    expect(normalizeContentCachePaths(['/plugins/', '/assets'])).toEqual(['/plugins', '/assets'])
++    expect(() => normalizeContentCachePaths(['relative/path'])).toThrow(/absolute/u)
++    expect(() => normalizeContentCachePaths(['/'])).toThrow(/absolute/u)
++    expect(() => normalizeContentCachePaths(['/plugins/../etc'])).toThrow(/plain paths/u)
++    expect(() => normalizeContentCachePaths(['/plugins/feature.js?rev=1'])).toThrow(/plain paths/u)
++  })
++})
++
++describe('static-asset cache storage', () => {
++  it('is inert unless a window is configured', () => {
++    const disabled = cache({ ttlMs: 0 })
++    expect(disabled.enabled).toBe(false)
++    expect(disabled.matches(`${PLUGIN_PATH}/feature.js`)).toBe(false)
++    disabled.store('k', {}, body('a'), undefined, 0)
++    expect(disabled.lookup('k', 0)).toBeUndefined()
++    // Nothing was retained, so even a lenient lookup cannot find it.
++    expect(disabled.lookup('k', 500)).toBeUndefined()
++  })
++
++  it('replays a stored body with its headers and age', () => {
++    const instance = cache({ ttlMs: 5_000 })
++    instance.store('k', { 'content-type': 'application/javascript' }, body('export const a = 1'), undefined, 1_000)
++    const replay = instance.lookup('k', 4_500)
++    expect(replay?.body.toString()).toBe('export const a = 1')
++    expect(replay?.headers['content-type']).toBe('application/javascript')
++    expect(replay?.ageSeconds).toBe(3)
++    // A second read replays the same stored representation.
++    expect(instance.lookup('k', 4_600)?.body.toString()).toBe('export const a = 1')
++  })
++
++  it('stops replaying past the window and only offers a revalidatable entry', () => {
++    const instance = cache({ ttlMs: 100 })
++    instance.store('k', {}, body('stale'), undefined, 1_000)
++    instance.store('tagged', {}, body('tagged'), '"v1"', 1_000)
++    expect(instance.lookup('k', 1_200)).toBeUndefined()
++    // Nothing to ask the upstream about, so the entry is simply dropped.
++    expect(instance.stale('k', 1_200)).toBeUndefined()
++    expect(instance.stale('tagged', 1_200)?.etag).toBe('"v1"')
++    // A fresh entry is not "stale" either.
++    expect(instance.stale('tagged', 1_050)).toBeUndefined()
++  })
++
++  it('refreshes a revalidated entry after a 304 instead of re-downloading it', () => {
++    const instance = cache({ ttlMs: 100 })
++    instance.store('k', {}, body('v1'), '"v1"', 1_000)
++    const replay = instance.refresh('k', 1_100)
++    expect(replay?.body.toString()).toBe('v1')
++    // The window restarted: the body is live again at the same tick and 90ms later.
++    expect(instance.lookup('k', 1_100)?.body.toString()).toBe('v1')
++    expect(instance.lookup('k', 1_190)?.body.toString()).toBe('v1')
++    expect(instance.stale('k', 1_190)).toBeUndefined()
++    // The refreshed copy is the one the next 304 would replay.
++    expect(instance.stale('k', 1_201)?.etag).toBe('"v1"')
++  })
++
++  it('refuses an entry above the per-entry or total byte budget', () => {
++    const instance = cache({ maxEntryBytes: 4, maxBytes: 6 })
++    instance.store('big', {}, body('12345'), undefined, 0)
++    expect(instance.lookup('big', 0)).toBeUndefined()
++    expect(instance.stale('big', 0)).toBeUndefined()
++    // A body that fits one entry but not the whole budget is refused as well.
++    const small = cache({ maxEntryBytes: 1024, maxBytes: 6 })
++    small.store('wide', {}, body('1234567'), undefined, 0)
++    expect(small.lookup('wide', 0)).toBeUndefined()
++    // A body inside both budgets in the same instance is retained, so the refusals
++    // above are about the size and not about a cache that never stores anything.
++    small.store('fits', {}, body('123'), undefined, 0)
++    expect(small.lookup('fits', 0)?.body.toString()).toBe('123')
++  })
++
++  it('retains an empty body without charging the byte budget', () => {
++    const instance = cache({ maxBytes: 4 })
++    instance.store('empty', {}, body(''), undefined, 0)
++    expect(instance.lookup('empty', 1)?.body.byteLength).toBe(0)
++    // It costs no bytes, so a later body that fits the budget is retained alongside it.
++    instance.store('tiny', {}, body('12'), undefined, 0)
++    expect(instance.lookup('empty', 1)?.body.byteLength).toBe(0)
++    expect(instance.lookup('tiny', 1)?.body.toString()).toBe('12')
++  })
++
++  it('evicts the least-recently-used body once the byte budget is full', () => {
++    const instance = cache({ maxEntryBytes: 4, maxBytes: 4 })
++    instance.store('a', {}, body('aa'), undefined, 0)
++    instance.store('b', {}, body('bb'), undefined, 0)
++    // Touch `a`, so the insertion order no longer decides: `b` is the oldest.
++    expect(instance.lookup('a', 1)?.body.toString()).toBe('aa')
++    instance.store('c', {}, body('cc'), undefined, 2)
++    expect(instance.lookup('b', 3)).toBeUndefined()
++    expect(instance.lookup('a', 3)?.body.toString()).toBe('aa')
++  })
++
++  it('caps the number of retained bodies, so empty bodies cannot pile up', () => {
++    // The byte budget is generous: only the count cap can stop these entries.
++    const instance = cache({ maxEntries: 2, maxBytes: 64 * 1024 })
++    instance.store('empty-1', {}, body(''), undefined, 0)
++    instance.store('empty-2', {}, body(''), undefined, 0)
++    instance.store('empty-3', {}, body(''), undefined, 0)
++    // Only the two newest survive: the oldest key was evicted, not merely hidden.
++    expect(instance.lookup('empty-1', 1)).toBeUndefined()
++    expect(instance.lookup('empty-2', 1)?.body.byteLength).toBe(0)
++    expect(instance.lookup('empty-3', 1)?.body.byteLength).toBe(0)
++    instance.store('empty-4', {}, body(''), undefined, 1)
++    expect(instance.lookup('empty-2', 2)).toBeUndefined()
++    expect(instance.lookup('empty-4', 2)?.body.byteLength).toBe(0)
++  })
++
++  it('keeps the newest bodies when the count cap is lower than the byte budget allows', () => {
++    const instance = cache({ maxEntries: 1 })
++    instance.store('a', {}, body('a'), undefined, 0)
++    instance.store('b', {}, body('b'), undefined, 0)
++    expect(instance.lookup('a', 1)).toBeUndefined()
++    expect(instance.lookup('b', 1)?.body.toString()).toBe('b')
++    // A refresh of a live entry keeps the same single slot: the next body still evicts
++    // the older key rather than being refused.
++    instance.refresh('b', 2)
++    instance.store('c', {}, body('c'), undefined, 2)
++    expect(instance.lookup('b', 3)).toBeUndefined()
++    expect(instance.lookup('c', 3)?.body.toString()).toBe('c')
++  })
++
++  it('is disabled by a zero count or byte budget', () => {
++    const noEntries = cache({ maxEntries: 0 })
++    expect(noEntries.enabled).toBe(false)
++    expect(noEntries.matches(`${PLUGIN_PATH}/feature.js`)).toBe(false)
++    noEntries.store('a', {}, body('a'), undefined, 0)
++    expect(noEntries.lookup('a', 0)).toBeUndefined()
++
++    const noBytes = cache({ maxBytes: 0 })
++    expect(noBytes.enabled).toBe(false)
++    expect(noBytes.matches(`${PLUGIN_PATH}/feature.js`)).toBe(false)
++  })
++
++  it('is disabled while the path allowlist is empty', () => {
++    const instance = cache({ paths: [] })
++    expect(instance.enabled).toBe(false)
++    instance.store('a', {}, body('a'), undefined, 0)
++    expect(instance.lookup('a', 0)).toBeUndefined()
++  })
++})
++
++describe('static-asset response eligibility', () => {
++  const script = { 'content-type': 'application/javascript; charset=utf-8' }
++
++  it('accepts complete identity-encoded scripts, styles, JSON and SVG', () => {
++    expect(isCacheableAssetResponse(200, script)).toBe(true)
++    expect(isCacheableAssetResponse(200, { 'content-type': 'text/css' })).toBe(true)
++    expect(isCacheableAssetResponse(200, { 'content-type': 'application/json; charset=utf-8' })).toBe(true)
++    expect(isCacheableAssetResponse(200, { 'content-type': 'application/manifest+json' })).toBe(true)
++    expect(isCacheableAssetResponse(200, { 'content-type': 'image/svg+xml' })).toBe(true)
++    // A public upstream policy is compatible with a gateway-side replay.
++    expect(isCacheableAssetResponse(200, { ...script, 'cache-control': 'public, max-age=60' })).toBe(true)
++  })
++
++  it('refuses a response that set a cookie', () => {
++    expect(isCacheableAssetResponse(200, { ...script, 'set-cookie': ['sid=1; Path=/'] })).toBe(false)
++  })
++
++  it('refuses a non-200, an encoded body and a private or no-store policy', () => {
++    expect(isCacheableAssetResponse(304, script)).toBe(false)
++    expect(isCacheableAssetResponse(206, script)).toBe(false)
++    expect(isCacheableAssetResponse(200, { ...script, 'content-encoding': 'gzip' })).toBe(false)
++    expect(isCacheableAssetResponse(200, { ...script, 'cache-control': 'no-store' })).toBe(false)
++    expect(isCacheableAssetResponse(200, { ...script, 'cache-control': 'private, max-age=60' })).toBe(false)
++  })
++
++  it('refuses an event stream, a binary body and a media type it cannot replay', () => {
++    expect(isCacheableAssetResponse(200, { 'content-type': 'text/event-stream; charset=utf-8' })).toBe(false)
++    expect(isCacheableAssetResponse(200, { 'content-type': 'application/octet-stream' })).toBe(false)
++    expect(isCacheableAssetResponse(200, { 'content-type': 'application/wasm' })).toBe(false)
++    expect(isCacheableAssetResponse(200, {})).toBe(false)
++  })
++})
+diff --git a/tests/gateway.test.ts b/tests/gateway.test.ts
+index 71bec0a..94eb859 100644
+--- a/tests/gateway.test.ts
++++ b/tests/gateway.test.ts
+@@ -304,6 +304,63 @@ async function upstream(
+       response.end()
+       return
+     }
++    if (incoming.method === 'POST' && incoming.url === '/api/sessions/write') {
++      response.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
++      response.end('{"written":true}')
++      return
++    }
++    if (incoming.url === '/plugins/cached.js' || incoming.url === '/assets/cached.css') {
++      const body = incoming.url.endsWith('.css')
++        ? `.cached{color:#111}\n${'.pad{}\n'.repeat(120)}`
++        : `export const cached = '${'x'.repeat(2048)}'\n`
++      response.writeHead(200, {
++        'content-type': incoming.url.endsWith('.css') ? 'text/css; charset=utf-8' : 'application/javascript; charset=utf-8',
++        'content-length': String(Buffer.byteLength(body)),
++      })
++      response.end(body)
++      return
++    }
++    if (incoming.url === '/plugins/etag-fixture.js') {
++      const body = `export const etagFixture = '${'y'.repeat(2048)}'\n`
++      if (incoming.headers['if-none-match'] === '"plugin-v1"') {
++        response.writeHead(304, { etag: '"plugin-v1"' })
++        response.end()
++        return
++      }
++      response.writeHead(200, {
++        'content-type': 'application/javascript; charset=utf-8',
++        etag: '"plugin-v1"',
++        'content-length': String(Buffer.byteLength(body)),
++      })
++      response.end(body)
++      return
++    }
++    if (incoming.url === '/plugins/cookie-set.js') {
++      const body = 'export const cookieSet = true\n'
++      response.writeHead(200, {
++        'content-type': 'application/javascript; charset=utf-8',
++        'set-cookie': 'upstream-probe=1; Path=/',
++        'content-length': String(Buffer.byteLength(body)),
++      })
++      response.end(body)
++      return
++    }
++    if (incoming.url === '/plugins/large.js') {
++      // Above the 2MB per-entry limit: forwarded in full, never retained.
++      const body = `export const large = '${'z'.repeat(2 * 1024 * 1024 + 64)}'\n`
++      response.writeHead(200, {
++        'content-type': 'application/javascript; charset=utf-8',
++        'content-length': String(Buffer.byteLength(body)),
++      })
++      response.end(body)
++      return
++    }
++    if (incoming.url === '/api/sessions') {
++      const body = JSON.stringify({ sessions: [{ id: 'a' }], version: 1 })
++      response.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'content-length': String(Buffer.byteLength(body)) })
++      response.end(body)
++      return
++    }
+     if (incoming.url === '/api/stream-hold') {
+       response.writeHead(200, { 'content-type': 'text/plain' })
+       response.write('first')
+@@ -4011,3 +4068,255 @@ describe('mobile document compression', () => {
+     expect(gunzipSync(conditional.rawBody)).toEqual(plain.rawBody)
+   })
+ })
++
++describe('opt-in static-asset cache', () => {
++  async function cachedGateway(overrides: Record<string, unknown> = { contentCacheAssetTtlMs: 600_000 }) {
++    const inner = await upstream('remote-settings')
++    const instance = await gateway(inner.port, overrides)
++    const paired = await pair(instance)
++    const headers = { ...browserHeaders(instance), cookie: `${SESSION_COOKIE}=${paired.session}` }
++    return { inner, instance, paired, headers }
++  }
++
++  it('is off by default and changes nothing about the response', async () => {
++    const inner = await upstream('remote-settings')
++    const instance = await gateway(inner.port)
++    const paired = await pair(instance)
++    const headers = { ...browserHeaders(instance), cookie: `${SESSION_COOKIE}=${paired.session}` }
++
++    const first = await request(instance.address().port, '/plugins/cached.js', { headers })
++    const second = await request(instance.address().port, '/plugins/cached.js', { headers })
++    expect(first.headers['x-dsh-mobile-cache']).toBeUndefined()
++    expect(second.headers['x-dsh-mobile-cache']).toBeUndefined()
++    expect(second.body).toBe(first.body)
++    expect(String(first.headers['cache-control'])).toContain('no-store')
++    expect(inner.observations.filter(entry => entry.url === '/plugins/cached.js')).toHaveLength(2)
++  })
++
++  it('replays an identical asset, keeps the browser policy, and skips range or no-cache requests', async () => {
++    const { inner, instance, headers } = await cachedGateway()
++    const first = await request(instance.address().port, '/plugins/cached.js', { headers })
++    expect(first.status).toBe(200)
++    expect(first.headers['x-dsh-mobile-cache']).toBeUndefined()
++
++    const second = await request(instance.address().port, '/plugins/cached.js', { headers })
++    expect(second.status).toBe(200)
++    expect(second.headers['x-dsh-mobile-cache']).toBe('hit')
++    expect(second.headers.age).toBe('0')
++    // A gateway replay must not become a browser-cacheable response.
++    expect(String(second.headers['cache-control'])).toContain('no-store')
++    expect(second.body).toBe(first.body)
++    // A cached repeat never reaches DSH.
++    expect(inner.observations.filter(entry => entry.url === '/plugins/cached.js')).toHaveLength(1)
++
++    // A range read needs the upstream's own bytes and length metadata.
++    const ranged = await request(instance.address().port, '/plugins/cached.js', {
++      headers: { ...headers, range: 'bytes=0-9' },
++    })
++    expect(ranged.headers['x-dsh-mobile-cache']).toBeUndefined()
++    // A client asking for freshness is never answered from the store.
++    const bypassed = await request(instance.address().port, '/plugins/cached.js', {
++      headers: { ...headers, 'cache-control': 'no-cache' },
++    })
++    expect(bypassed.headers['x-dsh-mobile-cache']).toBeUndefined()
++    expect(inner.observations.filter(entry => entry.url === '/plugins/cached.js')).toHaveLength(3)
++  })
++
++  it('serves only the allowlisted prefixes, never an unrelated route', async () => {
++    const { inner, instance, headers } = await cachedGateway()
++    // `/sidebar/` is proxied for the GUI but is not a static prefix.
++    for (const path of ['/sidebar/html/preview.html']) {
++      await request(instance.address().port, path, { headers })
++      const repeat = await request(instance.address().port, path, { headers })
++      expect(repeat.headers['x-dsh-mobile-cache']).toBeUndefined()
++      expect(inner.observations.filter(entry => entry.url === path)).toHaveLength(2)
++    }
++  })
++
++  it('never caches a gateway-owned /mobile-access route, even when configured', async () => {
++    // The prefix has no hit path: custom CSS/JS, layout, compat and boot batches are
++    // answered locally and never reach proxyHttp, so listing it adds nothing.
++    const { inner, instance, headers } = await cachedGateway({
++      contentCacheAssetTtlMs: 600_000,
++      contentCacheAssetPaths: ['/plugins', '/assets', '/mobile-access'],
++    })
++    for (const path of ['/mobile-access/custom.css', '/mobile-access/custom.js']) {
++      const first = await request(instance.address().port, path, { headers })
++      expect(first.status).toBe(200)
++      expect(first.headers['x-dsh-mobile-cache']).toBeUndefined()
++      const repeat = await request(instance.address().port, path, { headers })
++      expect(repeat.headers['x-dsh-mobile-cache']).toBeUndefined()
++    }
++    // Nothing under /mobile-access was proxied at all.
++    expect(inner.observations.filter(entry => entry.url.startsWith('/mobile-access/'))).toHaveLength(0)
++  })
++
++  it('keeps a write from clearing the group and never replays the write itself', async () => {
++    const { inner, instance, paired, headers } = await cachedGateway()
++    await request(instance.address().port, '/plugins/cached.js', { headers })
++    expect((await request(instance.address().port, '/plugins/cached.js', { headers })).headers['x-dsh-mobile-cache']).toBe('hit')
++
++    const mutation = await request(instance.address().port, '/api/sessions/write', {
++      method: 'POST',
++      headers: { ...headers, [CSRF_HEADER]: paired.csrf, 'content-type': 'application/json' },
++      body: '{}',
++    })
++    expect(mutation.status).toBe(200)
++    expect(mutation.headers['x-dsh-mobile-cache']).toBeUndefined()
++    // A non-GET is forwarded every time: nothing about a write is replayed.
++    await request(instance.address().port, '/api/sessions/write', {
++      method: 'POST',
++      headers: { ...headers, [CSRF_HEADER]: paired.csrf, 'content-type': 'application/json' },
++      body: '{}',
++    })
++    expect(inner.observations.filter(entry => entry.url === '/api/sessions/write')).toHaveLength(2)
++
++    // The static group is unrelated to list or Session state, so it survives the write.
++    const afterWrite = await request(instance.address().port, '/plugins/cached.js', { headers })
++    expect(afterWrite.headers['x-dsh-mobile-cache']).toBe('hit')
++    expect(inner.observations.filter(entry => entry.url === '/plugins/cached.js')).toHaveLength(1)
++  })
++
++  it('revalidates a stored etag with If-None-Match instead of re-downloading the body', async () => {
++    const { inner, instance, headers } = await cachedGateway({ contentCacheAssetTtlMs: 40 })
++    const first = await request(instance.address().port, '/plugins/etag-fixture.js', { headers })
++    expect(first.status).toBe(200)
++
++    await new Promise(resolve => { setTimeout(resolve, 60) })
++    const revalidated = await request(instance.address().port, '/plugins/etag-fixture.js', { headers })
++    expect(revalidated.status).toBe(200)
++    expect(revalidated.headers['x-dsh-mobile-cache']).toBe('revalidated')
++    expect(revalidated.body).toBe(first.body)
++    const etagChecks = inner.observations.filter(entry => entry.url === '/plugins/etag-fixture.js' && entry.headers['if-none-match'] === '"plugin-v1"')
++    expect(etagChecks).toHaveLength(1)
++  })
++
++  it('evicts the oldest asset when the entry cap is reached', async () => {
++    const { inner, instance, headers } = await cachedGateway({
++      contentCacheAssetTtlMs: 600_000,
++      contentCacheMaxEntries: 1,
++    })
++    const first = await request(instance.address().port, '/plugins/cached.js', { headers })
++    expect(first.status).toBe(200)
++    expect(first.headers['x-dsh-mobile-cache']).toBeUndefined()
++    // The only count slot is taken, so the plugin body is evicted by the stylesheet.
++    await request(instance.address().port, '/assets/cached.css', { headers })
++    const repeat = await request(instance.address().port, '/plugins/cached.js', { headers })
++    expect(repeat.headers['x-dsh-mobile-cache']).toBeUndefined()
++    expect(inner.observations.filter(entry => entry.url === '/plugins/cached.js')).toHaveLength(2)
++    // That refetch took the only slot back, so the newest body replays.
++    const live = await request(instance.address().port, '/plugins/cached.js', { headers })
++    expect(live.headers['x-dsh-mobile-cache']).toBe('hit')
++  })
++
++  it('refuses a response that sets a cookie', async () => {
++    const { inner, instance, headers } = await cachedGateway()
++    await request(instance.address().port, '/plugins/cookie-set.js', { headers })
++    const repeat = await request(instance.address().port, '/plugins/cookie-set.js', { headers })
++    expect(repeat.headers['x-dsh-mobile-cache']).toBeUndefined()
++    expect(inner.observations.filter(entry => entry.url === '/plugins/cookie-set.js')).toHaveLength(2)
++  })
++
++  it('does not cache an event stream served from an allowlisted prefix', async () => {
++    const { inner, instance, headers } = await cachedGateway()
++    await request(instance.address().port, '/plugins/sse-fixture', { headers })
++    const repeat = await request(instance.address().port, '/plugins/sse-fixture', { headers })
++    expect(repeat.headers['x-dsh-mobile-cache']).toBeUndefined()
++    expect(inner.observations.filter(entry => entry.url === '/plugins/sse-fixture')).toHaveLength(2)
++  })
++
++  it('does not retain a body above the per-entry limit', async () => {
++    const { inner, instance, headers } = await cachedGateway()
++    const first = await request(instance.address().port, '/plugins/large.js', { headers })
++    expect(first.status).toBe(200)
++    expect(first.rawBody.byteLength).toBeGreaterThan(2 * 1024 * 1024)
++    const repeat = await request(instance.address().port, '/plugins/large.js', { headers })
++    expect(repeat.headers['x-dsh-mobile-cache']).toBeUndefined()
++    expect(repeat.body).toBe(first.body)
++    expect(inner.observations.filter(entry => entry.url === '/plugins/large.js')).toHaveLength(2)
++  })
++
++  it('replays a compressed client request from the identity copy', async () => {
++    const { inner, instance, headers } = await cachedGateway()
++    const compressedHeaders = { ...headers, 'accept-encoding': 'gzip' }
++    const first = await request(instance.address().port, '/plugins/cached.js', { headers: compressedHeaders })
++    expect(first.headers['content-encoding']).toBe('gzip')
++    const firstBody = gunzipSync(first.rawBody).toString('utf8')
++
++    const second = await request(instance.address().port, '/plugins/cached.js', { headers: compressedHeaders })
++    expect(second.headers['x-dsh-mobile-cache']).toBe('hit')
++    expect(second.headers['content-encoding']).toBe('gzip')
++    expect(gunzipSync(second.rawBody).toString('utf8')).toBe(firstBody)
++    expect(inner.observations.filter(entry => entry.url === '/plugins/cached.js')).toHaveLength(1)
++  })
++
++  it('keeps one device from reading another device\'s body', async () => {
++    const { inner, instance, headers } = await cachedGateway()
++    const other = await pair(instance)
++    const otherHeaders = { ...browserHeaders(instance), cookie: `${SESSION_COOKIE}=${other.session}` }
++
++    await request(instance.address().port, '/plugins/cached.js', { headers })
++    expect((await request(instance.address().port, '/plugins/cached.js', { headers })).headers['x-dsh-mobile-cache']).toBe('hit')
++    const otherRead = await request(instance.address().port, '/plugins/cached.js', { headers: otherHeaders })
++    expect(otherRead.headers['x-dsh-mobile-cache']).toBeUndefined()
++    expect(inner.observations.filter(entry => entry.url === '/plugins/cached.js')).toHaveLength(2)
++  })
++})
++describe('static-asset cache configuration', () => {
++  function parse(overrides: Record<string, unknown> = {}) {
++    return parseGatewayConfig({
++      listenHost: '127.0.0.1',
++      listenPort: 0,
++      upstreamOrigin: 'http://127.0.0.1:1',
++      publicAuthorities: ['127.0.0.1'],
++      allowedCidrs: ['127.0.0.0/8'],
++      stateFile: join(tmpdir(), `dsh-mobile-access-${crypto.randomUUID()}.json`),
++      tls: { mode: 'disabled' },
++      ...overrides,
++    })
++  }
++
++  it('is off by default, over the proxied plugin and asset prefixes only', () => {
++    const resolved = parse()
++    expect(resolved.contentCacheAssetTtlMs).toBe(0)
++    // `/mobile-access` is intentionally absent: those routes are answered by the
++    // gateway itself and never reach the proxy that consults this cache.
++    expect(resolved.contentCacheAssetPaths).toEqual(['/plugins', '/assets'])
++    expect(resolved.contentCacheMaxBytes).toBe(8 * 1024 * 1024)
++    expect(resolved.contentCacheMaxEntries).toBe(256)
++  })
++
++  it('accepts a bounded static window and rejects one beyond the ceiling', () => {
++    const resolved = parse({ contentCacheAssetTtlMs: 600_000 })
++    expect(resolved.contentCacheAssetTtlMs).toBe(600_000)
++    expect(() => parse({ contentCacheAssetTtlMs: 3_600_001 })).toThrow(/contentCacheAssetTtlMs/u)
++  })
++
++  it('bounds the byte budget and the entry count', () => {
++    expect(parse().contentCacheMaxEntries).toBe(256)
++    expect(parse({ contentCacheMaxEntries: 16 }).contentCacheMaxEntries).toBe(16)
++    expect(() => parse({ contentCacheMaxEntries: 0 })).toThrow(/contentCacheMaxEntries/u)
++    expect(() => parse({ contentCacheMaxEntries: 65_537 })).toThrow(/contentCacheMaxEntries/u)
++    expect(() => parse({ contentCacheMaxBytes: 1024 })).toThrow(/contentCacheMaxBytes/u)
++    expect(() => parse({ contentCacheMaxBytes: 64 * 1024 * 1024 + 1 })).toThrow(/contentCacheMaxBytes/u)
++  })
++
++  it('keeps custom prefixes and rejects unusable ones', () => {
++    const resolved = parse({ contentCacheAssetTtlMs: 60_000, contentCacheAssetPaths: ['/plugins/', '/assets/ui'] })
++    expect(resolved.contentCacheAssetPaths).toEqual(['/plugins', '/assets/ui'])
++    expect(() => parse({ contentCacheAssetPaths: ['relative/x'] })).toThrow(/absolute/u)
++    expect(() => parse({ contentCacheAssetPaths: ['/plugins/../etc'] })).toThrow(/plain paths/u)
++  })
++
++  it('lets an operator disable every prefix while keeping the window configured', () => {
++    const resolved = parse({ contentCacheAssetTtlMs: 60_000, contentCacheAssetPaths: [] })
++    expect(resolved.contentCacheAssetPaths).toEqual([])
++  })
++
++  it('keeps the static group off while an unrelated key is configured', () => {
++    // Nothing but the static group's own window turns caching on.
++    const resolved = parse({ contentCacheAssetPaths: ['/plugins'] })
++    expect(resolved.contentCacheAssetTtlMs).toBe(0)
++    expect(resolved.contentCacheAssetPaths).toEqual(['/plugins'])
++  })
++})
+-- 
+2.43.0
+

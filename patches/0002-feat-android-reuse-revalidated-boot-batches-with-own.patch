@@ -1,0 +1,3030 @@
+From 07e1a330501cf4816a124c10ec722a421fda3d57 Mon Sep 17 00:00:00 2001
+From: LUgABeEEE <LUgABeEEE@users.noreply.github.com>
+Date: Mon, 2 Nov 2026 17:06:16 +0800
+Subject: [PATCH 2/2] feat(android): reuse revalidated boot batches with
+ ownership-safe cancellation
+
+Restores #314's device-side boot-batch cache, which upstream deferred in 0.8.1,
+and addresses the four conditions named there: request cancellation, durable-body
+consistency, clear-versus-download isolation and benefit measurement.
+
+- BootAssetStore: per-entry SHA-256, .part + fsync + atomic rename, epoch and
+  per-key version checks on commit, one writer per key, entry bound, and a clear
+  that only drops unreferenced entries and aborts in-flight commits.
+- HttpBootAssetFetcher: cancellation through disconnect(), Content-Length and
+  decoded-body digest checks, bounded 6s intercept budget so WebView can retake
+  the request instead of waiting on a stuck read.
+- BootAssetCache and BootAssetMetrics: one WebView bridge with a null fallback on
+  any failure, plus hit/miss/fetched/saved counters where
+  savedPercent = saved / (saved + fetched).
+- Wiring in SecureWebViewClient and MainActivity; design, evidence and remaining
+  device work in apps/mobile/android/BOOT_CACHE_PATCH.md.
+---
+ apps/mobile/android/BOOT_CACHE_PATCH.md       | 395 ++++++++++++++++
+ .../github/sayach/dshmobile/BootAssetCache.kt | 423 ++++++++++++++++++
+ .../sayach/dshmobile/BootAssetMetrics.kt      | 201 +++++++++
+ .../github/sayach/dshmobile/BootAssetStore.kt | 374 ++++++++++++++++
+ .../sayach/dshmobile/HttpBootAssetFetcher.kt  | 152 +++++++
+ .../github/sayach/dshmobile/MainActivity.kt   |  52 +++
+ .../sayach/dshmobile/SecureWebViewClient.kt   |  31 ++
+ .../sayach/dshmobile/BootAssetCacheTest.kt    | 364 +++++++++++++++
+ .../dshmobile/BootAssetCachingWiringTest.kt   | 157 +++++++
+ .../sayach/dshmobile/BootAssetPolicyTest.kt   |  61 +++
+ .../sayach/dshmobile/BootAssetStoreTest.kt    | 304 +++++++++++++
+ .../dshmobile/HttpBootAssetFetcherTest.kt     | 308 +++++++++++++
+ 12 files changed, 2822 insertions(+)
+ create mode 100644 apps/mobile/android/BOOT_CACHE_PATCH.md
+ create mode 100644 apps/mobile/android/app/src/main/java/io/github/sayach/dshmobile/BootAssetCache.kt
+ create mode 100644 apps/mobile/android/app/src/main/java/io/github/sayach/dshmobile/BootAssetMetrics.kt
+ create mode 100644 apps/mobile/android/app/src/main/java/io/github/sayach/dshmobile/BootAssetStore.kt
+ create mode 100644 apps/mobile/android/app/src/main/java/io/github/sayach/dshmobile/HttpBootAssetFetcher.kt
+ create mode 100644 apps/mobile/android/app/src/test/java/io/github/sayach/dshmobile/BootAssetCacheTest.kt
+ create mode 100644 apps/mobile/android/app/src/test/java/io/github/sayach/dshmobile/BootAssetCachingWiringTest.kt
+ create mode 100644 apps/mobile/android/app/src/test/java/io/github/sayach/dshmobile/BootAssetPolicyTest.kt
+ create mode 100644 apps/mobile/android/app/src/test/java/io/github/sayach/dshmobile/BootAssetStoreTest.kt
+ create mode 100644 apps/mobile/android/app/src/test/java/io/github/sayach/dshmobile/HttpBootAssetFetcherTest.kt
+
+diff --git a/apps/mobile/android/BOOT_CACHE_PATCH.md b/apps/mobile/android/BOOT_CACHE_PATCH.md
+new file mode 100644
+index 0000000..d11fb52
+--- /dev/null
++++ b/apps/mobile/android/BOOT_CACHE_PATCH.md
+@@ -0,0 +1,395 @@
++# Android boot-batch cache patch (restores #314 under the four 0.8.1 defer conditions)
++
++Status: **local patch. The JVM unit suite compiles and passes (2026-11-02, 74 suites / 503 tests, 0
++failures); device behaviour and benefit measurement are still unverified.** See
++[Verification](#verification).
++
++0.8.1 withdrew the native boot-batch cache with this release note:
++
++> Defer #314's native boot-batch cache pending request cancellation, durable-body consistency,
++> clear-versus-download isolation and device benefit measurements.
++
++This document describes the restored Android implementation and how each of those four conditions
++is met in code, where every failure falls back to the untouched upstream path, what the device
++measurement records and how to read it on a real phone.
++
++## What a boot batch is
++
++The gateway rewrites its mobile page into a small graph of script batches whose URLs are content
++revisioned per module selection:
++
++```
++/mobile-access/mobile-boot/<64 hex>.js     (GET, same origin, session cookie, ETag)
++```
++
++Those URLs are the only ones this patch touches. The path hash covers the selected modules, but the
++gateway can reassemble the same path when its layout file changes, so **a URL hit is still
++revalidated**: every interception sends `If-None-Match` to the gateway, `304` keeps the stored body,
++`200` replaces it, and everything else falls back.
++
++## Data flow
++
++```
++Chromium network thread
++  SecureWebViewClient.shouldInterceptRequest
++    -> BootAssetResponder.response(GET, !isForMainFrame, url)      (null => WebView owns it)
++       -> BootAssetPolicy.key(path + same origin)                  (null => WebView owns it)
++       -> BootAssetCache.resolve
++          -> BootAssetRequests.await(BootAssetCancellation, 6 s)   (bounded 2-thread pool)
++             -> BootAssetStore.acquire(key)                        (size + SHA-256 verified lease)
++             -> HttpBootAssetFetcher.fetch(url, storedEtag, cancellation)
++                (pinned TLS transport, session cookie, If-None-Match, gzip, Content-Length)
++             -> 304  => serve the stored body, HIT
++             -> 200  => Serve + BootAssetStore.beginWrite/commit  (epoch-checked, atomic rename)
++             -> 401/403/transport/encoding/length failure => Miss
++    -> WebResourceResponse(body, headers)   or   null
++```
++
++## The four defer conditions
++
++### 1. Request cancellation
++
++| Requirement | Implementation |
++| --- | --- |
++| The interception runs off the main thread | Chromium calls `shouldInterceptRequest` on a background thread; the download itself runs on `BootAssetRequests`' bounded pool (`dsh-boot-cache-N`, daemon threads, 2 workers + 4 queued jobs) and the Chromium thread only waits on the future — for at most 6 s (`BOOT_ASSET_INTERCEPT_DEADLINE_MS`). |
++| A slow download cannot hold the page | The Chromium request thread is blocked while it waits, so the ceiling is deliberately short: 6 s is about twice a healthy LAN batch fetch and above the 3 s connect budget, so a reachable gateway is never cut off mid-handshake. Past it the attempt is cancelled and the WebView performs the request itself with its own budget — the cost of being wrong is one duplicated request, never a failed load. |
++| Navigation cancels in-flight downloads | `SecureWebViewClient.onPageStarted` -> `BootAssetResponder.cancelInFlight()` -> `BootAssetRequests.cancelAll()` -> `BootAssetCancellation.cancel()`. |
++| WebView destruction / app exit cancels them | `SecureWebViewClient.dispose()` cancels in flight; `MainActivity.destroyWebView` then calls `BootAssetCache.close()`, which cancels again and shuts the pool down (`shutdownNow` + bounded await). `onDestroy` reaches `destroyWebView` unless the process is killed outright. |
++| No leaked connections | `HttpBootAssetFetcher` registers `connection.disconnect()` on the cancellation token; a blocking socket read cannot observe a thread interrupt, so cancelling from the main thread is what actually unblocks it. The connection is also disconnected in `finally`. |
++| No leaked threads | The pool is owned by one `BootAssetCache` per WebView and closed with it. No thread is created until the first boot batch is intercepted (default `ThreadPoolExecutor` start policy). |
++| No leaked temporary files | A body is only written after the transfer completed and verified, through `BootAssetStore.writeAtomically` (`.part` + `fsync` + atomic rename); a `.part` is deleted on any failure and pruned at open. |
++| A cancelled download must not land | `BootAssetCache.storeAndServe` refuses to reserve a key when the token is already cancelled, registers `ticket.cancel()` as a cancel listener, checks `ticket.cancelled` inside `BootAssetStore.commit` before the rename, and removes the entry if a cancel is observed after the rename won the race. Nothing from a cancelled attempt is served either. |
++
++Tests: `BootAssetCacheTest.cancellingInFlightStopsTheDownloadAndStoresNothing`,
++`BootAssetCacheTest.aDownloadThatOutlivesItsDeadlineFallsBackToTheWebView`,
++`HttpBootAssetFetcherTest.cancellingAnInFlightDownloadReportsCancellationInsteadOfBytes`,
++`BootAssetCachingWiringTest.navigationAndDisposalCancelAnInFlightBootDownload`.
++
++Residual window: a cancellation that arrives between `commit`'s last check and the atomic rename
++still writes a complete, digest-verified body of the current epoch; the caller is not served and
++`storeAndServe` deletes that entry when it observes the cancellation.
++
++### 2. Durable-body consistency
++
++| Requirement | Implementation |
++| --- | --- |
++| Declared length equals the received byte count | `HttpBootAssetFetcher.readResponse` counts the bytes actually read off the wire (`CountingInputStream`) and refuses the transfer when `Content-Length` is known and differs. The check is complete inside the fetcher, so the length does not travel with the body: a `BootAssetFetch.Modified` only exists for a transfer that already matched. The decoded (gunzipped) body is what gets served and stored. |
++| A content digest is verified before the write | `HttpBootAssetFetcher` hashes the decoded body (`BootAssetDigest.of`), `BootAssetFetch.Modified.digest` carries it, and `BootAssetStore.commit` recomputes the hash and refuses a mismatch. |
++| The write is atomic | `BootAssetStore.writeAtomically`: `.part` + `fd.sync()` + `ATOMIC_MOVE` (falling back to `REPLACE_EXISTING` only where the filesystem has no atomic move), so a crash never leaves a servable half-body. |
++| Entry metadata is re-verified before serving | `BootAssetStore.acquire` re-checks the file length and recomputes the SHA-256 against the index; a truncated, padded or tampered file is treated as a miss, deleted, and the request is fetched fresh without a validator. |
++| A truncated or invalid entry is not served | Same path: `acquire` returns null, the entry is dropped from the index, and `BootAssetCache` fetches without `If-None-Match`. |
++| Index schema | `index.json` is version 2 and stores `etag`, `contentType`, `size`, `digest`, `lastUsedAt`; a v1 or corrupt index is ignored, not trusted. |
++
++Tests: `BootAssetStoreTest.dropsAnEntryWhoseBytesNoLongerMatchTheirDigest`,
++`BootAssetStoreTest.dropsATruncatedBodyInsteadOfServingItsPrefix`,
++`BootAssetStoreTest.refusesACommitWhoseBodyContradictsItsDigest`,
++`BootAssetCacheTest.aStoredBodyThatNoLongerVerifiesIsRefetchedWithoutTheValidator`,
++`HttpBootAssetFetcherTest.aTransferThatEndsBeforeItsDeclaredLengthIsRefused`.
++
++Limit: the digest detects damage in the cache directory and truncation on the wire; it does not
++defend against a compromised app-private storage directory, which is outside the WebView threat
++model this patch inherits.
++
++### 3. Clear-versus-download isolation
++
++`BootAssetStore` keeps a monotonic `epoch` and a per-key version.
++
++| Requirement | Implementation |
++| --- | --- |
++| `clear()` advances a generation | `BootAssetStore.clear()` increments `epoch` (returned to the caller for logging/tests) in addition to deleting bodies. |
++| `clear()` deletes only entries no reader holds | `clear()` marks every slot stale and deletes only files with `leases == 0`; a body a reader holds through `BootAssetStore.acquire` is deleted when the last lease closes. |
++| A download that straddles a clear is discarded | `BootAssetCache.resolve` captures `store.currentEpoch()` before fetching; `BootAssetStore.beginWrite(key, expectedEpoch)` refuses a stale epoch and `commit` re-checks it under the store monitor, so nothing is written back into a cleared generation. |
++| An evicted key is not resurrected | Every put/remove/evict advances that key's version; `beginWrite` captures it and `commit` refuses a changed version. |
++| Only one writer per key | `BootAssetStore.beginWrite` reserves the key (`writers`); a second concurrent interception of the same batch reports `CONTENDED` and lets the WebView fetch it rather than racing the write. |
++
++The cache-clear points are the same two the withdrawn implementation had:
++`MainActivity.clearSiteData` (site data) and `MainActivity.confirmDeleteDevice` (removing a paired
++device). Both call `MainActivity.clearBootAssetStore()`, which runs `BootAssetStore.clear()` on the
++IO executor — `clear()` deletes files and may wait on the store monitor that a running download holds
++across an `fsync`, and that must not happen on the UI thread. The timing (site-data clear, device
++removal) is unchanged; only the thread is.
++
++Tests: `BootAssetStoreTest.clearAdvancesTheEpochAndRefusesACommitThatStraddledIt`,
++`BootAssetStoreTest.aKeyEvictedDuringItsDownloadIsNotResurrected`,
++`BootAssetStoreTest.allowsOnlyOneWriterPerKey`,
++`BootAssetStoreTest.clearKeepsABodyAliveUntilTheReaderReleasesIt`,
++`BootAssetCacheTest.clearingTheStoreDuringADownloadDiscardsTheBodyInsteadOfWritingItBack`,
++`BootAssetCacheTest.twoConcurrentRequestsForOneBatchProduceExactlyOneStoredBody`.
++
++### 4. Device benefit measurement
++
++`BootAssetMetrics` is a plain Kotlin, thread-safe counter set. `BootAssetCache` records **exactly one**
++outcome per boot-batch request, from the thread that answered it.
++
++| Counter | Meaning |
++| --- | --- |
++| `hits` | Served from disk after a `304`. |
++| `misses` | Transferred by this cache and served (a `200`), or first load. |
++| `revalidated` | `304` responses observed (equal to hits today; kept separate because a `304` with an unusable body is counted as `failed`). |
++| `rejected` | `401`/`403`; the WebView keeps the request. |
++| `failed` | Transport failure, unsupported encoding, declared/actual length mismatch, non-JavaScript response, protocol anomaly. |
++| `cancelled` | Navigation, disposal, app exit or deadline. |
++| `contended` | Another thread owned the batch or the pool was saturated. |
++| `bytesServed` | Bytes handed to the WebView, including bytes served from disk — "what the page received". |
++| `bytesFetched` | Response-body bytes that actually crossed the network: the body of every `200` this cache downloaded (a cold load, or the fresh copy that replaced a stale entry). A `304` transfers no body and adds nothing. |
++| `bytesSaved` | Bytes delivered from disk after a `304` — the transfer that did not happen. |
++| `avgMs` / `maxMs` | Wall-clock per interception. |
++| `hitPercent` | `hits / (hits + misses)`. |
++| `savedPercent` | `bytesSaved / (bytesSaved + bytesFetched)` — the share of the batch bytes in play that never crossed the network. |
++
++The three byte counters are distinct on purpose, and for the batches this cache answered they satisfy
++`bytesServed == bytesFetched + bytesSaved`. That identity is why `savedPercent` must use
++`bytesSaved + bytesFetched` as its denominator: a revalidated hit adds to `bytesServed` as well, so a
++denominator built from `bytesServed` would report 50% for a start where every batch was revalidated.
++A cold start reports `savedPercent=0`, a fully revalidated start reports `100`.
++
++`BootAssetMetrics.snapshot().summary()` renders one line such as:
++
++```
++boot-cache requests=3 hits=2 misses=1 revalidated=2 rejected=0 failed=0 cancelled=0 contended=0
++served=1000000B fetched=200000B saved=800000B hitPercent=66 savedPercent=80 avgMs=41 maxMs=96
++last=HIT:/mobile-access/mobile-boot/<64 hex>.js:37ms
++```
++
++(two 400 kB batches revalidated, one 200 kB batch re-downloaded after a layout change:
++`served = 1000000 = fetched 200000 + saved 800000`, `savedPercent = 800000 / 1000000 = 80`).
++
++Privacy: a snapshot contains no cookie, no query string, no origin/host and no session or device
++identifier. The only per-request string is the revisioned batch path the policy already accepted
++(`/mobile-access/mobile-boot/<64 hex>.js`), which is a module-selection hash, not a session value.
++`BootAssetCachingWiringTest.aSnapshotCarriesCountersButNeverTheOriginTheCookieOrTheSession` pins that.
++
++`MainActivity.logBootAssetMetrics` writes the summary to logcat with tag `DSHMobile` when a document
++becomes ready and again in `destroyWebView`.
++
++## Failure and fallback paths
++
++Every one of these returns from `shouldInterceptRequest` with `null`, i.e. **byte-identical to
++upstream 0.8.1**: the WebView performs the request itself with its own cookies, TLS pinning, HTTP
++cache, error page and the plugin's boot-failure notice.
++
++| Situation | Result |
++| --- | --- |
++| Not a `/mobile-access/mobile-boot/<64 hex>.js` URL | `BootAssetPolicy.key` -> null |
++| Different origin, `http`, userinfo, query string, fragment, ambiguous path | `BootAssetPolicy.key` -> null |
++| Not a `GET`, or a main-frame request | `BootAssetResponder.response` -> null |
++| Patch disabled (`BOOT_ASSET_CACHE_ENABLED = false`) or no cache | `BootAssetResponder(null)` -> `enabled == false` -> null |
++| Non-JavaScript content type | `FAILED`, not stored, fall back |
++| `401` / `403` | `REJECTED`, the stored copy is kept, fall back |
++| Network/TLS failure, timeout, unsupported `Content-Encoding` | `FAILED`, fall back |
++| Declared length above the 8 MiB cap, or actual != declared | `FAILED`, nothing stored |
++| Digest mismatch at commit or at read | nothing stored / entry deleted, miss |
++| Another interception owns the batch, or the pool is saturated | `CONTENDED`, fall back |
++| Deadline (6 s) exceeded | `CANCELLED`, transfer disconnected, fall back |
++| Any exception thrown anywhere in the path | `BootAssetResponder.response` authorises `runCatching`, returns null |
++| Cache closed during teardown | `resolve` -> `Miss`, fall back (the page is going away anyway) |
++
++## Verification
++
++### Review round: what changed and why
++
++An independent review of the first delivery found one statistics bug and four robustness gaps. All
++of them are fixed in this tree; nothing else changed.
++
++| Finding | Fix |
++| --- | --- |
++| `savedPercent` divided by `bytesSaved + bytesServed`, so a fully revalidated start reported 50% | `BootAssetMetrics` now counts `bytesFetched` (network body bytes) and computes `saved / (saved + fetched)`; `BootAssetCache` records fetched bytes only on the `200` path. Three tests pin 0 / 100 / mixed. |
++| `BootAssetFetch.Modified.declaredLength` was carried but never consumed and its KDoc over-claimed | Field removed: the `Content-Length` check is complete inside `HttpBootAssetFetcher`, so nothing downstream can re-interpret a length it cannot verify. |
++| A throwing `WebResourceResponse` construction escaped `shouldInterceptRequest` | The response object is built inside `runCatching` and falls back to `null`, i.e. to the WebView's own request. |
++| `bootAssetStore.clear()` ran on the UI thread and could wait on the store monitor | `MainActivity.clearBootAssetStore()` runs it on the IO executor (inline only if that executor is already shut down, so the clear is never dropped); the two call sites keep their timing. |
++| Worst-case interception held the Chromium request thread for 20 s | Wait ceiling is 6 s with 3 s connect / 4 s read budgets, and a test pins it to single-digit seconds; the reasoning is in §1 and at `BOOT_ASSET_INTERCEPT_DEADLINE_MS`. |
++
++### Receipt: compiled and unit-tested
++
++Executed on 2026-11-02 (Asia/Shanghai) against this working tree, on a self-contained toolchain
++extracted under `/tmp/atc` that changes nothing on the system `PATH` or in any global location:
++
++| Item | Value |
++| --- | --- |
++| Date | 2026-11-02 17:00 (Asia/Shanghai), after the review fixes in this document |
++| JDK | OpenJDK 17.0.2 (build 17.0.2+8-86), `JAVA_HOME=/tmp/atc/jdk` |
++| Gradle | 9.8.2 (Kotlin 2.4.10), `GRADLE_USER_HOME=/tmp/atc/gradle-home` |
++| Android SDK | platform `android-36`, build-tools `36.0.0`, `ANDROID_HOME=/tmp/atc/android-sdk` |
++| Command | `gradle --no-daemon -PirohNative=false :app:clean :app:testDebugUnitTest` |
++| Result | **BUILD SUCCESSFUL in 34s**, exit 0 |
++| Tests | **74 suites / 503 tests, failures=0, errors=0, skipped=0** |
++| Report | `app/build/test-results/testDebugUnitTest/TEST-*.xml` and `app/build/reports/tests/testDebugUnitTest/index.html` |
++
++The exact invocation (no global JDK/SDK on this machine, so the disposable `/tmp/atc` tree supplies
++them; a normal checkout replaces the last line with `./gradlew`):
++
++```sh
++cd apps/mobile/android               # from the repository root
++export JAVA_HOME=/tmp/atc/jdk
++export ANDROID_HOME=/tmp/atc/android-sdk
++export ANDROID_SDK_ROOT=$ANDROID_HOME
++export GRADLE_USER_HOME=/tmp/atc/gradle-home
++export _JAVA_OPTIONS="-Duser.home=/tmp/atc/home"
++/tmp/atc/gradle/bin/gradle --no-daemon -PirohNative=false :app:clean :app:testDebugUnitTest
++```
++
++A clean build was used so the compile tasks really ran (`compileDebugKotlin`,
++`compileDebugUnitTestKotlin`, then `testDebugUnitTest`). The five suites this patch adds are part of
++that run and all pass:
++
++| Suite | Tests | Result |
++| --- | --- | --- |
++| `BootAssetCacheTest` | 19 | pass, 0 skipped |
++| `BootAssetStoreTest` | 15 | pass, 0 skipped |
++| `HttpBootAssetFetcherTest` | 9 | pass, 0 skipped |
++| `BootAssetCachingWiringTest` | 7 | pass, 0 skipped |
++| `BootAssetPolicyTest` | 5 | pass, 0 skipped |
++| **subtotal** | **55** | **pass** |
++
++What each new suite asserts:
++
++```
++BootAssetPolicyTest            same origin, path shape, invalid URLs, metric path
++BootAssetStoreTest             atomic write, digest/size verification, LRU, entry cap,
++                               epoch clear-vs-download, key eviction, single writer, leases
++BootAssetCacheTest             cold load, 304 hit, 200 replace, 401/403, failure, non-JS,
++                               no-validator, verification loss, clear-during-download,
++                               cancellation, deadline, closed cache, single-writer race,
++                               metrics privacy, savedPercent at 0 / 100 / mixed, wait budget
++HttpBootAssetFetcherTest       conditional fetch over pinned loopback TLS, 304, 401, 403,
++                               timeout, encoding, size cap, truncated transfer, cancellation,
++                               digest of the decoded body
++BootAssetCachingWiringTest     adapter behaviour (only boot batches, always falls back) plus the
++                               source contract that keeps the wiring and both clear points
++```
++
++Reproducibility: the pre-review revision was measured three times (74 / 499 / 0 / 0 / 0 on every run
++— the initial integration run, a `--rerun` run and a `:app:clean` run). After the review fixes, the
++same clean command ran twice and reported 74 / 503 / 0 / 0 / 0 both times (34 s and 35 s); the four
++extra tests are the new `savedPercent` and wait-budget cases. No test is skipped or disabled, and
++consecutive runs produced no failures; this is not a flakiness proof, but nothing in the suite has
++shown order or timing sensitivity so far.
++
++Compiler warnings: exactly two, both pre-existing deprecations in files this patch does not touch
++(`NsdDiscovery.kt:34` `resolveService`, `ScanActivity.kt:7` `Camera`). The patch's own sources and
++tests compile without warnings.
++
++Note on `--rerun-tasks`: that flag produced a build that reported `testDebugUnitTest` as executed but
++wrote no result XML (a Gradle/AGP task-graph quirk with the global flag). Use the per-task `--rerun`
++or a `:app:clean` build instead; neither affects the numbers above.
++
++### Still not verified
++
++- **No device or emulator was used.** `adb`/logcat measurements, real WebView interception, gzip
++  validator behaviour on a real gateway, cancellation when a page navigates on a physical phone and
++  the actual bytes saved are all unmeasured. The fourth defer condition stays open until the
++  [measurement procedure](#measuring-on-a-real-device) has been run on hardware.
++- `:app:lintDebug` and `:app:assembleDebug` were not run here; only the JVM unit lane was.
++- The iroh native lane (`-PirohNative=true`, Rust + NDK) was not exercised; this patch is orthogonal
++  to it, but the full-fidelity build remains to be checked.
++
++### Commands for a machine with JDK 17 and Android SDK 36
++
++These are the generic forms (from [apps/mobile/README.md](../README.md#build)); a normal checkout
++with a system JDK/SDK needs no `/tmp` toolchain:
++
++```sh
++cd apps/mobile/android
++# Unit tests, no Rust/NDK requirement (this is the lane verified above):
++./gradlew :app:testDebugUnitTest -PirohNative=false
++
++# Same, with the iroh native transport (needs Rust targets + NDK):
++./gradlew :app:testDebugUnitTest
++
++# Full debug lane used by the repository:
++./gradlew :app:lintDebug :app:testDebugUnitTest :app:assembleDebug \
++  -x :app:lintAnalyzeDebugUnitTest -x :app:lintAnalyzeDebugAndroidTest
++```
++
++The integration run above used the equivalent `gradle` binary from the temporary toolchain because
++this machine has no global JDK/SDK; that directory is disposable — rebuild it by installing JDK 17
++and Android SDK 36 as the README describes (or let Android Studio provision them), then use the
++`./gradlew` forms above.
++
++## Measuring on a real device
++
++The point of the exercise is the fourth defer condition: prove the cache actually helps on a phone.
++**This has not been done yet** — the numbers below are the procedure to run on hardware, not results.
++
++1. Build and install the Debug package (it installs beside the official App):
++   ```sh
++   cd apps/mobile/android
++   ./gradlew :app:assembleDebug -PirohNative=false
++   adb install -r app/build/outputs/apk/debug/app-debug.apk
++   ```
++2. Start logcat filtering on the app's tag:
++   ```sh
++   adb logcat -c
++   adb logcat -s DSHMobile:I
++   ```
++3. Cold start: pair/connect to the gateway once so the page loads. On the first document the run
++   reports `hits=0`, `misses=<number of boot batches>`, `fetched=<the batch bytes>`, `saved=0B` and
++   therefore `savedPercent=0`.
++4. Warm start: force-stop and reopen the App on the same gateway and wait for the page to become
++   ready. The second line of the same session reports `hits>0`, `revalidated>0`, `saved>0` and
++   `savedPercent` above zero — with every batch revalidated it should read `100`, and
++   `served` should equal `fetched + saved`. Those saved bytes are what the device no longer
++   transfers.
++5. Compare the same two runs with the patch disabled (`BOOT_ASSET_CACHE_ENABLED = false`, rebuild):
++   every request is then a `misses` transfer and no line is logged at all, which is the 0.8.1
++   baseline. Use `adb shell dumpsys package io.github.sayach.dshmobile.debug` only for version checks;
++   no pairing or app data needs to be cleared for this comparison.
++6. A useful sample is five cold/warm pairs on each of: LAN (Wi-Fi), remote HTTPS (cpolar/Tailscale)
++   and iroh, with the gateway layout unchanged. Record `hitPercent`, `savedPercent`, `avgMs`,
++   `maxMs` and the batch count. Report the medians; a single pair is not evidence.
++7. Sanity checks while measuring: `hits` must never exceed the number of boot batches on the page,
++   `bytesSaved` must be a multiple of the served batch sizes, and a `200` on the second start
++   (layout changed) must show `misses` and a fresh `saved=0`.
++
++There is no user-visible setting: this is an internal measurement, and the counters are diagnostic
++only. The single kill switch is the compile-time `BOOT_ASSET_CACHE_ENABLED` constant in
++`BootAssetCache.kt`.
++
++## Files
++
++Restored from the withdrawn implementation (commit `41ce1a86`, removed by `53aa1bdb`) and then
++hardened:
++
++| File | Change vs. the withdrawn implementation |
++| --- | --- |
++| `app/src/main/java/io/github/sayach/dshmobile/BootAssetCache.kt` | Policy kept. Fetch results gained `Cancelled` and the digest (the `Content-Length` check stays inside the fetcher and is not carried on the result). New `BootAssetCancellation`, `BootAssetRequests` (owned, closable, cancellable pool), `BootAssetDecision` (served/fetched/saved bytes, recorded exactly once), and `BootAssetResponder` as the WebView-facing adapter. The old "304 without a stored body, retry without a validator" path is gone: a body is read under a verified lease before its validator is sent, so that state cannot occur; a `304` without a lease is now a protocol anomaly that falls back. |
++| `app/src/main/java/io/github/sayach/dshmobile/BootAssetStore.kt` | Index v2 with per-entry SHA-256; `put` replaced by `beginWrite`/`commit`/`abort` with epoch + key-version guards and one writer per key; `read` replaced by `acquire`/lease with digest verification; `clear()` advances the epoch and defers deletion of leased bodies; entry cap (`maxEntries`) added next to the byte quota. |
++| `app/src/main/java/io/github/sayach/dshmobile/HttpBootAssetFetcher.kt` | Cancellation token with a `disconnect` hook, counted wire bytes vs `Content-Length`, digest of the decoded body, short budgets (3 s connect / 4 s read) and a 6 s interception ceiling. |
++| `app/src/main/java/io/github/sayach/dshmobile/BootAssetMetrics.kt` | New: outcome counters, bytes, latency and a bounded recent-event ring, with a logcat-safe `summary()`. |
++| `app/src/main/java/io/github/sayach/dshmobile/SecureWebViewClient.kt` | `shouldInterceptRequest` restored through `BootAssetResponder`; the `WebResourceResponse` itself is built inside `runCatching` so a rejected header or stream falls back to the WebView instead of throwing out of the interception; `onPageStarted` and `dispose` cancel in-flight downloads. |
++| `app/src/main/java/io/github/sayach/dshmobile/MainActivity.kt` | One persistent `BootAssetStore` plus one `BootAssetCache` per WebView; `clearBootAssetStore()` runs the store clear on the IO executor (falling back to inline when that executor is already shut down) at the same two moments as before; `close()` and metrics logging in `destroyWebView`; metrics logged when a document becomes ready. |
++| `app/src/test/java/io/github/sayach/dshmobile/BootAsset*Test.kt`, `HttpBootAssetFetcherTest.kt` | Rewritten for the hardened API and the four conditions; the wiring test now also proves the adapter's fallback behaviour, not only the source contract. |
++| `android/BOOT_CACHE_PATCH.md` | This document. |
++
++Out of scope by instruction: `src/`, `tests/`, `docs/`, `CHANGELOG.md` (the gateway side of the same
++patch is owned by a separate change), and the Android App version/manifest (a submission would bump
++`versionName`/`versionCode`, which this local patch deliberately does not do).
++
++## Known limits and open questions
++
++- **The 6 s wait ceiling is a judgement call.** It is short enough to protect the page and above the
++  connect budget, but no device data exists yet for the slowest real batch; the measurement procedure
++  should record `maxMs` and any `cancelled` growth so the number can be re-tuned with evidence.
++- **Verified on the JVM only.** The unit suite compiles and passes (see
++  [Verification](#verification)), but no device, emulator, lint run or APK build was exercised here.
++  What only hardware can settle — WebView interception, cancellation on real navigation, gzip
++  validator handling and the measured saving — is still an open measurement.
++- **Duplicated preload.** The mobile page preloads the batch and then executes it, so two
++  interceptions of one URL can race. The second one reports `CONTENDED` and falls back to the
++  WebView, which serves it from Chromium's own cache — the same total network cost as upstream, not
++  worse. Serving the second one from the first writer's result would be a further optimisation and
++  would need its own measurement.
++- **gzip validator.** The gateway's `ETag` for a gzip transfer ends in `-gzip`, while the cached body
++  is the decoded bytes. Revalidation is consistent because every request advertises
++  `Accept-Encoding: gzip`; the fabricated WebView response advertises the gateway's validator with an
++  identity body, which Chromium accepts because the validator covers the same entity. Worth
++  re-checking on a device if the gateway ever stops compressing boot batches.
++- **iroh.** The cache fetches through `transportFor(origin)`, exactly like the withdrawn
++  implementation, so an iroh page revalidates through its CONNECT proxy. Failure to resolve the
++  transport falls back to `LocalTransport`, which the iroh host rejects immediately — a miss, not a
++  hang.
++- **Cookie source.** The fetcher reads `CookieManager` for the batch URL. That is the WebView's own
++  session, so a revoked session returns `401`/`403` and falls back; the cache can never outlive the
++  cookie that authorised the body.
++- **Process death.** `onDestroy` closes the cache; a hard kill leaves only `.part`/`.bin` files that
++  the next open verifies or prunes.
+diff --git a/apps/mobile/android/app/src/main/java/io/github/sayach/dshmobile/BootAssetCache.kt b/apps/mobile/android/app/src/main/java/io/github/sayach/dshmobile/BootAssetCache.kt
+new file mode 100644
+index 0000000..dd8c956
+--- /dev/null
++++ b/apps/mobile/android/app/src/main/java/io/github/sayach/dshmobile/BootAssetCache.kt
+@@ -0,0 +1,423 @@
++package io.github.sayach.dshmobile
++
++import java.net.URI
++import java.util.concurrent.ArrayBlockingQueue
++import java.util.concurrent.Callable
++import java.util.concurrent.CancellationException
++import java.util.concurrent.CopyOnWriteArrayList
++import java.util.concurrent.ExecutionException
++import java.util.concurrent.RejectedExecutionException
++import java.util.concurrent.RejectedExecutionHandler
++import java.util.concurrent.ThreadFactory
++import java.util.concurrent.ThreadPoolExecutor
++import java.util.concurrent.TimeUnit
++import java.util.concurrent.TimeoutException
++import java.util.concurrent.atomic.AtomicBoolean
++import java.util.concurrent.atomic.AtomicInteger
++
++/**
++ * Local kill switch for the restored patch. `false` restores the 0.8.1 behaviour exactly: no store
++ * is created, nothing is intercepted, and the WebView owns every request.
++ */
++internal const val BOOT_ASSET_CACHE_ENABLED = true
++
++/**
++ * Decides which URLs may be answered by the device-side boot-asset cache.
++ *
++ * Only the gateway's content-revisioned batches qualify: `origin + path` is the module-selection
++ * key, and every hit still revalidates because the same path can be reassembled with different
++ * layout bytes. Documents, API responses, credentials and non-revisioned assets never qualify.
++ */
++internal object BootAssetPolicy {
++    private val REVISIONED_BATCH = Regex("^/mobile-access/mobile-boot/[0-9a-f]{64}\\.js$")
++
++    /** Returns the revisioned batch path, or null when this URL is not a boot batch at all. */
++    fun path(rawUrl: String): String? {
++        val candidate = runCatching { URI(rawUrl) }.getOrNull() ?: return null
++        if (!candidate.isAbsolute || candidate.isOpaque) return null
++        if (candidate.scheme?.lowercase() != "https") return null
++        if (candidate.rawUserInfo != null || candidate.rawQuery != null || candidate.rawFragment != null) return null
++        val path = candidate.rawPath ?: return null
++        return path.takeIf { REVISIONED_BATCH.matches(it) }
++    }
++
++    /** Returns the storage key, or null when the cache must not answer this URL. */
++    fun key(origin: GatewayOrigin, rawUrl: String): String? {
++        val path = path(rawUrl) ?: return null
++        if (!GatewayUrlPolicy.isSameOrigin(origin, rawUrl)) return null
++        return origin.serialized + path
++    }
++}
++
++/**
++ * One transport attempt for a boot batch; only [Modified] carries bytes to serve.
++ *
++ * [Modified.body] is always a complete, verified transfer: the fetcher has already compared the bytes
++ * it read off the wire with the response's declared `Content-Length` and refused a mismatch, so the
++ * length check does not need to travel with the body. Nothing is exposed here that the store would
++ * have to re-interpret.
++ */
++internal sealed interface BootAssetFetch {
++    data class Modified(
++        val etag: String?,
++        val contentType: String,
++        val body: ByteArray,
++        /** SHA-256 of [body]; the store refuses anything that does not hash to this value. */
++        val digest: String,
++    ) : BootAssetFetch
++
++    data object NotModified : BootAssetFetch
++    data object Rejected : BootAssetFetch
++    data object Failed : BootAssetFetch
++
++    /** The page navigated away, the view was destroyed or the app exited. Nothing may be stored. */
++    data object Cancelled : BootAssetFetch
++}
++
++/** Performs the authenticated conditional request that keeps a cached body valid. */
++internal interface BootAssetFetcher {
++    fun fetch(url: String, etag: String?, cancellation: BootAssetCancellation): BootAssetFetch
++}
++
++/**
++ * One cancellable boot-batch request.
++ *
++ * `shouldInterceptRequest` already runs on a Chromium background thread, but a navigation, a
++ * destroyed WebView or app exit must be able to stop a download that thread is blocked on. Listeners
++ * therefore run from whichever thread cancels; they must be idempotent.
++ */
++internal class BootAssetCancellation {
++    private val listeners = CopyOnWriteArrayList<() -> Unit>()
++    private val cancelled = AtomicBoolean(false)
++
++    val isCancelled: Boolean get() = cancelled.get()
++
++    fun onCancel(listener: () -> Unit) {
++        listeners += listener
++        if (cancelled.get()) listener()
++    }
++
++    fun cancel() {
++        if (!cancelled.compareAndSet(false, true)) return
++        listeners.forEach { listener -> runCatching(listener) }
++        listeners.clear()
++    }
++}
++
++/** One resolved interception with everything the caller needs to record it exactly once. */
++internal class BootAssetDecision(
++    val outcome: BootAssetOutcome,
++    val result: BootAssetCache.Result,
++    val bytesServed: Long = 0L,
++    /** Response-body bytes that crossed the network for this decision; 0 for a revalidated hit. */
++    val bytesFetched: Long = 0L,
++    val bytesSaved: Long = 0L,
++    val durationMs: Long = 0L,
++)
++
++/** Outcome of handing one boot-batch job to [BootAssetRequests]. */
++internal sealed interface BootAssetJob {
++    data class Done(val value: BootAssetDecision) : BootAssetJob
++    data object Rejected : BootAssetJob
++    data object Cancelled : BootAssetJob
++    data object Failed : BootAssetJob
++}
++
++/**
++ * Owns every thread that talks to the gateway for the boot cache.
++ *
++ * The pool is bounded (two workers, a four-entry queue) because a boot batch is at most a handful of
++ * subresources; a saturated pool refuses work instead of queueing it, so the WebView falls back to
++ * its own fetch rather than waiting. [close] stops the workers, which is what makes a destroyed
++ * WebView leave no thread, socket or temporary file behind.
++ */
++internal class BootAssetRequests(
++    threads: Int = DEFAULT_THREADS,
++    queueCapacity: Int = DEFAULT_QUEUE_CAPACITY,
++) : AutoCloseable {
++    private val cancellations = CopyOnWriteArrayList<BootAssetCancellation>()
++    private val closed = AtomicBoolean(false)
++    private val threadIds = AtomicInteger()
++    private val pool = ThreadPoolExecutor(
++        threads,
++        threads,
++        0L,
++        TimeUnit.MILLISECONDS,
++        ArrayBlockingQueue(queueCapacity),
++        ThreadFactory { task ->
++            Thread(task, "dsh-boot-cache-${threadIds.incrementAndGet()}").apply { isDaemon = true }
++        },
++        RejectedExecutionHandler { _, _ -> throw RejectedExecutionException("boot cache saturated") },
++    )
++
++    /** Runs [task] on the pool and waits for it, or cancels it when [deadlineMs] passes. */
++    internal fun await(
++        cancellation: BootAssetCancellation,
++        deadlineMs: Long,
++        task: () -> BootAssetDecision,
++    ): BootAssetJob {
++        if (closed.get()) return BootAssetJob.Cancelled
++        // Register before submitting: a cancel must never miss a job that has already started.
++        cancellations += cancellation
++        try {
++            if (cancellation.isCancelled) return BootAssetJob.Cancelled
++            val future = try {
++                pool.submit(Callable { task() })
++            } catch (_: RejectedExecutionException) {
++                return BootAssetJob.Rejected
++            }
++            return try {
++                BootAssetJob.Done(future.get(deadlineMs, TimeUnit.MILLISECONDS))
++            } catch (_: TimeoutException) {
++                cancellation.cancel()
++                future.cancel(true)
++                BootAssetJob.Cancelled
++            } catch (_: InterruptedException) {
++                Thread.currentThread().interrupt()
++                cancellation.cancel()
++                future.cancel(true)
++                BootAssetJob.Cancelled
++            } catch (_: ExecutionException) {
++                BootAssetJob.Failed
++            } catch (_: CancellationException) {
++                BootAssetJob.Cancelled
++            }
++        } finally {
++            cancellations -= cancellation
++        }
++    }
++
++    /** Stops every in-flight download; called on navigation, dispose and teardown. */
++    fun cancelAll() {
++        cancellations.forEach { it.cancel() }
++    }
++
++    override fun close() {
++        if (!closed.compareAndSet(false, true)) return
++        cancelAll()
++        pool.shutdownNow()
++        runCatching { pool.awaitTermination(SHUTDOWN_TIMEOUT_MS, TimeUnit.MILLISECONDS) }
++    }
++
++    private companion object {
++        const val DEFAULT_THREADS = 2
++        const val DEFAULT_QUEUE_CAPACITY = 4
++        const val SHUTDOWN_TIMEOUT_MS = 500L
++    }
++}
++
++/**
++ * Serves a boot batch from disk only after the current session revalidated it.
++ *
++ * The URL is content-revisioned against the module list, but the gateway reassembles the layout
++ * batch when its layout file changes. A URL hit therefore still sends `If-None-Match`: a 304 keeps
++ * the stored body, a 200 replaces it, and 401/403/network failures fall through to the WebView so
++ * authentication and revocation keep their normal behavior.
++ *
++ * The four defer conditions of 0.8.1 live here and in [BootAssetStore]:
++ * 1. cancellation — every download runs on [BootAssetRequests]; [cancelInFlight] and [close]
++ *    disconnect the socket, and a cancelled attempt serves and stores nothing;
++ * 2. body consistency — the fetcher refuses a transfer whose wire bytes disagree with
++ *    `Content-Length` and hands over a SHA-256 of the decoded body; the store refuses a body that
++ *    contradicts that digest, writes `.part` + atomic rename, and re-verifies on every read;
++ * 3. clear-versus-download isolation — the store epoch is captured before the download and a
++ *    commit is refused when it moved, when the key was evicted, or when a second writer owns it;
++ * 4. measurement — [metrics] counts hits, misses, revalidations, served/fetched/saved bytes and
++ *    latency without cookies, query strings, origins or session identifiers.
++ *
++ * [deadlineMs] bounds how long the Chromium request thread waits for us. It is deliberately short:
++ * the WebView is blocked on this call and "fall back" (returning null so the WebView performs the
++ * request itself) is a normal outcome, not a failure. It must stay above the fetcher's connect budget
++ * so a healthy connection is never cut off mid-handshake.
++ */
++internal class BootAssetCache(
++    private val origin: GatewayOrigin,
++    private val store: BootAssetStore,
++    private val fetcher: BootAssetFetcher,
++    val metrics: BootAssetMetrics = BootAssetMetrics(),
++    private val clock: () -> Long = System::currentTimeMillis,
++    private val requests: BootAssetRequests = BootAssetRequests(),
++    private val deadlineMs: Long = BOOT_ASSET_INTERCEPT_DEADLINE_MS,
++) : AutoCloseable {
++    internal sealed interface Result {
++        data class Body(val body: ByteArray, val contentType: String, val etag: String?) : Result
++        data object Miss : Result
++    }
++
++    private val closed = AtomicBoolean(false)
++
++    val isClosed: Boolean get() = closed.get()
++
++    fun resolve(rawUrl: String): Result {
++        if (closed.get()) return Result.Miss
++        // Non-boot URLs are not metrics events: every page has dozens of ordinary subresources.
++        val key = BootAssetPolicy.key(origin, rawUrl) ?: return Result.Miss
++        val path = BootAssetPolicy.path(rawUrl) ?: return Result.Miss
++        val epoch = store.currentEpoch()
++        val cancellation = BootAssetCancellation()
++        return when (val job = requests.await(cancellation, deadlineMs) { decideBoot(key, path, rawUrl, epoch, cancellation) }) {
++            is BootAssetJob.Done -> {
++                val decision = job.value
++                metrics.record(
++                    decision.outcome,
++                    path,
++                    bytesServed = decision.bytesServed,
++                    bytesFetched = decision.bytesFetched,
++                    bytesSaved = decision.bytesSaved,
++                    durationMs = decision.durationMs,
++                )
++                decision.result
++            }
++            BootAssetJob.Rejected -> {
++                metrics.record(BootAssetOutcome.CONTENDED, path)
++                Result.Miss
++            }
++            // A timeout cancels the transfer, so the caller must not be served either.
++            BootAssetJob.Cancelled -> {
++                metrics.record(BootAssetOutcome.CANCELLED, path)
++                Result.Miss
++            }
++            BootAssetJob.Failed -> {
++                metrics.record(BootAssetOutcome.FAILED, path)
++                Result.Miss
++            }
++        }
++    }
++
++    /** Cancels every in-flight download; a cancelled attempt can neither serve nor store. */
++    fun cancelInFlight() {
++        requests.cancelAll()
++    }
++
++    override fun close() {
++        if (!closed.compareAndSet(false, true)) return
++        requests.close()
++    }
++
++    private fun decideBoot(
++        key: String,
++        path: String,
++        rawUrl: String,
++        epoch: Long,
++        cancellation: BootAssetCancellation,
++    ): BootAssetDecision {
++        val started = clock()
++        val lease = store.acquire(key)
++        if (cancellation.isCancelled) {
++            lease?.close()
++            return decide(BootAssetOutcome.CANCELLED, started)
++        }
++        val fetched = try {
++            fetcher.fetch(rawUrl, lease?.entry?.etag, cancellation)
++        } catch (_: Exception) {
++            if (cancellation.isCancelled) BootAssetFetch.Cancelled else BootAssetFetch.Failed
++        }
++        return when (fetched) {
++            BootAssetFetch.Cancelled -> {
++                lease?.close()
++                decide(BootAssetOutcome.CANCELLED, started)
++            }
++            BootAssetFetch.Rejected -> {
++                lease?.close()
++                decide(BootAssetOutcome.REJECTED, started)
++            }
++            BootAssetFetch.Failed -> {
++                lease?.close()
++                decide(BootAssetOutcome.FAILED, started)
++            }
++            BootAssetFetch.NotModified -> {
++                metrics.recordRevalidated()
++                if (lease == null) {
++                    // The stored body failed verification, so no validator was sent: a 304 here is
++                    // a protocol anomaly and the WebView keeps the request.
++                    decide(BootAssetOutcome.FAILED, started)
++                } else {
++                    serveRevalidated(key, lease, started)
++                }
++            }
++            is BootAssetFetch.Modified -> {
++                lease?.close()
++                storeAndServe(key, epoch, cancellation, fetched, started)
++            }
++        }
++    }
++
++    private fun serveRevalidated(key: String, lease: BootAssetStore.Lease, started: Long): BootAssetDecision = lease.use {
++        store.markUsed(key)
++        BootAssetDecision(
++            outcome = BootAssetOutcome.HIT,
++            result = Result.Body(it.body, it.entry.contentType, it.entry.etag),
++            bytesServed = it.entry.size,
++            bytesFetched = 0L,
++            bytesSaved = it.entry.size,
++            durationMs = clock() - started,
++        )
++    }
++
++    private fun storeAndServe(
++        key: String,
++        epoch: Long,
++        cancellation: BootAssetCancellation,
++        modified: BootAssetFetch.Modified,
++        started: Long,
++    ): BootAssetDecision {
++        // Anything but JavaScript means the response is not a boot batch; leave it to the WebView.
++        if (!isJavaScript(modified.contentType)) return decide(BootAssetOutcome.FAILED, started)
++        val etag = modified.etag
++        if (!etag.isNullOrBlank() && !cancellation.isCancelled) {
++            val ticket = store.beginWrite(key, epoch)
++            if (ticket != null) {
++                // A cancel that lands before the atomic rename discards this body instead of writing it.
++                cancellation.onCancel { ticket.cancel() }
++                try {
++                    val stored = store.commit(ticket, etag, modified.contentType, modified.body, modified.digest)
++                    // Nothing from a cancelled attempt may remain servable, even when the rename won
++                    // the race with the cancellation.
++                    if (stored && cancellation.isCancelled) store.remove(key)
++                } finally {
++                    store.abort(ticket)
++                }
++            }
++        }
++        if (cancellation.isCancelled) return decide(BootAssetOutcome.CANCELLED, started)
++        return BootAssetDecision(
++            outcome = BootAssetOutcome.MISS,
++            result = Result.Body(modified.body, modified.contentType, modified.etag),
++            bytesServed = modified.body.size.toLong(),
++            bytesFetched = modified.body.size.toLong(),
++            durationMs = clock() - started,
++        )
++    }
++
++    private fun decide(outcome: BootAssetOutcome, started: Long): BootAssetDecision =
++        BootAssetDecision(outcome, Result.Miss, durationMs = clock() - started)
++
++    private fun isJavaScript(contentType: String): Boolean = when (
++        contentType.substringBefore(';').trim().lowercase()
++    ) {
++        "text/javascript", "application/javascript" -> true
++        else -> false
++    }
++}
++
++/**
++ * The only bridge between the WebView and the cache.
++ *
++ * A miss, a disabled cache, a closed cache and any thrown error all return null, which leaves the
++ * WebView's navigation, TLS, cookie and error handling exactly as upstream 0.8.1 has it.
++ */
++internal class BootAssetResponder(private val cache: BootAssetCache?) {
++    internal data class Response(val body: ByteArray, val contentType: String, val etag: String?)
++
++    val enabled: Boolean get() = cache != null
++
++    fun response(method: String, isForMainFrame: Boolean, rawUrl: String): Response? {
++        if (!enabled || method != "GET" || isForMainFrame) return null
++        val body = runCatching { cache?.resolve(rawUrl) }.getOrNull() as? BootAssetCache.Result.Body ?: return null
++        return Response(body.body, body.contentType, body.etag)
++    }
++
++    fun cancelInFlight() {
++        runCatching { cache?.cancelInFlight() }
++    }
++}
+diff --git a/apps/mobile/android/app/src/main/java/io/github/sayach/dshmobile/BootAssetMetrics.kt b/apps/mobile/android/app/src/main/java/io/github/sayach/dshmobile/BootAssetMetrics.kt
+new file mode 100644
+index 0000000..8aa9a9f
+--- /dev/null
++++ b/apps/mobile/android/app/src/main/java/io/github/sayach/dshmobile/BootAssetMetrics.kt
+@@ -0,0 +1,201 @@
++package io.github.sayach.dshmobile
++
++/** The decision one boot-batch subresource request received. */
++internal enum class BootAssetOutcome {
++    /** A revalidated `304` answered the subresource from disk. */
++    HIT,
++
++    /** The batch was transferred because nothing usable was stored yet. */
++    MISS,
++
++    /** The gateway refused the session (`401`/`403`); the WebView keeps the request. */
++    REJECTED,
++
++    /** A transport, encoding or size violation; the WebView keeps the request. */
++    FAILED,
++
++    /** The page navigated away, the view was destroyed or the app exited mid-download. */
++    CANCELLED,
++
++    /** Another thread already owns this batch, or the request budget is saturated. */
++    CONTENDED,
++}
++
++/**
++ * One recorded decision.
++ *
++ * [path] is always the revisioned batch path the policy already accepted
++ * (`/mobile-access/mobile-boot/<64 hex>.js`). Metrics deliberately carry no cookie, query string,
++ * origin or session identifier, so a snapshot is safe to log and to paste into a report.
++ */
++internal data class BootAssetEvent(
++    val outcome: BootAssetOutcome,
++    val path: String,
++    val bytesServed: Long,
++    val durationMs: Long,
++)
++
++/**
++ * Point-in-time counters for the device-benefit measurement.
++ *
++ * The three byte counters answer three different questions and must not be conflated:
++ * - [bytesServed] — bytes handed to the WebView. A revalidated hit counts here, so this is "what the
++ *   page received", not "what the network carried".
++ * - [bytesFetched] — response-body bytes that actually crossed the network: the body of a `200` this
++ *   cache downloaded, including the fresh copy that replaced a stale entry. A `304` transfers no body
++ *   and adds nothing here.
++ * - [bytesSaved] — bytes delivered from disk after a `304`, i.e. the transfer that did not happen.
++ *
++ * `bytesServed` is therefore the sum of the other two for the batches this cache answered
++ * (`bytesServed == bytesFetched + bytesSaved`), which is what makes [savedPercent] meaningful.
++ */
++internal data class BootAssetSnapshot(
++    val hits: Long = 0,
++    val misses: Long = 0,
++    val revalidated: Long = 0,
++    val rejected: Long = 0,
++    val failed: Long = 0,
++    val cancelled: Long = 0,
++    val contended: Long = 0,
++    val bytesServed: Long = 0,
++    val bytesFetched: Long = 0,
++    val bytesSaved: Long = 0,
++    val totalDurationMs: Long = 0,
++    val maxDurationMs: Long = 0,
++    val recent: List<BootAssetEvent> = emptyList(),
++) {
++    val requests: Long get() = hits + misses + rejected + failed + cancelled + contended
++
++    /** Share of answered batches that reused a revalidated body, in whole percent. */
++    val hitPercent: Int get() = percentOf(hits, hits + misses)
++
++    /**
++     * Share of the batch bytes in play that never crossed the network: `saved / (saved + fetched)`.
++     *
++     * Serving a hit also counts in [bytesServed], so that counter cannot be the denominator — a
++     * 100% hit rate would report 50%. A cold load reports 0, a fully revalidated start reports 100.
++     */
++    val savedPercent: Int get() = percentOf(bytesSaved, bytesSaved + bytesFetched)
++
++    val averageDurationMs: Long get() = if (requests == 0L) 0L else totalDurationMs / requests
++
++    /** One logcat-safe line: counters only, no origin, cookie, query or session identifier. */
++    fun summary(): String = buildString {
++        append("boot-cache requests=").append(requests)
++        append(" hits=").append(hits)
++        append(" misses=").append(misses)
++        append(" revalidated=").append(revalidated)
++        append(" rejected=").append(rejected)
++        append(" failed=").append(failed)
++        append(" cancelled=").append(cancelled)
++        append(" contended=").append(contended)
++        append(" served=").append(bytesServed).append("B")
++        append(" fetched=").append(bytesFetched).append("B")
++        append(" saved=").append(bytesSaved).append("B")
++        append(" hitPercent=").append(hitPercent)
++        append(" savedPercent=").append(savedPercent)
++        append(" avgMs=").append(averageDurationMs)
++        append(" maxMs=").append(maxDurationMs)
++        val last = recent.lastOrNull()
++        if (last != null) {
++            append(" last=").append(last.outcome.name).append(':').append(last.path).append(':').append(last.durationMs).append("ms")
++        }
++    }
++
++    private fun percentOf(part: Long, whole: Long): Int =
++        if (whole <= 0L) 0 else ((part * 100L) / whole).toInt()
++}
++
++/**
++ * Thread-safe counters behind [BootAssetCache].
++ *
++ * The four defer conditions ask for device measurements; this is the only place that observes them,
++ * and it stays a plain Kotlin object so the numbers can be asserted from JVM unit tests and printed
++ * with [snapshot] on any device.
++ */
++internal class BootAssetMetrics(private val recentLimit: Int = DEFAULT_RECENT_LIMIT) {
++    private val recent = ArrayDeque<BootAssetEvent>()
++    private var hits = 0L
++    private var misses = 0L
++    private var revalidated = 0L
++    private var rejected = 0L
++    private var failed = 0L
++    private var cancelled = 0L
++    private var contended = 0L
++    private var bytesServed = 0L
++    private var bytesFetched = 0L
++    private var bytesSaved = 0L
++    private var totalDurationMs = 0L
++    private var maxDurationMs = 0L
++
++    @Synchronized
++    fun record(
++        outcome: BootAssetOutcome,
++        path: String,
++        bytesServed: Long = 0L,
++        bytesFetched: Long = 0L,
++        bytesSaved: Long = 0L,
++        durationMs: Long = 0L,
++    ) {
++        when (outcome) {
++            BootAssetOutcome.HIT -> hits += 1
++            BootAssetOutcome.MISS -> misses += 1
++            BootAssetOutcome.REJECTED -> rejected += 1
++            BootAssetOutcome.FAILED -> failed += 1
++            BootAssetOutcome.CANCELLED -> cancelled += 1
++            BootAssetOutcome.CONTENDED -> contended += 1
++        }
++        this.bytesServed += bytesServed
++        this.bytesFetched += bytesFetched
++        this.bytesSaved += bytesSaved
++        totalDurationMs += durationMs
++        if (durationMs > maxDurationMs) maxDurationMs = durationMs
++        if (recentLimit <= 0) return
++        recent.addLast(BootAssetEvent(outcome, path, bytesServed, durationMs))
++        while (recent.size > recentLimit) recent.removeFirst()
++    }
++
++    /** Counts one `304` answer; a hit is recorded separately because it also serves bytes. */
++    @Synchronized
++    fun recordRevalidated() {
++        revalidated += 1
++    }
++
++    @Synchronized
++    fun snapshot(): BootAssetSnapshot = BootAssetSnapshot(
++        hits = hits,
++        misses = misses,
++        revalidated = revalidated,
++        rejected = rejected,
++        failed = failed,
++        cancelled = cancelled,
++        contended = contended,
++        bytesServed = bytesServed,
++        bytesFetched = bytesFetched,
++        bytesSaved = bytesSaved,
++        totalDurationMs = totalDurationMs,
++        maxDurationMs = maxDurationMs,
++        recent = recent.toList(),
++    )
++
++    @Synchronized
++    fun reset() {
++        hits = 0L
++        misses = 0L
++        revalidated = 0L
++        rejected = 0L
++        failed = 0L
++        cancelled = 0L
++        contended = 0L
++        bytesServed = 0L
++        bytesFetched = 0L
++        bytesSaved = 0L
++        totalDurationMs = 0L
++        maxDurationMs = 0L
++        recent.clear()
++    }
++
++    private companion object {
++        const val DEFAULT_RECENT_LIMIT = 8
++    }
++}
+diff --git a/apps/mobile/android/app/src/main/java/io/github/sayach/dshmobile/BootAssetStore.kt b/apps/mobile/android/app/src/main/java/io/github/sayach/dshmobile/BootAssetStore.kt
+new file mode 100644
+index 0000000..9a5087e
+--- /dev/null
++++ b/apps/mobile/android/app/src/main/java/io/github/sayach/dshmobile/BootAssetStore.kt
+@@ -0,0 +1,374 @@
++package io.github.sayach.dshmobile
++
++import java.io.File
++import java.io.FileOutputStream
++import java.nio.file.Files
++import java.nio.file.StandardCopyOption
++import java.security.MessageDigest
++import org.json.JSONObject
++
++/** Largest single boot batch this cache accepts; the gateway caps merged batches well below it. */
++internal const val MAX_BOOT_ASSET_BYTES = 8L * 1024 * 1024
++
++/** Default on-disk budget shared by every stored boot batch. */
++internal const val DEFAULT_BOOT_ASSET_QUOTA_BYTES = 64L * 1024 * 1024
++
++/** Default number of stored batches; the gateway emits a handful of revisioned batches per layout. */
++internal const val DEFAULT_BOOT_ASSET_ENTRIES = 8
++
++/** Content digest of one batch body; recorded on write and re-checked before any read is served. */
++internal object BootAssetDigest {
++    private const val HEX = "0123456789abcdef"
++
++    fun of(bytes: ByteArray): String {
++        val digest = MessageDigest.getInstance("SHA-256").digest(bytes)
++        val out = StringBuilder(digest.size * 2)
++        for (byte in digest) {
++            val value = byte.toInt() and 0xff
++            out.append(HEX[value ushr 4]).append(HEX[value and 0x0f])
++        }
++        return out.toString()
++    }
++
++    /** Hashes an arbitrary key so a stored body never derives its file name from the URL. */
++    fun ofKey(value: String): String = of(value.toByteArray(Charsets.UTF_8))
++}
++
++/**
++ * On-disk copies of revisioned boot batches, bounded by [quotaBytes] and [maxEntries] and evicted
++ * least-recently-used.
++ *
++ * A URL is only a module-selection key: the gateway can reassemble the same path when its layout
++ * file changes, so every entry keeps the response validator and every hit revalidates.
++ *
++ * Durability and isolation rules:
++ * - A body is accepted only when its size and SHA-256 digest match the fetched transfer; the digest
++ *   is re-verified on every read, so a truncated or tampered file is a miss and is deleted.
++ * - Writes go to `.part`, are fsynced, then atomically renamed: a crash never leaves a servable
++ *   half-body, and an interrupted `.part` is pruned on the next open.
++ * - [epoch] is bumped by [clear]. A writer reserves a key with [beginWrite] against the epoch it saw
++ *   before its download started, so a body whose download straddled a clear (or a key that was
++ *   evicted while the download ran) is discarded instead of written back. Only one writer may
++ *   reserve a key at a time.
++ * - [clear] marks every entry stale and deletes only the files no reader currently holds through
++ *   [acquire]; the rest are deleted when the last lease is released, and the bumped epoch refuses
++ *   every commit that was in flight.
++ */
++internal class BootAssetStore(
++    private val directory: File,
++    private val quotaBytes: Long = DEFAULT_BOOT_ASSET_QUOTA_BYTES,
++    private val maxEntries: Int = DEFAULT_BOOT_ASSET_ENTRIES,
++    private val clock: () -> Long = System::currentTimeMillis,
++) {
++    /** One indexed batch. [leases] counts readers that must finish before the file may disappear. */
++    internal data class Entry(
++        val key: String,
++        val etag: String,
++        val contentType: String,
++        val size: Long,
++        val digest: String,
++        val lastUsedAt: Long,
++        val leases: Int,
++    )
++
++    /** A body a reader holds; the file behind it survives [clear] until [close]. */
++    internal inner class Lease internal constructor(
++        val entry: Entry,
++        val body: ByteArray,
++    ) : AutoCloseable {
++        private val key = entry.key
++        private var released = false
++
++        override fun close() {
++            if (released) return
++            released = true
++            releaseLease(key)
++        }
++    }
++
++    /** Exclusive right to write one key while the store epoch and that key's version stay put. */
++    internal class WriteTicket internal constructor(
++        internal val key: String,
++        internal val epoch: Long,
++        internal val version: Long,
++    ) {
++        @Volatile
++        internal var cancelled: Boolean = false
++
++        /** Marks the reservation abandoned; the matching commit then discards its body. */
++        internal fun cancel() {
++            cancelled = true
++        }
++    }
++
++    private class Slot(
++        val key: String,
++        val etag: String,
++        val contentType: String,
++        val size: Long,
++        val digest: String,
++        var lastUsedAt: Long,
++    ) {
++        var leases: Int = 0
++        var stale: Boolean = false
++
++        fun snapshot(): Entry = Entry(key, etag, contentType, size, digest, lastUsedAt, leases)
++    }
++
++    private val indexFile = File(directory, INDEX_FILE)
++    private val slots = mutableMapOf<String, Slot>()
++    private val keyVersions = mutableMapOf<String, Long>()
++    private val writers = mutableSetOf<String>()
++    private var loaded = false
++    private var totalBytes = 0L
++    private var epoch = 0L
++
++    /** Monotonic generation; [clear] is the only thing that advances it. */
++    @Synchronized
++    fun currentEpoch(): Long {
++        ensureLoaded()
++        return epoch
++    }
++
++    /** Returns the stored metadata for [key] without touching its recency. */
++    @Synchronized
++    fun entry(key: String): Entry? {
++        ensureLoaded()
++        return slots[key]?.takeUnless { it.stale }?.snapshot()
++    }
++
++    /**
++     * Reads a complete, verified body and holds the entry until [Lease.close]. A size or digest
++     * mismatch, a missing file or a cleared entry is a miss and drops the entry.
++     */
++    @Synchronized
++    fun acquire(key: String): Lease? {
++        ensureLoaded()
++        val slot = slots[key] ?: return null
++        if (slot.stale) {
++            deleteLocked(key)
++            persistIndexLocked()
++            return null
++        }
++        slot.leases += 1
++        val bytes = runCatching { bodyFile(key).readBytes() }.getOrNull()
++        if (bytes == null || bytes.size.toLong() != slot.size || BootAssetDigest.of(bytes) != slot.digest) {
++            // A truncated or tampered body is never served; drop it while this read still holds it.
++            slot.stale = true
++            releaseLeaseLocked(key)
++            return null
++        }
++        return Lease(slot.snapshot(), bytes)
++    }
++
++    @Synchronized
++    fun releaseLease(key: String) {
++        ensureLoaded()
++        releaseLeaseLocked(key)
++    }
++
++    /** Records a successful hit. The index is flushed by the next write; LRU survives restarts approximately. */
++    @Synchronized
++    fun markUsed(key: String) {
++        ensureLoaded()
++        val slot = slots[key]?.takeUnless { it.stale } ?: return
++        slot.lastUsedAt = clock()
++    }
++
++    /**
++     * Reserves [key] for one writer, or returns null when the epoch moved since [expectedEpoch],
++     * another download already owns the key, or a concurrent write/evict changed its version.
++     */
++    @Synchronized
++    fun beginWrite(key: String, expectedEpoch: Long): WriteTicket? {
++        ensureLoaded()
++        if (expectedEpoch != epoch) return null
++        if (!writers.add(key)) return null
++        return WriteTicket(key, epoch, keyVersions[key] ?: 0L)
++    }
++
++    /**
++     * Writes one verified body atomically and makes it servable. Returns false — and stores nothing —
++     * when the reservation is stale, the epoch moved, the key was evicted, or the body contradicts
++     * its declared size or digest.
++     */
++    @Synchronized
++    fun commit(ticket: WriteTicket, etag: String, contentType: String, body: ByteArray, digest: String): Boolean {
++        try {
++            if (ticket.cancelled) return false
++            if (ticket.epoch != epoch) return false
++            if ((keyVersions[ticket.key] ?: 0L) != ticket.version) return false
++            if (etag.isBlank() || body.isEmpty()) return false
++            if (body.size > MAX_BOOT_ASSET_BYTES || body.size > quotaBytes) return false
++            if (BootAssetDigest.of(body) != digest) return false
++            if (!directory.isDirectory && !directory.mkdirs()) return false
++            if (!writeAtomically(bodyFile(ticket.key), body)) return false
++            val previous = slots[ticket.key]
++            if (previous != null) totalBytes -= previous.size
++            slots[ticket.key] = Slot(
++                key = ticket.key,
++                etag = etag,
++                contentType = contentType,
++                size = body.size.toLong(),
++                digest = digest,
++                lastUsedAt = clock(),
++            ).also { it.leases = previous?.leases ?: 0 }
++            totalBytes += body.size
++            keyVersions[ticket.key] = (keyVersions[ticket.key] ?: 0L) + 1L
++            evictLocked(keep = ticket.key)
++            persistIndexLocked()
++            return true
++        } finally {
++            writers.remove(ticket.key)
++        }
++    }
++
++    /** Abandons a reservation without writing anything. */
++    @Synchronized
++    fun abort(ticket: WriteTicket) {
++        ticket.cancel()
++        writers.remove(ticket.key)
++    }
++
++    /** Drops one entry; the body file is deleted even when the index never knew it. */
++    @Synchronized
++    fun remove(key: String) {
++        ensureLoaded()
++        deleteLocked(key)
++        persistIndexLocked()
++    }
++
++    /**
++     * Advances the epoch and deletes every cached body that no reader holds; a held body is deleted
++     * when its lease closes. Returns the new epoch so callers can log or assert the generation.
++     */
++    @Synchronized
++    fun clear(): Long {
++        ensureLoaded()
++        epoch += 1L
++        slots.values.forEach { it.stale = true }
++        slots.values.filter { it.leases == 0 }.forEach { deleteLocked(it.key) }
++        totalBytes = slots.values.sumOf { it.size }
++        pruneUnreferencedFilesLocked()
++        persistIndexLocked()
++        return epoch
++    }
++
++    private fun releaseLeaseLocked(key: String) {
++        val slot = slots[key] ?: return
++        slot.leases = maxOf(0, slot.leases - 1)
++        if (slot.leases == 0 && slot.stale) {
++            deleteLocked(key)
++            persistIndexLocked()
++        }
++    }
++
++    private fun ensureLoaded() {
++        if (loaded) return
++        loaded = true
++        val stored = runCatching { JSONObject(indexFile.readText()) }
++            .getOrNull()
++            ?.takeIf { it.optInt("version", 0) == INDEX_VERSION }
++            ?.optJSONObject("entries")
++        stored?.keys()?.forEach { key ->
++            val row = stored.optJSONObject(key) ?: return@forEach
++            val etag = row.optString("etag").takeIf { it.isNotBlank() } ?: return@forEach
++            val digest = row.optString("digest").takeIf { it.isNotBlank() } ?: return@forEach
++            val size = row.optLong("size", -1L)
++            val file = bodyFile(key)
++            if (size <= 0L || size > MAX_BOOT_ASSET_BYTES || !file.isFile || file.length() != size) return@forEach
++            slots[key] = Slot(
++                key = key,
++                etag = etag,
++                contentType = row.optString("contentType", DEFAULT_CONTENT_TYPE),
++                size = size,
++                digest = digest,
++                lastUsedAt = row.optLong("lastUsedAt", 0L),
++            )
++            totalBytes += size
++        }
++        pruneUnreferencedFilesLocked()
++    }
++
++    /** Drops bodies the index does not reference, stale copies and any interrupted `.part` write. */
++    private fun pruneUnreferencedFilesLocked() {
++        val referenced = slots.keys.mapTo(HashSet()) { bodyFile(it).name }
++        directory.listFiles()?.forEach { file ->
++            if (file.name.endsWith(PART_SUFFIX) || (file.name.endsWith(BODY_SUFFIX) && file.name !in referenced)) {
++                file.delete()
++            }
++        }
++    }
++
++    private fun evictLocked(keep: String) {
++        while (totalBytes > quotaBytes || slots.size > maxEntries) {
++            val candidate = oldestCandidateLocked(keep) ?: return
++            deleteLocked(candidate.key)
++        }
++    }
++
++    /** The least recently used entry that is neither the incoming body nor held by a reader. */
++    private fun oldestCandidateLocked(keep: String): Slot? = slots.values
++        .asSequence()
++        .filter { it.key != keep && it.leases == 0 }
++        .minByOrNull { it.lastUsedAt }
++
++    private fun deleteLocked(key: String) {
++        val slot = slots.remove(key)
++        if (slot != null) totalBytes -= slot.size
++        keyVersions[key] = (keyVersions[key] ?: 0L) + 1L
++        bodyFile(key).delete()
++    }
++
++    private fun persistIndexLocked() {
++        if (!directory.isDirectory && !directory.mkdirs()) return
++        val rows = JSONObject()
++        slots.values.filterNot { it.stale }.forEach { slot ->
++            rows.put(slot.key, JSONObject().apply {
++                put("etag", slot.etag)
++                put("contentType", slot.contentType)
++                put("size", slot.size)
++                put("digest", slot.digest)
++                put("lastUsedAt", slot.lastUsedAt)
++            })
++        }
++        val body = JSONObject().apply {
++            put("version", INDEX_VERSION)
++            put("entries", rows)
++        }.toString().toByteArray(Charsets.UTF_8)
++        writeAtomically(indexFile, body)
++    }
++
++    private fun bodyFile(key: String): File = File(directory, BootAssetDigest.ofKey(key) + BODY_SUFFIX)
++
++    private fun writeAtomically(target: File, bytes: ByteArray): Boolean {
++        val part = File(target.parentFile, "${target.name}$PART_SUFFIX")
++        val written = runCatching {
++            FileOutputStream(part).use { output ->
++                output.write(bytes)
++                output.flush()
++                output.fd.sync()
++            }
++        }.isSuccess
++        if (!written) {
++            part.delete()
++            return false
++        }
++        return runCatching {
++            Files.move(part.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
++        }.recoverCatching {
++            // A filesystem without atomic moves still replaces the target; the partial file is gone.
++            Files.move(part.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
++        }.onFailure {
++            part.delete()
++        }.isSuccess
++    }
++
++    private companion object {
++        const val BODY_SUFFIX = ".bin"
++        const val PART_SUFFIX = ".part"
++        const val INDEX_FILE = "index.json"
++        const val INDEX_VERSION = 2
++        const val DEFAULT_CONTENT_TYPE = "text/javascript"
++    }
++}
+diff --git a/apps/mobile/android/app/src/main/java/io/github/sayach/dshmobile/HttpBootAssetFetcher.kt b/apps/mobile/android/app/src/main/java/io/github/sayach/dshmobile/HttpBootAssetFetcher.kt
+new file mode 100644
+index 0000000..031daff
+--- /dev/null
++++ b/apps/mobile/android/app/src/main/java/io/github/sayach/dshmobile/HttpBootAssetFetcher.kt
+@@ -0,0 +1,152 @@
++package io.github.sayach.dshmobile
++
++import android.webkit.CookieManager
++import java.io.ByteArrayOutputStream
++import java.io.FilterInputStream
++import java.io.IOException
++import java.io.InputStream
++import java.net.URI
++import java.util.zip.GZIPInputStream
++import javax.net.ssl.HttpsURLConnection
++
++/** Connect budget for one boot batch; page navigation keeps its own, larger, budget. */
++internal const val BOOT_ASSET_CONNECT_TIMEOUT_MS = 3_000
++
++/** Read budget for one boot batch; a stalled body must not hold the request thread. */
++internal const val BOOT_ASSET_READ_TIMEOUT_MS = 4_000
++
++/**
++ * Hard ceiling for one interception: the Chromium request thread is blocked while it waits.
++ *
++ * Six seconds is about twice a healthy LAN batch fetch and stays above the connect budget, so a
++ * reachable gateway is never cut off mid-handshake. Past that point a cache miss is cheaper than a
++ * slow page: the wait is cancelled, the socket is disconnected, and `shouldInterceptRequest` returns
++ * null so the WebView performs its own request with its own, larger, budget. The cost of being wrong
++ * is therefore one duplicated request, never a failed load.
++ */
++internal const val BOOT_ASSET_INTERCEPT_DEADLINE_MS = 6_000L
++
++/**
++ * Fetches one revisioned boot batch over the same pinned transport the shell already uses.
++ *
++ * Requests carry the WebView's own session cookie, so a cached body is only ever served after the
++ * gateway answered the current request (304). Responses without a validator are served but not
++ * stored; 401/403 and any transport failure are reported as [BootAssetFetch.Rejected] or
++ * [BootAssetFetch.Failed] and fall through to the WebView's normal path.
++ *
++ * Body consistency: the transferred byte count must match the declared `Content-Length` and the
++ * decoded body is hashed, so a truncated, padded or re-encoded response is refused instead of being
++ * stored. Cancellation disconnects the connection because a blocking socket read cannot observe a
++ * thread interrupt; the attempt then reports [BootAssetFetch.Cancelled] and stores nothing.
++ */
++internal class HttpBootAssetFetcher(
++    private val origin: GatewayOrigin,
++    private val transport: TransportEndpoint = LocalTransport,
++    private val caCertificate: ByteArray?,
++    private val userAgent: String?,
++    private val cookieProvider: (String) -> String? = { url -> CookieManager.getInstance().getCookie(url) },
++    private val connectTimeoutMs: Int = BOOT_ASSET_CONNECT_TIMEOUT_MS,
++    private val readTimeoutMs: Int = BOOT_ASSET_READ_TIMEOUT_MS,
++) : BootAssetFetcher {
++    override fun fetch(url: String, etag: String?, cancellation: BootAssetCancellation): BootAssetFetch {
++        if (cancellation.isCancelled) return BootAssetFetch.Cancelled
++        if (BootAssetPolicy.key(origin, url) == null) return BootAssetFetch.Failed
++        val path = runCatching { URI(url).rawPath }.getOrNull() ?: return BootAssetFetch.Failed
++        val connection = runCatching { transport.open(origin, path) }.getOrNull() ?: return BootAssetFetch.Failed
++        cancellation.onCancel { runCatching { connection.disconnect() } }
++        return try {
++            if (caCertificate != null) connection.sslSocketFactory = PinnedTls.socketFactory(caCertificate)
++            connection.instanceFollowRedirects = false
++            connection.connectTimeout = connectTimeoutMs
++            connection.readTimeout = readTimeoutMs
++            connection.useCaches = false
++            connection.requestMethod = "GET"
++            connection.setRequestProperty("Accept-Encoding", "gzip")
++            if (!userAgent.isNullOrBlank()) connection.setRequestProperty("User-Agent", userAgent)
++            if (!etag.isNullOrBlank()) connection.setRequestProperty("If-None-Match", etag)
++            cookieProvider(url)?.takeIf { it.isNotBlank() }?.let { cookie ->
++                connection.setRequestProperty("Cookie", cookie)
++            }
++            when (connection.responseCode) {
++                HTTP_NOT_MODIFIED -> BootAssetFetch.NotModified
++                HTTP_OK -> readResponse(connection, cancellation)
++                HTTP_UNAUTHORIZED, HTTP_FORBIDDEN -> BootAssetFetch.Rejected
++                else -> BootAssetFetch.Failed
++            }
++        } catch (_: IOException) {
++            if (cancellation.isCancelled) BootAssetFetch.Cancelled else BootAssetFetch.Failed
++        } catch (_: RuntimeException) {
++            if (cancellation.isCancelled) BootAssetFetch.Cancelled else BootAssetFetch.Failed
++        } finally {
++            runCatching { connection.disconnect() }
++        }
++    }
++
++    private fun readResponse(connection: HttpsURLConnection, cancellation: BootAssetCancellation): BootAssetFetch {
++        val declared = connection.contentLengthLong
++        if (declared > MAX_BOOT_ASSET_BYTES) return BootAssetFetch.Failed
++        val encoding = connection.contentEncoding?.trim()?.lowercase()
++        if (encoding != null && encoding != "gzip" && encoding != "identity") return BootAssetFetch.Failed
++        val received = CountingInputStream(connection.inputStream)
++        val body = runCatching {
++            val stream: InputStream = if (encoding == "gzip") GZIPInputStream(received) else received
++            stream.use { readAtMost(it, cancellation) }
++        }.getOrNull()
++        if (cancellation.isCancelled) return BootAssetFetch.Cancelled
++        if (body == null) return BootAssetFetch.Failed
++        // A transfer that ends before its declared length was truncated on the wire; never store it.
++        if (declared >= 0L && received.count != declared) return BootAssetFetch.Failed
++        val contentType = connection.contentType
++            ?.substringBefore(';')
++            ?.trim()
++            ?.takeIf { it.isNotEmpty() }
++            ?: DEFAULT_CONTENT_TYPE
++        return BootAssetFetch.Modified(
++            etag = connection.getHeaderField("ETag"),
++            contentType = contentType,
++            body = body,
++            digest = BootAssetDigest.of(body),
++        )
++    }
++
++    /** Reads a body but refuses to allocate past [MAX_BOOT_ASSET_BYTES] and stops when cancelled. */
++    private fun readAtMost(input: InputStream, cancellation: BootAssetCancellation): ByteArray? {
++        val output = ByteArrayOutputStream()
++        val buffer = ByteArray(64 * 1024)
++        var total = 0L
++        while (true) {
++            if (cancellation.isCancelled) return null
++            val read = input.read(buffer)
++            if (read < 0) return output.toByteArray()
++            total += read
++            if (total > MAX_BOOT_ASSET_BYTES) return null
++            output.write(buffer, 0, read)
++        }
++    }
++
++    /** Counts the bytes actually read off the wire so `Content-Length` can be enforced. */
++    private class CountingInputStream(input: InputStream) : FilterInputStream(input) {
++        var count: Long = 0L
++            private set
++
++        override fun read(): Int {
++            val value = `in`.read()
++            if (value >= 0) count += 1
++            return value
++        }
++
++        override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
++            val read = `in`.read(buffer, offset, length)
++            if (read > 0) count += read
++            return read
++        }
++    }
++
++    private companion object {
++        const val HTTP_OK = 200
++        const val HTTP_NOT_MODIFIED = 304
++        const val HTTP_UNAUTHORIZED = 401
++        const val HTTP_FORBIDDEN = 403
++        const val DEFAULT_CONTENT_TYPE = "text/javascript"
++    }
++}
+diff --git a/apps/mobile/android/app/src/main/java/io/github/sayach/dshmobile/MainActivity.kt b/apps/mobile/android/app/src/main/java/io/github/sayach/dshmobile/MainActivity.kt
+index 60e565e..01a3e19 100644
+--- a/apps/mobile/android/app/src/main/java/io/github/sayach/dshmobile/MainActivity.kt
++++ b/apps/mobile/android/app/src/main/java/io/github/sayach/dshmobile/MainActivity.kt
+@@ -123,6 +123,10 @@ class MainActivity : Activity() {
+     private val lanCredentialStore by lazy { DeviceCredentialStore(this, "lan") }
+     private val remoteCredentialStore by lazy { DeviceCredentialStore(this, "remote") }
+     private val pairedDeviceStore by lazy { PairedDeviceStore(this) }
++    // Boot batches are content-revisioned, so the store outlives every WebView; each WebView owns
++    // one cache (and its bounded worker) which destroyWebView closes.
++    private val bootAssetStore by lazy { BootAssetStore(File(filesDir, "boot-assets")) }
++    private var bootAssetCache: BootAssetCache? = null
+     private var legacyStorageUnavailable = false
+     private val ioExecutor = Executors.newSingleThreadExecutor()
+     private val restoreExecutor = Executors.newFixedThreadPool(3)
+@@ -1137,6 +1141,7 @@ class MainActivity : Activity() {
+                     ?.takeIf { it.instanceId == device.instanceId }
+                 val legacyOrigin = preferences.getString(originPreference(device.mode), null)
+                 if (withCredentialStorage { pairedDeviceStore.remove(device.key) } != true) return@setPositiveButton
++                clearBootAssetStore()
+                 if (activeDeviceKey == device.key) {
+                     stopIrohTransport()
+                     activeDeviceKey = null
+@@ -1740,6 +1745,42 @@ class MainActivity : Activity() {
+         return IrohHttpsTransport(session.endpoint)
+     }
+ 
++    /**
++     * One boot-batch cache per WebView. It is null when the patch is switched off, which leaves the
++     * WebView as the only owner of every request — exactly the 0.8.1 behaviour.
++     */
++    private fun createBootAssetCache(
++        origin: GatewayOrigin,
++        caCertificate: ByteArray?,
++        userAgent: String?,
++    ): BootAssetCache? {
++        if (!BOOT_ASSET_CACHE_ENABLED) return null
++        // An iroh page must fetch through its CONNECT proxy, not the platform resolver.
++        val transport = runCatching { transportFor(origin) }.getOrDefault(LocalTransport)
++        return BootAssetCache(
++            origin = origin,
++            store = bootAssetStore,
++            fetcher = HttpBootAssetFetcher(origin, transport, caCertificate, userAgent),
++        ).also { bootAssetCache = it }
++    }
++
++    /** Device-benefit measurement: counters only, no cookie, query, origin or session identifier. */
++    private fun logBootAssetMetrics(cache: BootAssetCache) {
++        runCatching { android.util.Log.i(BOOT_ASSET_LOG_TAG, cache.metrics.snapshot().summary()) }
++    }
++
++    /**
++     * Clears the stored boot batches off the UI thread: `clear()` deletes files and may wait on the
++     * store monitor while a running download holds it across an fsync. Both call sites keep their
++     * previous timing (site-data clear and device removal); only the thread changed.
++     */
++    private fun clearBootAssetStore() {
++        if (!BOOT_ASSET_CACHE_ENABLED) return
++        val task = Runnable { runCatching { bootAssetStore.clear() } }
++        // A shutdown executor (teardown) must not drop the clear, so fall back to running it inline.
++        runCatching { ioExecutor.execute(task) }.onFailure { task.run() }
++    }
++
+     private fun stopIrohTransport() {
+         stopIrohStatusMonitor()
+         irohCancellationRegistration?.invoke()
+@@ -3577,6 +3618,7 @@ class MainActivity : Activity() {
+         }
+         val secureClient = SecureWebViewClient(
+             origin = origin,
++            bootAssets = BootAssetResponder(createBootAssetCache(origin, caCertificate, browser.settings.userAgentString)),
+             onBeforeTopLevelNavigation = {
+                 if (ownsBrowser() && fileChooserNavigationListener == null) {
+                     cancelPageSessionRenewal()
+@@ -3616,6 +3658,7 @@ class MainActivity : Activity() {
+                     CookieManager.getInstance().flush()
+                     nativeBridge?.injectPage()
+                     secureWebViewClient?.currentDocumentGeneration?.let(::inspectVisibleContent)
++                    bootAssetCache?.let(::logBootAssetMetrics)
+                 }
+             },
+             onContentVisible = { generation ->
+@@ -3956,6 +3999,8 @@ class MainActivity : Activity() {
+             clearSslPreferences()
+         }
+         WebStorage.getInstance().deleteAllData()
++        // Site data and cached boot batches belong to the same session; clearing one clears both.
++        clearBootAssetStore()
+         WebViewDatabase.getInstance(this).apply {
+             clearHttpAuthUsernamePassword()
+         }
+@@ -4052,6 +4097,12 @@ class MainActivity : Activity() {
+         cancelPendingWebBack()
+         secureWebViewClient?.dispose()
+         secureWebViewClient = null
++        bootAssetCache?.let { cache ->
++            logBootAssetMetrics(cache)
++            // Cancels in-flight downloads and stops the worker threads this WebView owned.
++            cache.close()
++        }
++        bootAssetCache = null
+         pendingAudioPermission = null
+         audioCaptureGrantedBrowser = null
+         nativeBridge?.dispose(changingConfigurations)
+@@ -4224,6 +4275,7 @@ class MainActivity : Activity() {
+         const val VOICE_PERMISSION_REQUEST = 4107
+         const val DEVICE_STATUS_REFRESH_MS = 20_000L
+         const val IROH_STATUS_POLL_MS = 2_000L
++        const val BOOT_ASSET_LOG_TAG = "DSHMobile"
+         const val DEVICE_UNDO_TIMEOUT_MS = 6_000L
+         const val LIVE_DOCUMENT_PROBE_TIMEOUT_MS = 2_000L
+         const val MOBILE_BACK_TIMEOUT_MS = 1_500L
+diff --git a/apps/mobile/android/app/src/main/java/io/github/sayach/dshmobile/SecureWebViewClient.kt b/apps/mobile/android/app/src/main/java/io/github/sayach/dshmobile/SecureWebViewClient.kt
+index 56b9e66..5a57490 100644
+--- a/apps/mobile/android/app/src/main/java/io/github/sayach/dshmobile/SecureWebViewClient.kt
++++ b/apps/mobile/android/app/src/main/java/io/github/sayach/dshmobile/SecureWebViewClient.kt
+@@ -12,6 +12,7 @@ import android.webkit.WebResourceResponse
+ import android.webkit.WebView
+ import android.webkit.WebViewClient
+ import android.webkit.RenderProcessGoneDetail
++import java.io.ByteArrayInputStream
+ 
+ /** Categories of main-frame failures that need a native recovery surface. */
+ internal enum class LoadFailure {
+@@ -66,6 +67,7 @@ internal class SecureWebViewClient(
+     private val onBeforeTopLevelNavigation: () -> Unit,
+     private val onContentVisible: (documentGeneration: Int) -> Unit = {},
+     private val connectionDeadlineActive: () -> Boolean = { false },
++    private val bootAssets: BootAssetResponder? = null,
+ ) : WebViewClient() {
+     private val handler = Handler(Looper.getMainLooper())
+     private val document = WebViewDocumentState(origin)
+@@ -83,6 +85,8 @@ internal class SecureWebViewClient(
+ 
+     fun dispose() {
+         clearTimeout()
++        // A destroyed page must not keep a download, its socket or its `.part` file alive.
++        bootAssets?.cancelInFlight()
+     }
+ 
+     override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+@@ -105,6 +109,8 @@ internal class SecureWebViewClient(
+ 
+     override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
+         document.started()
++        // The previous document's boot batches are moot; stop any download it still owns.
++        bootAssets?.cancelInFlight()
+         onTopLevelUrlChanged(url)
+         if (url != "about:blank" && !GatewayUrlPolicy.isSameOrigin(origin, url)) {
+             clearTimeout()
+@@ -129,6 +135,31 @@ internal class SecureWebViewClient(
+         }
+     }
+ 
++    /**
++     * Answers only revisioned boot batches that [BootAssetResponder] revalidated for this session.
++     * Everything else returns null so the WebView's own navigation, TLS, cookie and error paths
++     * remain authoritative; a cache miss is never a new failure mode. Chromium calls this on a
++     * background thread, and the responder's bounded worker owns the download so it can be cancelled
++     * from [dispose] or the next [onPageStarted].
++     */
++    override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
++        val served = bootAssets?.response(request.method, request.isForMainFrame, request.url.toString()) ?: return null
++        // Building the response can still throw (a header value or stream the current WebView
++        // implementation rejects); a throw here would abort the subresource instead of loading it.
++        return runCatching {
++            WebResourceResponse(served.contentType, "utf-8", ByteArrayInputStream(served.body)).apply {
++                setResponseHeaders(
++                    buildMap {
++                        put("Content-Type", "${served.contentType}; charset=utf-8")
++                        put("Content-Length", served.body.size.toString())
++                        put("Cache-Control", "private, max-age=30, must-revalidate")
++                        served.etag?.let { put("ETag", it) }
++                    },
++                )
++            }
++        }.getOrNull()
++    }
++
+     override fun onReceivedSslError(view: WebView, handler: SslErrorHandler, error: SslError) {
+         val pinned = caCertificate != null && error.primaryError == SslError.SSL_UNTRUSTED
+             && GatewayUrlPolicy.isSameOrigin(origin, error.url)
+diff --git a/apps/mobile/android/app/src/test/java/io/github/sayach/dshmobile/BootAssetCacheTest.kt b/apps/mobile/android/app/src/test/java/io/github/sayach/dshmobile/BootAssetCacheTest.kt
+new file mode 100644
+index 0000000..3dc3786
+--- /dev/null
++++ b/apps/mobile/android/app/src/test/java/io/github/sayach/dshmobile/BootAssetCacheTest.kt
+@@ -0,0 +1,364 @@
++package io.github.sayach.dshmobile
++
++import java.io.File
++import java.util.concurrent.CopyOnWriteArrayList
++import java.util.concurrent.CountDownLatch
++import java.util.concurrent.TimeUnit
++import java.util.concurrent.atomic.AtomicReference
++import org.junit.After
++import org.junit.Assert.assertArrayEquals
++import org.junit.Assert.assertEquals
++import org.junit.Assert.assertFalse
++import org.junit.Assert.assertNotNull
++import org.junit.Assert.assertNull
++import org.junit.Assert.assertTrue
++import org.junit.Before
++import org.junit.Test
++
++/** The cache serves bytes only after the current session answered, and replaces them on a 200. */
++class BootAssetCacheTest {
++    private val origin = GatewayOrigin.parse("https://gateway.example")!!
++    private val path = "/mobile-access/mobile-boot/${"b".repeat(64)}.js"
++    private val batchUrl = "https://gateway.example$path"
++    private val key: String get() = BootAssetPolicy.key(origin, batchUrl)!!
++
++    private lateinit var directory: File
++    private lateinit var store: BootAssetStore
++
++    @Before
++    fun setUp() {
++        directory = kotlin.io.path.createTempDirectory("boot-cache").toFile()
++        store = BootAssetStore(directory, quotaBytes = 1_000, clock = { 1_000L })
++    }
++
++    @After
++    fun tearDown() {
++        directory.deleteRecursively()
++    }
++
++    private class ScriptedFetcher(private val handler: (String, String?) -> BootAssetFetch) : BootAssetFetcher {
++        val calls = CopyOnWriteArrayList<Pair<String, String?>>()
++
++        override fun fetch(url: String, etag: String?, cancellation: BootAssetCancellation): BootAssetFetch {
++            calls += url to etag
++            return handler(url, etag)
++        }
++    }
++
++    private fun modified(
++        text: String = "body",
++        etag: String? = "\"v1\"",
++        contentType: String = "text/javascript",
++    ): BootAssetFetch.Modified {
++        val bytes = text.toByteArray()
++        return BootAssetFetch.Modified(etag, contentType, bytes, BootAssetDigest.of(bytes))
++    }
++
++    private fun preload(text: String, etag: String = "\"v1\"") {
++        val bytes = text.toByteArray()
++        val ticket = store.beginWrite(key, store.currentEpoch())!!
++        assertTrue(store.commit(ticket, etag, "text/javascript", bytes, BootAssetDigest.of(bytes)))
++    }
++
++    private fun newCache(
++        fetcher: BootAssetFetcher,
++        metrics: BootAssetMetrics = BootAssetMetrics(),
++        deadlineMs: Long = BOOT_ASSET_INTERCEPT_DEADLINE_MS,
++    ): BootAssetCache = BootAssetCache(origin, store, fetcher, metrics, deadlineMs = deadlineMs)
++
++    @Test
++    fun coldLoadStoresTheBodyUnderItsRevisionedKey() {
++        val fetcher = ScriptedFetcher { _, _ -> modified() }
++        val metrics = BootAssetMetrics()
++        newCache(fetcher, metrics).use { cache ->
++            val result = cache.resolve(batchUrl)
++
++            assertTrue(result is BootAssetCache.Result.Body)
++            assertArrayEquals("body".toByteArray(), (result as BootAssetCache.Result.Body).body)
++            assertEquals(listOf(batchUrl to null), fetcher.calls.toList())
++            assertEquals("\"v1\"", store.entry(key)?.etag)
++            assertEquals(BootAssetDigest.of("body".toByteArray()), store.entry(key)?.digest)
++            val snapshot = metrics.snapshot()
++            assertEquals(1L, snapshot.misses)
++            assertEquals(0L, snapshot.hits)
++            assertEquals(0L, snapshot.bytesSaved)
++            assertEquals(4L, snapshot.bytesServed)
++            assertEquals(1L, snapshot.requests)
++        }
++    }
++
++    @Test
++    fun revalidatedHitServesTheStoredBodyAndSendsTheStoredValidator() {
++        preload("stored")
++        val fetcher = ScriptedFetcher { _, _ -> BootAssetFetch.NotModified }
++        val metrics = BootAssetMetrics()
++        newCache(fetcher, metrics).use { cache ->
++            val result = cache.resolve(batchUrl)
++
++            assertArrayEquals("stored".toByteArray(), (result as BootAssetCache.Result.Body).body)
++            assertEquals(listOf(batchUrl to "\"v1\""), fetcher.calls.toList())
++            val snapshot = metrics.snapshot()
++            assertEquals(1L, snapshot.hits)
++            assertEquals(1L, snapshot.revalidated)
++            assertEquals(0L, snapshot.misses)
++            assertEquals(6L, snapshot.bytesServed)
++            assertEquals(6L, snapshot.bytesSaved)
++            assertEquals(100, snapshot.hitPercent)
++        }
++    }
++
++    @Test
++    fun aModifiedResponseReplacesTheStoredBytes() {
++        preload("old")
++        val fetcher = ScriptedFetcher { _, _ -> modified(text = "new", etag = "\"v2\"") }
++        newCache(fetcher).use { cache ->
++            val result = cache.resolve(batchUrl)
++
++            assertArrayEquals("new".toByteArray(), (result as BootAssetCache.Result.Body).body)
++            val lease = store.acquire(key)
++            assertNotNull(lease)
++            assertArrayEquals("new".toByteArray(), lease!!.use { it.body })
++            assertEquals("\"v2\"", store.entry(key)?.etag)
++        }
++    }
++
++    @Test
++    fun aRejectedSessionNeverServesTheCachedBody() {
++        preload("stored")
++        val metrics = BootAssetMetrics()
++        newCache(ScriptedFetcher { _, _ -> BootAssetFetch.Rejected }, metrics).use { cache ->
++            assertEquals(BootAssetCache.Result.Miss, cache.resolve(batchUrl))
++        }
++        assertEquals(1L, metrics.snapshot().rejected)
++        assertEquals("The stored copy survives a refused session", "\"v1\"", store.entry(key)?.etag)
++    }
++
++    @Test
++    fun aFailedFetchNeverStoresBytes() {
++        newCache(ScriptedFetcher { _, _ -> BootAssetFetch.Failed }).use { cache ->
++            assertEquals(BootAssetCache.Result.Miss, cache.resolve(batchUrl))
++        }
++        assertNull(store.entry(key))
++    }
++
++    @Test
++    fun responsesWithoutAValidatorAreServedButNotStored() {
++        val result = newCache(ScriptedFetcher { _, _ -> modified(etag = null) }).use { it.resolve(batchUrl) }
++
++        assertTrue(result is BootAssetCache.Result.Body)
++        assertNull(store.entry(key))
++    }
++
++    @Test
++    fun nonJavaScriptResponsesFallBackToTheWebViewAndAreNotCached() {
++        val result = newCache(ScriptedFetcher { _, _ -> modified(contentType = "text/plain") }).use { it.resolve(batchUrl) }
++
++        assertEquals(BootAssetCache.Result.Miss, result)
++        assertNull(store.entry(key))
++    }
++
++    @Test
++    fun revisionedAssetsOutsideTheBootPrefixNeverReachTheFetcher() {
++        val fetcher = ScriptedFetcher { _, _ -> modified() }
++        val metrics = BootAssetMetrics()
++        val result = newCache(fetcher, metrics).use { it.resolve("https://gateway.example/mobile-access/compat.js") }
++
++        assertEquals(BootAssetCache.Result.Miss, result)
++        assertTrue(fetcher.calls.isEmpty())
++        assertEquals("Ordinary subresources are not metrics events", 0L, metrics.snapshot().requests)
++    }
++
++    @Test
++    fun aStoredBodyThatNoLongerVerifiesIsRefetchedWithoutTheValidator() {
++        preload("stored")
++        directory.listFiles()!!.first { it.name.endsWith(".bin") }.writeBytes("xxxxxx".toByteArray())
++        val fetcher = ScriptedFetcher { _, _ -> modified(text = "fresh", etag = "\"v2\"") }
++
++        val result = newCache(fetcher).use { it.resolve(batchUrl) }
++
++        assertArrayEquals("fresh".toByteArray(), (result as BootAssetCache.Result.Body).body)
++        assertEquals(listOf(batchUrl to null), fetcher.calls.toList())
++        assertEquals("\"v2\"", store.entry(key)?.etag)
++    }
++
++    @Test
++    fun clearingTheStoreDuringADownloadDiscardsTheBodyInsteadOfWritingItBack() {
++        val fetcher = object : BootAssetFetcher {
++            override fun fetch(url: String, etag: String?, cancellation: BootAssetCancellation): BootAssetFetch {
++                store.clear()
++                return modified(text = "downloaded")
++            }
++        }
++        val metrics = BootAssetMetrics()
++        newCache(fetcher, metrics).use { cache ->
++            val result = cache.resolve(batchUrl)
++
++            // The verified bytes may still be served, but nothing from that generation may be stored.
++            assertArrayEquals("downloaded".toByteArray(), (result as BootAssetCache.Result.Body).body)
++        }
++        assertNull(store.entry(key))
++        assertTrue((directory.listFiles() ?: emptyArray()).none { it.name.endsWith(".bin") })
++        assertEquals(1L, metrics.snapshot().misses)
++    }
++
++    @Test
++    fun cancellingInFlightStopsTheDownloadAndStoresNothing() {
++        val entered = CountDownLatch(1)
++        val fetcher = object : BootAssetFetcher {
++            override fun fetch(url: String, etag: String?, cancellation: BootAssetCancellation): BootAssetFetch {
++                entered.countDown()
++                while (!cancellation.isCancelled) Thread.sleep(CANCEL_POLL_MS)
++                return BootAssetFetch.Cancelled
++            }
++        }
++        val metrics = BootAssetMetrics()
++        newCache(fetcher, metrics).use { cache ->
++            val result = AtomicReference<BootAssetCache.Result?>(null)
++            val thread = Thread({ result.set(cache.resolve(batchUrl)) }, "boot-asset-cache-cancel-test")
++            thread.start()
++            assertTrue(entered.await(5, TimeUnit.SECONDS))
++            cache.cancelInFlight()
++            thread.join(5_000)
++
++            assertEquals(BootAssetCache.Result.Miss, result.get())
++            assertFalse("Cancellation must release the caller", thread.isAlive)
++        }
++        assertNull(store.entry(key))
++        assertEquals(1L, metrics.snapshot().cancelled)
++    }
++
++    @Test
++    fun aDownloadThatOutlivesItsDeadlineFallsBackToTheWebView() {
++        val fetcher = object : BootAssetFetcher {
++            override fun fetch(url: String, etag: String?, cancellation: BootAssetCancellation): BootAssetFetch {
++                Thread.sleep(3_000)
++                return modified()
++            }
++        }
++        val metrics = BootAssetMetrics()
++        newCache(fetcher, metrics, deadlineMs = 100L).use { cache ->
++            assertEquals(BootAssetCache.Result.Miss, cache.resolve(batchUrl))
++            assertEquals(1L, metrics.snapshot().cancelled)
++        }
++        assertNull(store.entry(key))
++    }
++
++    @Test
++    fun aClosedCacheBehavesExactlyLikeUpstream() {
++        val fetcher = ScriptedFetcher { _, _ -> modified() }
++        val closed = newCache(fetcher)
++        closed.close()
++
++        assertEquals(BootAssetCache.Result.Miss, closed.resolve(batchUrl))
++        assertTrue(fetcher.calls.isEmpty())
++    }
++
++    @Test
++    fun twoConcurrentRequestsForOneBatchProduceExactlyOneStoredBody() {
++        val fetcher = ScriptedFetcher { _, _ ->
++            Thread.sleep(20)
++            modified()
++        }
++        newCache(fetcher).use { cache ->
++            val results = CopyOnWriteArrayList<BootAssetCache.Result>()
++            val threads = (1..2).map { index ->
++                Thread({ results += cache.resolve(batchUrl) }, "boot-asset-cache-race-$index")
++            }
++            threads.forEach(Thread::start)
++            threads.forEach { it.join(5_000) }
++
++            assertEquals(2, results.size)
++            results.forEach { assertTrue(it is BootAssetCache.Result.Body) }
++        }
++        assertEquals(1, (directory.listFiles() ?: emptyArray()).count { it.name.endsWith(".bin") })
++        assertEquals("\"v1\"", store.entry(key)?.etag)
++    }
++
++    @Test
++    fun aSnapshotCarriesCountersButNeverTheOriginTheCookieOrTheSession() {
++        preload("stored")
++        val metrics = BootAssetMetrics()
++        newCache(ScriptedFetcher { _, _ -> BootAssetFetch.NotModified }, metrics).use { it.resolve(batchUrl) }
++
++        val summary = metrics.snapshot().summary()
++
++        assertFalse(summary.contains("gateway.example"))
++        assertFalse(summary.contains("cookie", ignoreCase = true))
++        assertFalse(summary.contains("dsh_ma_session"))
++        assertFalse(summary.contains("?"))
++        assertTrue(summary.contains(path))
++    }
++
++    @Test
++    fun everyRevalidatedHitReportsAFullySavedStart() {
++        preload("stored")
++        val metrics = BootAssetMetrics()
++        newCache(ScriptedFetcher { _, _ -> BootAssetFetch.NotModified }, metrics).use { cache ->
++            cache.resolve(batchUrl)
++            cache.resolve(batchUrl)
++        }
++
++        val snapshot = metrics.snapshot()
++        assertEquals(2L, snapshot.hits)
++        assertEquals(0L, snapshot.bytesFetched)
++        assertEquals(12L, snapshot.bytesSaved)
++        assertEquals("Serving hits also counts as served bytes; that must not halve the share", 100, snapshot.savedPercent)
++        assertTrue(snapshot.summary().contains("fetched=0B"))
++    }
++
++    @Test
++    fun aColdStartReportsNoSavingAtAll() {
++        val metrics = BootAssetMetrics()
++        newCache(ScriptedFetcher { _, _ -> modified(text = "cold") }, metrics).use { cache ->
++            cache.resolve(batchUrl)
++            cache.resolve(batchUrl)
++        }
++
++        val snapshot = metrics.snapshot()
++        assertEquals(2L, snapshot.misses)
++        assertEquals(0L, snapshot.bytesSaved)
++        assertEquals(8L, snapshot.bytesFetched)
++        assertEquals(8L, snapshot.bytesServed)
++        assertEquals(0, snapshot.savedPercent)
++    }
++
++    @Test
++    fun aMixedStartWeightsEachByteByWhetherItCrossedTheNetwork() {
++        preload("stored")
++        val metrics = BootAssetMetrics()
++        var calls = 0
++        val fetcher = ScriptedFetcher { _, _ ->
++            calls += 1
++            if (calls == 1) BootAssetFetch.NotModified else modified(text = "fresh", etag = "\"v2\"")
++        }
++        newCache(fetcher, metrics).use { cache ->
++            cache.resolve(batchUrl)
++            cache.resolve(batchUrl)
++        }
++
++        val snapshot = metrics.snapshot()
++        // One 6-byte hit after a 304, then one 5-byte re-download.
++        assertEquals(1L, snapshot.hits)
++        assertEquals(1L, snapshot.misses)
++        assertEquals(11L, snapshot.bytesServed)
++        assertEquals(5L, snapshot.bytesFetched)
++        assertEquals(6L, snapshot.bytesSaved)
++        assertEquals("6 saved / (6 saved + 5 fetched) = 54%", 54, snapshot.savedPercent)
++    }
++
++    @Test
++    fun theInterceptionWaitStaysWellBelowThePageBudget() {
++        assertTrue(
++            "The Chromium request thread blocks on this wait, so it must stay in single-digit seconds",
++            BOOT_ASSET_INTERCEPT_DEADLINE_MS in 1L..8_000L,
++        )
++        assertTrue(
++            "A healthy handshake must never be cut off by the wait ceiling",
++            BOOT_ASSET_INTERCEPT_DEADLINE_MS > BOOT_ASSET_CONNECT_TIMEOUT_MS,
++        )
++    }
++
++    private companion object {
++        const val CANCEL_POLL_MS = 5L
++    }
++}
+diff --git a/apps/mobile/android/app/src/test/java/io/github/sayach/dshmobile/BootAssetCachingWiringTest.kt b/apps/mobile/android/app/src/test/java/io/github/sayach/dshmobile/BootAssetCachingWiringTest.kt
+new file mode 100644
+index 0000000..baca31f
+--- /dev/null
++++ b/apps/mobile/android/app/src/test/java/io/github/sayach/dshmobile/BootAssetCachingWiringTest.kt
+@@ -0,0 +1,157 @@
++package io.github.sayach.dshmobile
++
++import java.io.File
++import org.junit.After
++import org.junit.Assert.assertArrayEquals
++import org.junit.Assert.assertEquals
++import org.junit.Assert.assertFalse
++import org.junit.Assert.assertNull
++import org.junit.Assert.assertNotNull
++import org.junit.Assert.assertTrue
++import org.junit.Before
++import org.junit.Test
++
++/**
++ * The cache itself is covered behaviorally; this contract first proves the WebView-facing adapter
++ * only ever answers boot batches and always falls back, then keeps the wiring from silently
++ * widening what is intercepted or losing the two places that must clear the cache.
++ */
++class BootAssetCachingWiringTest {
++    private val origin = GatewayOrigin.parse("https://gateway.example")!!
++    private val path = "/mobile-access/mobile-boot/${"d".repeat(64)}.js"
++    private val batchUrl = "https://gateway.example$path"
++
++    private lateinit var directory: File
++    private lateinit var store: BootAssetStore
++
++    @Before
++    fun setUp() {
++        directory = kotlin.io.path.createTempDirectory("boot-wiring").toFile()
++        store = BootAssetStore(directory, quotaBytes = 1_000, clock = { 1_000L })
++    }
++
++    @After
++    fun tearDown() {
++        directory.deleteRecursively()
++    }
++
++    private class CountingFetcher(private val result: BootAssetFetch) : BootAssetFetcher {
++        var calls = 0
++
++        override fun fetch(url: String, etag: String?, cancellation: BootAssetCancellation): BootAssetFetch {
++            calls += 1
++            return result
++        }
++    }
++
++    private fun body(text: String): BootAssetFetch {
++        val bytes = text.toByteArray()
++        return BootAssetFetch.Modified("\"v1\"", "text/javascript", bytes, BootAssetDigest.of(bytes))
++    }
++
++    @Test
++    fun theAdapterAnswersOnlySubresourceGetsForABootBatch() {
++        val fetcher = CountingFetcher(body("batch"))
++        BootAssetCache(origin, store, fetcher).use { cache ->
++            val responder = BootAssetResponder(cache)
++
++            val served = responder.response("GET", false, batchUrl)
++
++            assertNotNull(served)
++            assertArrayEquals("batch".toByteArray(), served!!.body)
++            assertEquals("text/javascript", served.contentType)
++            assertEquals("\"v1\"", served.etag)
++
++            assertNull("A document is never answered from the cache", responder.response("GET", true, batchUrl))
++            assertNull("A non-GET method is never answered", responder.response("POST", false, batchUrl))
++            assertNull("Another path is never answered", responder.response("GET", false, "https://gateway.example/mobile-access/compat.js"))
++            assertNull("Another origin is never answered", responder.response("GET", false, "https://other.example$path"))
++            assertEquals("Only the accepted batch reached the transport", 1, fetcher.calls)
++        }
++    }
++
++    @Test
++    fun aMissFallsBackToTheWebViewWithoutFabricatingABody() {
++        listOf<BootAssetFetch>(BootAssetFetch.Failed, BootAssetFetch.Rejected, BootAssetFetch.Cancelled).forEach { result ->
++            val fetcher = CountingFetcher(result)
++            BootAssetCache(origin, store, fetcher).use { cache ->
++                assertNull(BootAssetResponder(cache).response("GET", false, batchUrl))
++            }
++            assertEquals(1, fetcher.calls)
++        }
++        assertNull(store.entry(BootAssetPolicy.key(origin, batchUrl)!!))
++    }
++
++    @Test
++    fun aDisabledOrClosedCacheIsIndistinguishableFromUpstream() {
++        val fetcher = CountingFetcher(body("batch"))
++        assertNull(BootAssetResponder(null).response("GET", false, batchUrl))
++        assertEquals(0, fetcher.calls)
++
++        val cache = BootAssetCache(origin, store, fetcher)
++        cache.close()
++        assertNull(BootAssetResponder(cache).response("GET", false, batchUrl))
++        assertEquals("A closed cache never reaches the transport", 0, fetcher.calls)
++    }
++
++    @Test
++    fun theClientInterceptsOnlySubresourceGetsAndNeverFabricatesABody() {
++        val text = source("SecureWebViewClient.kt")
++        val method = text.substringAfter("override fun shouldInterceptRequest(")
++            .substringBefore("\n    override fun ")
++        assertTrue(method.contains("bootAssets?.response(request.method, request.isForMainFrame, request.url.toString()) ?: return null"))
++        assertTrue(method.contains("ByteArrayInputStream(served.body)"))
++        assertTrue(method.contains("put(\"Content-Length\", served.body.size.toString())"))
++        assertTrue(
++            "A rejected response object must fall back instead of aborting the subresource",
++            method.contains("runCatching {") && method.contains("}.getOrNull()"),
++        )
++    }
++
++    @Test
++    fun navigationAndDisposalCancelAnInFlightBootDownload() {
++        val text = source("SecureWebViewClient.kt")
++        val dispose = text.substringAfter("fun dispose()").substringBefore("\n    override fun ")
++        val pageStarted = text.substringAfter("override fun onPageStarted(").substringBefore("\n    override fun ")
++        assertTrue(dispose.contains("bootAssets?.cancelInFlight()"))
++        assertTrue(pageStarted.contains("bootAssets?.cancelInFlight()"))
++    }
++
++    @Test
++    fun theActivityWiresTheCacheAndClearsItWithSiteDataAndDeviceRemoval() {
++        val text = source("MainActivity.kt")
++        assertTrue(text.contains("private val bootAssetStore by lazy { BootAssetStore(File(filesDir, \"boot-assets\")) }"))
++        assertTrue(text.contains("fetcher = HttpBootAssetFetcher(origin, transport, caCertificate, userAgent)"))
++        assertTrue(text.contains("bootAssets = BootAssetResponder(createBootAssetCache(origin, caCertificate, browser.settings.userAgentString))"))
++
++        val clearSiteData = text.substringAfter("private fun clearSiteData()").substringBefore("private fun shareGateway(")
++        assertTrue(clearSiteData.contains("clearBootAssetStore()"))
++
++        val deleteDevice = text.substringAfter("private fun confirmDeleteDevice(").substringBefore("private fun showDeviceUndo(")
++        assertTrue(deleteDevice.contains("clearBootAssetStore()"))
++
++        val clearHelper = text.substringAfter("private fun clearBootAssetStore()").substringBefore("private fun stopIrohTransport(")
++        assertTrue("The store clear must not run on the UI thread", clearHelper.contains("ioExecutor.execute(task)"))
++        assertTrue("A shutdown executor must not drop the clear", clearHelper.contains("task.run()"))
++
++        val destroy = text.substringAfter("private fun destroyWebView(").substringBefore("private fun textView(")
++        assertTrue("A destroyed WebView must stop its boot-cache workers", destroy.contains("cache.close()"))
++        assertTrue("Teardown reports the device measurements", destroy.contains("logBootAssetMetrics(cache)"))
++    }
++
++    @Test
++    fun thePatchCanBeSwitchedOffBackToUpstreamBehaviour() {
++        val text = source("MainActivity.kt")
++        val create = text.substringAfter("private fun createBootAssetCache(").substringBefore("private fun logBootAssetMetrics(")
++        assertTrue(create.contains("if (!BOOT_ASSET_CACHE_ENABLED) return null"))
++        assertFalse(BootAssetResponder(null).enabled)
++    }
++
++    private fun source(name: String): String = generateSequence(File(requireNotNull(System.getProperty("user.dir")))) { it.parentFile }
++        .flatMap { base ->
++            listOf("app/src/main", "src/main", "apps/mobile/android/app/src/main").asSequence()
++                .map { File(base, "$it/java/io/github/sayach/dshmobile/$name") }
++        }
++        .first { it.isFile }
++        .readText()
++}
+diff --git a/apps/mobile/android/app/src/test/java/io/github/sayach/dshmobile/BootAssetPolicyTest.kt b/apps/mobile/android/app/src/test/java/io/github/sayach/dshmobile/BootAssetPolicyTest.kt
+new file mode 100644
+index 0000000..a71b192
+--- /dev/null
++++ b/apps/mobile/android/app/src/test/java/io/github/sayach/dshmobile/BootAssetPolicyTest.kt
+@@ -0,0 +1,61 @@
++package io.github.sayach.dshmobile
++
++import org.junit.Assert.assertEquals
++import org.junit.Assert.assertNull
++import org.junit.Test
++
++/** Only same-origin revisioned boot batches may enter the device-side cache. */
++class BootAssetPolicyTest {
++    private val origin = GatewayOrigin.parse("https://gateway.example")!!
++    private val path = "/mobile-access/mobile-boot/${"a".repeat(64)}.js"
++
++    @Test
++    fun acceptsARevisionedSameOriginBatchAndKeepsTheOriginInTheKey() {
++        assertEquals("https://gateway.example$path", BootAssetPolicy.key(origin, "https://gateway.example$path"))
++        assertEquals(
++            "https://gateway.example$path",
++            BootAssetPolicy.key(origin, "https://gateway.example:443$path"),
++        )
++        assertEquals(
++            "https://gateway.example$path",
++            BootAssetPolicy.key(origin, "HTTPS://gateway.example$path"),
++        )
++    }
++
++    @Test
++    fun rejectsAnotherGatewayServingTheSameRevisionedPath() {
++        val other = GatewayOrigin.parse("https://other.example")!!
++        assertNull(BootAssetPolicy.key(other, "https://gateway.example$path"))
++        assertNull(BootAssetPolicy.key(origin, "https://gateway.example:8443$path"))
++    }
++
++    @Test
++    fun rejectsNonHttpsAndAmbiguousUrls() {
++        assertNull(BootAssetPolicy.key(origin, "http://gateway.example$path"))
++        assertNull(BootAssetPolicy.key(origin, "https://gateway.example$path?cache=1"))
++        assertNull(BootAssetPolicy.key(origin, "https://gateway.example$path#x"))
++        assertNull(BootAssetPolicy.key(origin, "https://user@gateway.example$path"))
++        assertNull(BootAssetPolicy.key(origin, "not a url"))
++        assertNull(BootAssetPolicy.key(origin, ""))
++    }
++
++    @Test
++    fun rejectsUnrevisionedAndNonBatchPaths() {
++        assertNull(BootAssetPolicy.key(origin, "https://gateway.example/mobile-access/mobile-boot/boot.js"))
++        assertNull(BootAssetPolicy.key(origin, "https://gateway.example/mobile-access/mobile-boot/${"A".repeat(64)}.js"))
++        assertNull(BootAssetPolicy.key(origin, "https://gateway.example/mobile-access/mobile-boot/${"a".repeat(63)}.js"))
++        assertNull(BootAssetPolicy.key(origin, "https://gateway.example/mobile-access/mobile-boot/${"a".repeat(65)}.js"))
++        assertNull(BootAssetPolicy.key(origin, "https://gateway.example/mobile-access/mobile-boot/${"a".repeat(64)}.css"))
++        assertNull(BootAssetPolicy.key(origin, "https://gateway.example/mobile-access/mobile-boot/../boot.js"))
++        assertNull(BootAssetPolicy.key(origin, "https://gateway.example/mobile-access/compat.js"))
++        assertNull(BootAssetPolicy.key(origin, "https://gateway.example/api/status"))
++        assertNull(BootAssetPolicy.key(origin, "https://gateway.example/"))
++    }
++
++    @Test
++    fun theMetricPathIsTheRevisionedPathWithoutOriginOrQuery() {
++        assertEquals(path, BootAssetPolicy.path("https://gateway.example$path"))
++        assertNull(BootAssetPolicy.path("https://gateway.example$path?v=1"))
++        assertNull(BootAssetPolicy.path("https://gateway.example/mobile-access/compat.js"))
++    }
++}
+diff --git a/apps/mobile/android/app/src/test/java/io/github/sayach/dshmobile/BootAssetStoreTest.kt b/apps/mobile/android/app/src/test/java/io/github/sayach/dshmobile/BootAssetStoreTest.kt
+new file mode 100644
+index 0000000..43bcaab
+--- /dev/null
++++ b/apps/mobile/android/app/src/test/java/io/github/sayach/dshmobile/BootAssetStoreTest.kt
+@@ -0,0 +1,304 @@
++package io.github.sayach.dshmobile
++
++import java.io.File
++import org.junit.Assert.assertArrayEquals
++import org.junit.Assert.assertEquals
++import org.junit.Assert.assertFalse
++import org.junit.Assert.assertNotEquals
++import org.junit.Assert.assertNotNull
++import org.junit.Assert.assertNull
++import org.junit.Assert.assertTrue
++import org.junit.Test
++
++/** The store is the only component that touches disk; these tests pin its bounds and durability rules. */
++class BootAssetStoreTest {
++    private fun temporaryDirectory(): File = kotlin.io.path.createTempDirectory("boot-assets").toFile()
++
++    private fun body(size: Int, marker: Byte = 0x41): ByteArray = ByteArray(size) { marker }
++
++    private fun bodyFiles(directory: File): List<File> =
++        (directory.listFiles() ?: emptyArray()).filter { it.name.endsWith(".bin") }
++
++    private fun storeInto(
++        directory: File,
++        quotaBytes: Long = 1_000,
++        maxEntries: Int = 8,
++        clock: () -> Long = { 1_000L },
++    ): BootAssetStore = BootAssetStore(directory, quotaBytes = quotaBytes, maxEntries = maxEntries, clock = clock)
++
++    private fun write(
++        store: BootAssetStore,
++        key: String,
++        bytes: ByteArray,
++        etag: String = "\"v1\"",
++        contentType: String = "text/javascript",
++    ): Boolean {
++        val ticket = store.beginWrite(key, store.currentEpoch()) ?: return false
++        return store.commit(ticket, etag, contentType, bytes, BootAssetDigest.of(bytes))
++    }
++
++    @Test
++    fun storesAndReadsACompleteBodyWithItsValidatorAndDigest() {
++        val directory = temporaryDirectory()
++        try {
++            var now = 1_000L
++            val store = storeInto(directory, quotaBytes = 1_000, clock = { now })
++            assertTrue(write(store, "key", body(4)))
++            now = 2_000L
++            store.markUsed("key")
++            val entry = store.entry("key")
++            assertEquals("\"v1\"", entry?.etag)
++            assertEquals("text/javascript", entry?.contentType)
++            assertEquals(4L, entry?.size)
++            assertEquals(BootAssetDigest.of(body(4)), entry?.digest)
++            assertEquals(2_000L, entry?.lastUsedAt)
++            assertEquals(0, entry?.leases)
++            val lease = store.acquire("key")
++            assertNotNull(lease)
++            lease!!.use { assertArrayEquals(body(4), it.body) }
++            assertTrue((directory.listFiles() ?: emptyArray()).none { it.name.endsWith(".part") })
++        } finally {
++            directory.deleteRecursively()
++        }
++    }
++
++    @Test
++    fun refusesACommitWhoseBodyContradictsItsDigest() {
++        val directory = temporaryDirectory()
++        try {
++            val store = storeInto(directory)
++            val ticket = store.beginWrite("key", store.currentEpoch())!!
++            assertFalse(store.commit(ticket, "\"v1\"", "text/javascript", body(4, 0x41), BootAssetDigest.of(body(4, 0x42))))
++            assertNull(store.entry("key"))
++            assertTrue(bodyFiles(directory).isEmpty())
++        } finally {
++            directory.deleteRecursively()
++        }
++    }
++
++    @Test
++    fun evictsTheLeastRecentlyUsedEntryOnceTheQuotaIsExceeded() {
++        val directory = temporaryDirectory()
++        try {
++            var now = 1_000L
++            val store = storeInto(directory, quotaBytes = 100, clock = { now })
++            assertTrue(write(store, "a", body(40)))
++            now = 2_000L
++            assertTrue(write(store, "b", body(40)))
++            now = 3_000L
++            assertTrue(write(store, "c", body(40)))
++
++            assertNull(store.entry("a"))
++            assertNull(store.acquire("a"))
++            assertNotNull(store.acquire("b")?.use { assertArrayEquals(body(40), it.body) })
++            assertNotNull(store.acquire("c")?.use { assertArrayEquals(body(40), it.body) })
++        } finally {
++            directory.deleteRecursively()
++        }
++    }
++
++    @Test
++    fun evictsBeyondTheConfiguredEntryLimit() {
++        val directory = temporaryDirectory()
++        try {
++            var now = 1_000L
++            val store = storeInto(directory, quotaBytes = 10_000, maxEntries = 2, clock = { now })
++            assertTrue(write(store, "a", body(4)))
++            now = 2_000L
++            assertTrue(write(store, "b", body(4)))
++            now = 3_000L
++            assertTrue(write(store, "c", body(4)))
++
++            assertNull(store.entry("a"))
++            assertNotNull(store.entry("b"))
++            assertNotNull(store.entry("c"))
++            assertEquals(2, bodyFiles(directory).size)
++        } finally {
++            directory.deleteRecursively()
++        }
++    }
++
++    @Test
++    fun refusesBodiesLargerThanTheConfiguredQuota() {
++        val directory = temporaryDirectory()
++        try {
++            val store = storeInto(directory, quotaBytes = 100)
++            assertFalse(write(store, "large", body(101)))
++            assertNull(store.entry("large"))
++            assertTrue(bodyFiles(directory).isEmpty())
++        } finally {
++            directory.deleteRecursively()
++        }
++    }
++
++    @Test
++    fun ignoresACorruptIndexInsteadOfServingUnknownBytes() {
++        val directory = temporaryDirectory()
++        try {
++            directory.mkdirs()
++            File(directory, "index.json").writeText("{not json")
++            val store = storeInto(directory)
++            assertNull(store.entry("key"))
++            assertTrue(write(store, "key", body(4)))
++            assertNotNull(store.acquire("key"))
++        } finally {
++            directory.deleteRecursively()
++        }
++    }
++
++    @Test
++    fun dropsAnEntryWhenItsBodyFileDisappeared() {
++        val directory = temporaryDirectory()
++        try {
++            val store = storeInto(directory)
++            assertTrue(write(store, "key", body(4)))
++            bodyFiles(directory).first().delete()
++            assertNull(store.acquire("key"))
++            assertNull(store.entry("key"))
++        } finally {
++            directory.deleteRecursively()
++        }
++    }
++
++    @Test
++    fun dropsAnEntryWhoseBytesNoLongerMatchTheirDigest() {
++        val directory = temporaryDirectory()
++        try {
++            val store = storeInto(directory)
++            assertTrue(write(store, "key", body(4, 0x41)))
++            // Same length, different bytes: only the digest can tell this apart from the stored body.
++            bodyFiles(directory).first().writeBytes(body(4, 0x42))
++
++            assertNull(store.acquire("key"))
++            assertNull(store.entry("key"))
++            assertTrue(bodyFiles(directory).isEmpty())
++        } finally {
++            directory.deleteRecursively()
++        }
++    }
++
++    @Test
++    fun dropsATruncatedBodyInsteadOfServingItsPrefix() {
++        val directory = temporaryDirectory()
++        try {
++            val store = storeInto(directory)
++            assertTrue(write(store, "key", body(8)))
++            bodyFiles(directory).first().writeBytes(body(4))
++
++            assertNull(store.acquire("key"))
++            assertNull(store.entry("key"))
++            assertTrue(bodyFiles(directory).isEmpty())
++        } finally {
++            directory.deleteRecursively()
++        }
++    }
++
++    @Test
++    fun removesInterruptedWritesAndBodiesTheIndexNeverReferenced() {
++        val directory = temporaryDirectory()
++        try {
++            val store = storeInto(directory)
++            assertTrue(write(store, "key", body(4)))
++            File(directory, "orphan.bin").writeBytes(body(8))
++            File(directory, "leftover.bin.part").writeBytes(body(8))
++
++            val reopened = storeInto(directory)
++
++            assertNotNull(reopened.acquire("key"))
++            assertFalse(File(directory, "orphan.bin").exists())
++            assertFalse(File(directory, "leftover.bin.part").exists())
++        } finally {
++            directory.deleteRecursively()
++        }
++    }
++
++    @Test
++    fun clearRemovesBodiesAndIndex() {
++        val directory = temporaryDirectory()
++        try {
++            val store = storeInto(directory)
++            assertTrue(write(store, "key", body(4)))
++            store.clear()
++            assertNull(store.entry("key"))
++            assertTrue(bodyFiles(directory).isEmpty())
++        } finally {
++            directory.deleteRecursively()
++        }
++    }
++
++    @Test
++    fun clearAdvancesTheEpochAndRefusesACommitThatStraddledIt() {
++        val directory = temporaryDirectory()
++        try {
++            val store = storeInto(directory)
++            val epochBefore = store.currentEpoch()
++            // The download starts, then the user clears site data while it is still running.
++            val ticket = store.beginWrite("key", epochBefore)!!
++            val epochAfter = store.clear()
++
++            assertNotEquals(epochBefore, epochAfter)
++            assertTrue(epochAfter > epochBefore)
++            assertNull("A stale epoch cannot even reserve a key", store.beginWrite("key", epochBefore))
++            assertFalse(store.commit(ticket, "\"v1\"", "text/javascript", body(4), BootAssetDigest.of(body(4))))
++            assertNull(store.entry("key"))
++            assertTrue(bodyFiles(directory).isEmpty())
++        } finally {
++            directory.deleteRecursively()
++        }
++    }
++
++    @Test
++    fun aKeyEvictedDuringItsDownloadIsNotResurrected() {
++        val directory = temporaryDirectory()
++        try {
++            val store = storeInto(directory)
++            assertTrue(write(store, "key", body(4)))
++            val ticket = store.beginWrite("key", store.currentEpoch())!!
++            store.remove("key")
++
++            assertFalse(store.commit(ticket, "\"v2\"", "text/javascript", body(6), BootAssetDigest.of(body(6))))
++            assertNull(store.entry("key"))
++            assertTrue(bodyFiles(directory).isEmpty())
++        } finally {
++            directory.deleteRecursively()
++        }
++    }
++
++    @Test
++    fun allowsOnlyOneWriterPerKey() {
++        val directory = temporaryDirectory()
++        try {
++            val store = storeInto(directory)
++            val epoch = store.currentEpoch()
++            val first = store.beginWrite("key", epoch)
++            assertNotNull(first)
++            assertNull(store.beginWrite("key", epoch))
++            assertNotNull("Another key still has its own reservation", store.beginWrite("other", epoch))
++            store.abort(first!!)
++            assertNotNull(store.beginWrite("key", epoch))
++        } finally {
++            directory.deleteRecursively()
++        }
++    }
++
++    @Test
++    fun clearKeepsABodyAliveUntilTheReaderReleasesIt() {
++        val directory = temporaryDirectory()
++        try {
++            val store = storeInto(directory)
++            assertTrue(write(store, "key", body(4)))
++            val lease = store.acquire("key")!!
++            assertEquals(1, store.entry("key")?.leases)
++
++            store.clear()
++
++            // The entry is no longer servable, but the file the reader holds is not deleted under it.
++            assertNull(store.entry("key"))
++            assertEquals(1, bodyFiles(directory).size)
++            lease.use { assertArrayEquals(body(4), it.body) }
++            assertTrue("The file disappears with the last lease", bodyFiles(directory).isEmpty())
++        } finally {
++            directory.deleteRecursively()
++        }
++    }
++}
+diff --git a/apps/mobile/android/app/src/test/java/io/github/sayach/dshmobile/HttpBootAssetFetcherTest.kt b/apps/mobile/android/app/src/test/java/io/github/sayach/dshmobile/HttpBootAssetFetcherTest.kt
+new file mode 100644
+index 0000000..2efde39
+--- /dev/null
++++ b/apps/mobile/android/app/src/test/java/io/github/sayach/dshmobile/HttpBootAssetFetcherTest.kt
+@@ -0,0 +1,308 @@
++package io.github.sayach.dshmobile
++
++import java.io.ByteArrayInputStream
++import java.io.ByteArrayOutputStream
++import java.io.IOException
++import java.io.InputStream
++import java.net.InetAddress
++import java.net.Socket
++import java.security.KeyFactory
++import java.security.KeyStore
++import java.security.cert.CertificateFactory
++import java.security.cert.X509Certificate
++import java.security.spec.PKCS8EncodedKeySpec
++import java.util.concurrent.CopyOnWriteArrayList
++import java.util.concurrent.CountDownLatch
++import java.util.concurrent.TimeUnit
++import java.util.zip.GZIPOutputStream
++import javax.net.ssl.KeyManagerFactory
++import javax.net.ssl.SSLContext
++import javax.net.ssl.SSLServerSocket
++import org.junit.Assert.assertArrayEquals
++import org.junit.Assert.assertEquals
++import org.junit.Assert.assertTrue
++import org.junit.Test
++
++/** Exercises the real conditional fetch over the pinned loopback transport. */
++class HttpBootAssetFetcherTest {
++    private val path = "/mobile-access/mobile-boot/${"c".repeat(64)}.js"
++    private val body = "boot-body".toByteArray()
++
++    @Test
++    fun firstFetchStoresTheValidatorAndTheSecondRevalidatesWithA304() {
++        val server = BatchServer(body, etag = "\"v1\"")
++        try {
++            val fetcher = fetcher(server)
++            val url = server.origin.serialized + path
++
++            val first = fetcher.fetch(url, null, BootAssetCancellation())
++
++            assertTrue(first is BootAssetFetch.Modified)
++            first as BootAssetFetch.Modified
++            assertArrayEquals(body, first.body)
++            assertEquals("\"v1\"", first.etag)
++            assertEquals("text/javascript", first.contentType)
++            assertEquals("A decoded body is hashed, never the compressed transfer", BootAssetDigest.of(body), first.digest)
++            assertEquals("dsh_ma_session=abc", server.requests[0]["cookie"])
++            assertEquals("test-agent", server.requests[0]["user-agent"])
++
++            assertEquals(BootAssetFetch.NotModified, fetcher.fetch(url, "\"v1\"", BootAssetCancellation()))
++            assertEquals("\"v1\"", server.requests[1]["if-none-match"])
++        } finally {
++            server.close()
++        }
++    }
++
++    @Test
++    fun anUnauthorizedResponseFallsThroughInsteadOfServingBytes() {
++        val server = BatchServer(body, status = 401)
++        try {
++            assertEquals(
++                BootAssetFetch.Rejected,
++                fetcher(server).fetch(server.origin.serialized + path, "\"v1\"", BootAssetCancellation()),
++            )
++        } finally {
++            server.close()
++        }
++    }
++
++    @Test
++    fun aForbiddenResponseFallsThroughInsteadOfServingBytes() {
++        val server = BatchServer(body, status = 403)
++        try {
++            assertEquals(
++                BootAssetFetch.Rejected,
++                fetcher(server).fetch(server.origin.serialized + path, null, BootAssetCancellation()),
++            )
++        } finally {
++            server.close()
++        }
++    }
++
++    @Test
++    fun urlsOutsideTheRevisionedBootPrefixNeverOpenAConnection() {
++        val server = BatchServer(body)
++        try {
++            val fetcher = fetcher(server)
++            assertEquals(
++                BootAssetFetch.Failed,
++                fetcher.fetch(server.origin.serialized + "/mobile-access/compat.js", null, BootAssetCancellation()),
++            )
++            assertTrue(server.requests.isEmpty())
++        } finally {
++            server.close()
++        }
++    }
++
++    @Test
++    fun aStalledResponseFailsWithinTheReadBudgetInsteadOfHoldingThePage() {
++        val server = BatchServer(body, hang = true)
++        try {
++            assertEquals(
++                BootAssetFetch.Failed,
++                fetcher(server, readTimeoutMs = 300)
++                    .fetch(server.origin.serialized + path, null, BootAssetCancellation()),
++            )
++        } finally {
++            server.close()
++        }
++    }
++
++    @Test
++    fun anUnsupportedContentEncodingFallsBackInsteadOfStoringOpaqueBytes() {
++        val server = BatchServer(body, contentEncoding = "br")
++        try {
++            assertEquals(
++                BootAssetFetch.Failed,
++                fetcher(server).fetch(server.origin.serialized + path, null, BootAssetCancellation()),
++            )
++        } finally {
++            server.close()
++        }
++    }
++
++    @Test
++    fun aDeclaredBodyOverTheCapIsRefusedBeforeReadingIt() {
++        val server = BatchServer(body, declaredLength = (MAX_BOOT_ASSET_BYTES + 1).toInt())
++        try {
++            assertEquals(
++                BootAssetFetch.Failed,
++                fetcher(server).fetch(server.origin.serialized + path, null, BootAssetCancellation()),
++            )
++        } finally {
++            server.close()
++        }
++    }
++
++    @Test
++    fun aTransferThatEndsBeforeItsDeclaredLengthIsRefused() {
++        val server = BatchServer(body, extraDeclaredBytes = 16)
++        try {
++            assertEquals(
++                BootAssetFetch.Failed,
++                fetcher(server).fetch(server.origin.serialized + path, null, BootAssetCancellation()),
++            )
++        } finally {
++            server.close()
++        }
++    }
++
++    @Test
++    fun cancellingAnInFlightDownloadReportsCancellationInsteadOfBytes() {
++        val server = BatchServer(body, hang = true)
++        try {
++            val cancellation = BootAssetCancellation()
++            val cancelled = arrayOfNulls<BootAssetFetch>(1)
++            val worker = Thread({
++                cancelled[0] = fetcher(server, readTimeoutMs = 3_000)
++                    .fetch(server.origin.serialized + path, null, cancellation)
++            }, "boot-asset-cancel-test")
++            worker.start()
++            assertTrue(server.awaitRequest())
++            cancellation.cancel()
++            worker.join(10_000)
++
++            assertEquals(BootAssetFetch.Cancelled, cancelled[0])
++            assertTrue("Cancellation must not leave the worker running", !worker.isAlive)
++        } finally {
++            server.close()
++        }
++    }
++
++    private fun fetcher(
++        server: BatchServer,
++        connectTimeoutMs: Int = 5_000,
++        readTimeoutMs: Int = 5_000,
++    ): HttpBootAssetFetcher = HttpBootAssetFetcher(
++        origin = server.origin,
++        caCertificate = TestCertificates.ingressCa,
++        userAgent = "test-agent",
++        cookieProvider = { "dsh_ma_session=abc" },
++        connectTimeoutMs = connectTimeoutMs,
++        readTimeoutMs = readTimeoutMs,
++    )
++
++    private class BatchServer(
++        private val body: ByteArray,
++        private val etag: String = "\"v1\"",
++        private val status: Int = 200,
++        private val declaredLength: Int? = null,
++        private val extraDeclaredBytes: Int = 0,
++        private val hang: Boolean = false,
++        private val contentEncoding: String = "gzip",
++    ) {
++        val requests = CopyOnWriteArrayList<Map<String, String>>()
++        private val requestLatch = CountDownLatch(1)
++        private val serverSocket =
++            serverContext().serverSocketFactory.createServerSocket(0, 4, InetAddress.getByName(LOOPBACK)) as SSLServerSocket
++        val origin: GatewayOrigin = GatewayOrigin.parse("https://$LOOPBACK:${serverSocket.localPort}")!!
++        private val worker = Thread({ serve() }, "boot-asset-test-server").apply {
++            isDaemon = true
++            start()
++        }
++
++        /** Waits until at least one request line has been read, so a cancel fires mid-transfer. */
++        fun awaitRequest(): Boolean = requestLatch.await(5, TimeUnit.SECONDS)
++
++        fun close() {
++            runCatching { serverSocket.close() }
++            worker.join(SOCKET_TIMEOUT_MS.toLong())
++        }
++
++        private fun serve() {
++            while (true) {
++                val client = try {
++                    serverSocket.accept()
++                } catch (_: IOException) {
++                    return
++                }
++                try {
++                    respond(client)
++                } catch (_: IOException) {
++                    // A client that aborts ends only this connection.
++                } finally {
++                    runCatching { client.close() }
++                }
++            }
++        }
++
++        private fun respond(client: Socket) {
++            client.soTimeout = SOCKET_TIMEOUT_MS
++            val input = client.getInputStream().buffered()
++            readLine(input) ?: return
++            val headers = mutableMapOf<String, String>()
++            while (true) {
++                val line = readLine(input) ?: return
++                if (line.isEmpty()) break
++                headers[line.substringBefore(':').lowercase()] = line.substringAfter(':').trim()
++            }
++            requests += headers
++            requestLatch.countDown()
++            val output = client.getOutputStream()
++            if (hang) {
++                Thread.sleep(HANG_MS)
++                return
++            }
++            if (status != 200) {
++                output.write("HTTP/1.1 $status Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".toByteArray())
++                output.flush()
++                return
++            }
++            if (headers["if-none-match"] == etag) {
++                output.write("HTTP/1.1 304 Not Modified\r\nETag: $etag\r\nConnection: close\r\n\r\n".toByteArray())
++                output.flush()
++                return
++            }
++            val payload = gzip(body)
++            val declared = declaredLength ?: (payload.size + extraDeclaredBytes)
++            val response = "HTTP/1.1 200 OK\r\n" +
++                "Content-Type: text/javascript; charset=utf-8\r\n" +
++                "Content-Length: $declared\r\n" +
++                "Content-Encoding: $contentEncoding\r\n" +
++                "ETag: $etag\r\n" +
++                "Connection: close\r\n\r\n"
++            output.write(response.toByteArray())
++            if (declaredLength == null) output.write(payload)
++            output.flush()
++        }
++
++        private fun readLine(input: InputStream): String? {
++            val line = StringBuilder()
++            while (true) {
++                val next = input.read()
++                if (next < 0) return line.takeIf { it.isNotEmpty() }?.toString()
++                if (next == '\n'.code) return line.toString().removeSuffix("\r")
++                line.append(next.toChar())
++            }
++        }
++
++        private fun gzip(bytes: ByteArray): ByteArray {
++            val output = ByteArrayOutputStream()
++            GZIPOutputStream(output).use { it.write(bytes) }
++            return output.toByteArray()
++        }
++
++        private fun serverContext(): SSLContext {
++            val certificate = CertificateFactory.getInstance("X.509")
++                .generateCertificate(ByteArrayInputStream(TestCertificates.leafLoopback)) as X509Certificate
++            val key = KeyFactory.getInstance("RSA")
++                .generatePrivate(PKCS8EncodedKeySpec(TestCertificates.leafLoopbackKey))
++            val store = KeyStore.getInstance(KeyStore.getDefaultType()).apply {
++                load(null)
++                setKeyEntry(KEY_ALIAS, key, EMPTY_PASSWORD, arrayOf(certificate))
++            }
++            val managers = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm())
++                .apply { init(store, EMPTY_PASSWORD) }
++                .keyManagers
++            return SSLContext.getInstance("TLS").apply { init(managers, null, null) }
++        }
++
++        private companion object {
++            const val LOOPBACK = "127.0.0.1"
++            const val SOCKET_TIMEOUT_MS = 5_000
++            const val HANG_MS = 1_000L
++            const val KEY_ALIAS = "gateway"
++            val EMPTY_PASSWORD = charArrayOf()
++        }
++    }
++}
+-- 
+2.43.0
+
