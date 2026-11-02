@@ -124,8 +124,7 @@ websocketCompression:
 
 0.8.0 起，启动文档按内容哈希引用兼容性脚本（`/mobile-access/compat-<sha256>.js`），该路径使用 `private, max-age=31536000, immutable`。浏览器保留缓存时可直接复用同版本脚本，内容变化则使用新地址；摘要与当前正文不符时返回 `404`。旧的 `/mobile-access/compat.js` 地址继续提供条件校验。服务器收到请求后仍先验证授权；本地已缓存的脚本不含凭据，也不赋予 API 访问权限。
 
-移动启动 HTML 包含绑定当前认证 Session 的页面标识，保持 `no-store`，不复用其他页面或 Session 的启动文档；配对页和 API 响应也保持 `no-store`。网关对上游静态资源做流式 gzip 时，可保留合法上游 ETag 的弱校验形式，并维护 `Vary: Accept-Encoding`；不会把原始内容的长度或范围元信息当作压缩内容的元信息，也不会缓存失败响应或为 API 请求新增缓存。
-
+移动启动 HTML 包含绑定当前认证 Session 的页面标识，保持 `no-store`，不复用其他页面或 Session 的启动文档；配对页和 API 响应也保持 `no-store`。网关对上游静态资源做流式 gzip 时，可保留合法上游 ETag 的弱校验形式，并维护 `Vary: Accept-Encoding`；不会把原始内容的长度或范围元信息当作压缩内容的元信息，不会缓存失败响应。API 响应不新增缓存；下面「本地补丁：静态资源缓存」是唯一的、需要显式开启的例外，且只覆盖静态资源。
 可压缩的文本响应都走这条流式管道：静态资源、HTML 文档和 `/api/` 的 JSON 都会在手机声明 `Accept-Encoding: gzip` 时压缩，并维护 `Vary`。`/plugins/`、`/assets/` 下的静态资源**沿用原有判定，行为不变**（包括上游原本就会压缩的路径）。静态路径之外，`text/event-stream` 保持不压缩，否则逐帧事件会被 gzip 块缓冲；声明长度小于 1KB 或没有声明长度的响应也保持原样，压缩开销大于收益或可能被逐段消费。范围请求、已编码响应和 304 仍按原规则处理，不带 `Accept-Encoding` 的客户端收到的字节与以前一致。
 
 移动端启动页由网关拼装，不经过上面的代理压缩流程；正文至少 1KiB 且请求接受 gzip 时会压缩，压缩和未压缩响应都维护 `Vary: Accept-Encoding`。页面仍使用 `no-store`，不复用旧启动文档；它包含当前会话与模块选择对应的启动信息。
@@ -133,6 +132,41 @@ websocketCompression:
 网关把上游应用模块组合为启动批（`/mobile-access/mobile-boot/<hash>.js`），按 3MiB 源码目标大小切分，最多保留 16 个合并批，始终保留移动布局替换；超出数量的模块改用其原有独立资源地址，不因这项优化拒绝整个启动图。大于目标大小的单个模块不会拆开，原有单模块和组装大小限制不变。较小的响应和缓存复用可减少重复传输，但不能保证总启动时间或修复所有自动重连原因。合并批使用带引号 ETag 和 `private, max-age=30, must-revalidate`：短时间内重载可复用本地副本；布局文件改动后，已缓存的旧批最多可继续使用 30 秒，随后重新校验。ETag 与正文绑定，内容改变后返回新正文而不是 304。
 
 上游未提供校验标识的资源不会因此自动得到一个可靠标识。检查重复下载时，比较同一完整资源 URL 在普通打开、重新加载和 App 冷启动中的 `200`/`304`、缓存命中、`If-None-Match`、编码与实际传输量；不要先清除站点数据再把结果当作正常缓存行为。HTTP 校验语义改善不保证每个 WebView 都会复用缓存，也不能仅凭这些响应头认定 [#107](https://github.com/saya-ch/dsh-mobile/issues/107) 已完全解决。
+
+<!-- CHANGELOG.md 的 Unreleased (local patch) 条目链接到这个锚点，因此保留显式 id。 -->
+<a id="可选的静态资源缓存本地补丁"></a>
+
+## 本地补丁：静态资源缓存
+
+这是**本地补丁**，不在上游 0.8.1 / 0.8.2 内。它只保留一组网关侧静态资源缓存，**默认关闭**（`contentCacheAssetTtlMs: 0`）：关闭时网关不缓存任何响应，行为与未打补丁的构建完全一致；慢链路上可以按需开启，代价是一个明确的陈旧窗口。配置在网关构造时读取，因此**保存后需重启 DSH（或重载该插件）才生效**。
+
+- **覆盖路径**：`contentCacheAssetPaths` 默认 `["/plugins", "/assets"]`——插件包（`/plugins/*.js` 与模块脚本）和 `/assets/` 下的界面资源。按路径前缀匹配自身与子路径，不会命中 `/plugins-archive` 这类同级路径。
+- **`/mobile-access` 不在默认列表**：启动批（`/mobile-access/mobile-boot/<hash>.js`）、`compat*.js`、`mobile-layout.js`、`custom.css` / `custom.js` 都由网关本地拼装或直接应答，请求不会经过这个代理缓存，所以把该前缀写进 `contentCacheAssetPaths` 也不会产生命中（可自行验证：这些路径从不出现 `X-DSH-Mobile-Cache`）。`/api/` 同理不在其中：列表、会话历史与实时帧走 `/api/remote.mux`，没有可命中的独立 HTTP 路由，本补丁不缓存它们，也不能把它们算作命中。
+- **只缓存可安全重放的内容**：状态 200、正文完整且未压缩（identity），媒体类型为 `text/*`、JavaScript、JSON（含 `+json`）或 SVG，上游未标 `no-store`/`private`；单条上限 2 MB。
+- **过期后必须条件校验**：窗口内的重复 GET 直接重放（`X-DSH-Mobile-Cache: hit`）；条目一旦过期就不再当作新鲜内容重放——网关带上已存条目的 `If-None-Match: <ETag>` 询问上游，只有 `304` 才刷新窗口并重放（`revalidated`），否则回源取新正文。上游没有发 ETag 的条目过期后直接丢弃。
+- **写请求与上传不牵动这一组**：静态资源只随文件内容变化，与清单/会话状态无关，因此任何非 GET/HEAD 请求都不会清空它；反过来，写请求与上传本身也永远不会被缓存或重放。
+- **浏览器侧策略不变**：重放不新增任何浏览器可缓存性，默认响应仍是 `Cache-Control: no-store`（内容寻址或带 `rev` 的静态资源沿用 0.8.0 起就有的 `private, max-age=…, immutable`）；`X-DSH-Mobile-Cache` 与 `Age` 只是网关自己的诊断标记。
+- **不缓存的情形**：非 200、带 `Set-Cookie`、上游 `no-store`/`private`、已编码正文、`text/event-stream`、二进制、范围请求（`Range`）、客户端 `Cache-Control: no-cache`/`no-store`、超过单条上限的正文，以及一切非 GET 请求。
+- **容量与条目双上限**：`contentCacheMaxBytes`（默认 8 MB）限制保留正文的总字节，`contentCacheMaxEntries`（默认 256）限制条目数——空正文和极小正文几乎不占字节预算，只有条目上限能挡住它们。任一上限超出时先淘汰过期条目，再按最久未使用（LRU）淘汰。
+- **按设备隔离**：缓存键包含设备 ID 与完整请求路径（含查询串），一台设备的重放不会被另一台读到。
+
+配置片段（放进现有 `mobile-access` 条目的 `config`）：
+
+```yaml
+contentCacheAssetTtlMs: 600000           # 静态资源窗口：10 分钟；0 表示关闭
+# contentCacheAssetPaths: ["/plugins", "/assets"]
+# contentCacheMaxBytes: 8388608
+# contentCacheMaxEntries: 256
+```
+
+**测量收益**：只统计经网关代理的真实 HTTP GET；`/api/remote.mux` 帧、会话历史和其他 `/api/` 响应都不经过这个缓存，不能算成命中。
+
+- 命中率：同一路径的重复请求中带 `X-DSH-Mobile-Cache: hit`（窗口内重放）与 `revalidated`（条件校验后重放）的比例。
+- 字节节省：对比同一资源的完整响应字节与重放正文（按调用方 `Accept-Encoding` 压缩后）的大小，乘以窗口内的重放次数。
+- 命中延迟：比较命中与回源的耗时；命中不再等待上游，`revalidated` 仍需一次条件往返。
+- 与冷启动对比：分别统计 App 冷启动和页面重载时 `/plugins/*`、`/assets/*` 的请求数与实际传输量，与关闭补丁时对比（启动批与 `compat`/layout 资源不经过此缓存，只能作为启动总耗时的背景数据）。
+
+**回滚**：把 `contentCacheAssetTtlMs` 设为 `0` 即回到不打补丁的行为——**保存后需重启 DSH（或重载该插件）才生效**，因为窗口在网关构造时读取；内存中的条目随进程结束消失。彻底移除则撤销 `local/cache-patch` 上的本地补丁。上游 0.8.1 / 0.8.2 不含此功能，升级上游不会把它带回来。
 
 ## 手动压缩会话与长时间 API 请求（0.6.0）
 

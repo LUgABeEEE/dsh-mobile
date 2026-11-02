@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url'
 import z from '@deepseek-ai/schemastery'
 import { isIP } from './ip.js'
 import { isLoopbackAddress, parseAuthority, parseCidr, type AuthoritySpec, type ParsedCidr } from './network.js'
+import { normalizeContentCachePaths } from './content-cache.js'
 import { normalizeWebSocketPaths } from './websocket-paths.js'
 import { resolveHostExecution, type HostExecutionConfig, type ResolvedHostExecutionConfig } from './extension-worker-config.js'
 
@@ -108,6 +109,25 @@ export interface PluginConfig {
   upstreamTimeoutMs?: number
   /** Authenticated /api response and established DSH plugin-event stream idle timeout; zero disables it. */
   upstreamApiTimeoutMs?: number
+  /**
+   * Freshness window, in ms, for the opt-in static-asset cache; `0` keeps it off and
+   * is the default. Only complete script, style, JSON and SVG bodies under
+   * `contentCacheAssetPaths` are kept, and every expiry is revalidated.
+   */
+  contentCacheAssetTtlMs?: number
+  /** Total retained bytes of the static-asset cache; least-recently-used entries are evicted first. */
+  contentCacheMaxBytes?: number
+  /**
+   * Retained bodies in the static-asset cache. Empty and tiny bodies barely move the
+   * byte budget, so the count cap is what stops them from piling up.
+   */
+  contentCacheMaxEntries?: number
+  /**
+   * Exact proxied path prefixes the static-asset cache may serve; empty caches no
+   * asset. The default is `/plugins` and `/assets`: gateway-owned `/mobile-access`
+   * routes are answered locally and never reach the proxy that consults this cache.
+   */
+  contentCacheAssetPaths?: string[]
   rateLimitWindowMs?: number
   maxPairingAttempts?: number
   maxRateLimitKeys?: number
@@ -153,6 +173,10 @@ export interface ResolvedGatewayConfig {
   readonly maxBodyBytes: number
   readonly upstreamTimeoutMs: number
   readonly upstreamApiTimeoutMs: number
+  readonly contentCacheMaxBytes: number
+  readonly contentCacheMaxEntries: number
+  readonly contentCacheAssetTtlMs: number
+  readonly contentCacheAssetPaths: readonly string[]
   readonly rateLimitWindowMs: number
   readonly maxPairingAttempts: number
   readonly maxRateLimitKeys: number
@@ -214,6 +238,10 @@ export const Config: z<PluginConfig> = z.object({
   maxBodyBytes: z.natural(),
   upstreamTimeoutMs: z.natural(),
   upstreamApiTimeoutMs: z.natural(),
+  contentCacheMaxBytes: z.natural(),
+  contentCacheMaxEntries: z.natural(),
+  contentCacheAssetTtlMs: z.natural(),
+  contentCacheAssetPaths: z.array(String).default(['/plugins', '/assets']),
   rateLimitWindowMs: z.natural(),
   maxPairingAttempts: z.natural(),
   maxRateLimitKeys: z.natural(),
@@ -441,6 +469,14 @@ export function parseGatewayConfig(raw: unknown): ResolvedGatewayConfig {
     maxBodyBytes: integer(value.maxBodyBytes, 'maxBodyBytes', 160 * 1024 * 1024, 1024, 256 * 1024 * 1024),
     upstreamTimeoutMs: integer(value.upstreamTimeoutMs, 'upstreamTimeoutMs', 30_000, 1_000, 300_000),
     upstreamApiTimeoutMs: integer(value.upstreamApiTimeoutMs, 'upstreamApiTimeoutMs', 0, 0, 2_147_483_647),
+    // Assets are immutable or validator-backed, so their window can be long; the
+    // ceiling stays an hour so a stale copy cannot outlive an edit by much.
+    contentCacheAssetTtlMs: integer(value.contentCacheAssetTtlMs, 'contentCacheAssetTtlMs', 0, 0, 3_600_000),
+    contentCacheMaxBytes: integer(value.contentCacheMaxBytes, 'contentCacheMaxBytes', 8 * 1024 * 1024, 64 * 1024, 64 * 1024 * 1024),
+    contentCacheMaxEntries: integer(value.contentCacheMaxEntries, 'contentCacheMaxEntries', 256, 1, 65_536),
+    contentCacheAssetPaths: Object.freeze(normalizeContentCachePaths(
+      value.contentCacheAssetPaths ?? ['/plugins', '/assets'],
+    )),
     rateLimitWindowMs: integer(value.rateLimitWindowMs, 'rateLimitWindowMs', 60_000, 1_000, 3_600_000),
     maxPairingAttempts: integer(value.maxPairingAttempts, 'maxPairingAttempts', 8, 1, 100),
     maxRateLimitKeys: integer(value.maxRateLimitKeys, 'maxRateLimitKeys', 256, 1, 4096),

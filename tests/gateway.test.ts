@@ -304,6 +304,63 @@ async function upstream(
       response.end()
       return
     }
+    if (incoming.method === 'POST' && incoming.url === '/api/sessions/write') {
+      response.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+      response.end('{"written":true}')
+      return
+    }
+    if (incoming.url === '/plugins/cached.js' || incoming.url === '/assets/cached.css') {
+      const body = incoming.url.endsWith('.css')
+        ? `.cached{color:#111}\n${'.pad{}\n'.repeat(120)}`
+        : `export const cached = '${'x'.repeat(2048)}'\n`
+      response.writeHead(200, {
+        'content-type': incoming.url.endsWith('.css') ? 'text/css; charset=utf-8' : 'application/javascript; charset=utf-8',
+        'content-length': String(Buffer.byteLength(body)),
+      })
+      response.end(body)
+      return
+    }
+    if (incoming.url === '/plugins/etag-fixture.js') {
+      const body = `export const etagFixture = '${'y'.repeat(2048)}'\n`
+      if (incoming.headers['if-none-match'] === '"plugin-v1"') {
+        response.writeHead(304, { etag: '"plugin-v1"' })
+        response.end()
+        return
+      }
+      response.writeHead(200, {
+        'content-type': 'application/javascript; charset=utf-8',
+        etag: '"plugin-v1"',
+        'content-length': String(Buffer.byteLength(body)),
+      })
+      response.end(body)
+      return
+    }
+    if (incoming.url === '/plugins/cookie-set.js') {
+      const body = 'export const cookieSet = true\n'
+      response.writeHead(200, {
+        'content-type': 'application/javascript; charset=utf-8',
+        'set-cookie': 'upstream-probe=1; Path=/',
+        'content-length': String(Buffer.byteLength(body)),
+      })
+      response.end(body)
+      return
+    }
+    if (incoming.url === '/plugins/large.js') {
+      // Above the 2MB per-entry limit: forwarded in full, never retained.
+      const body = `export const large = '${'z'.repeat(2 * 1024 * 1024 + 64)}'\n`
+      response.writeHead(200, {
+        'content-type': 'application/javascript; charset=utf-8',
+        'content-length': String(Buffer.byteLength(body)),
+      })
+      response.end(body)
+      return
+    }
+    if (incoming.url === '/api/sessions') {
+      const body = JSON.stringify({ sessions: [{ id: 'a' }], version: 1 })
+      response.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'content-length': String(Buffer.byteLength(body)) })
+      response.end(body)
+      return
+    }
     if (incoming.url === '/api/stream-hold') {
       response.writeHead(200, { 'content-type': 'text/plain' })
       response.write('first')
@@ -4009,5 +4066,257 @@ describe('mobile document compression', () => {
     expect(conditional.headers['cache-control']).toBe('no-store')
     expect(conditional.headers.etag).toBeUndefined()
     expect(gunzipSync(conditional.rawBody)).toEqual(plain.rawBody)
+  })
+})
+
+describe('opt-in static-asset cache', () => {
+  async function cachedGateway(overrides: Record<string, unknown> = { contentCacheAssetTtlMs: 600_000 }) {
+    const inner = await upstream('remote-settings')
+    const instance = await gateway(inner.port, overrides)
+    const paired = await pair(instance)
+    const headers = { ...browserHeaders(instance), cookie: `${SESSION_COOKIE}=${paired.session}` }
+    return { inner, instance, paired, headers }
+  }
+
+  it('is off by default and changes nothing about the response', async () => {
+    const inner = await upstream('remote-settings')
+    const instance = await gateway(inner.port)
+    const paired = await pair(instance)
+    const headers = { ...browserHeaders(instance), cookie: `${SESSION_COOKIE}=${paired.session}` }
+
+    const first = await request(instance.address().port, '/plugins/cached.js', { headers })
+    const second = await request(instance.address().port, '/plugins/cached.js', { headers })
+    expect(first.headers['x-dsh-mobile-cache']).toBeUndefined()
+    expect(second.headers['x-dsh-mobile-cache']).toBeUndefined()
+    expect(second.body).toBe(first.body)
+    expect(String(first.headers['cache-control'])).toContain('no-store')
+    expect(inner.observations.filter(entry => entry.url === '/plugins/cached.js')).toHaveLength(2)
+  })
+
+  it('replays an identical asset, keeps the browser policy, and skips range or no-cache requests', async () => {
+    const { inner, instance, headers } = await cachedGateway()
+    const first = await request(instance.address().port, '/plugins/cached.js', { headers })
+    expect(first.status).toBe(200)
+    expect(first.headers['x-dsh-mobile-cache']).toBeUndefined()
+
+    const second = await request(instance.address().port, '/plugins/cached.js', { headers })
+    expect(second.status).toBe(200)
+    expect(second.headers['x-dsh-mobile-cache']).toBe('hit')
+    expect(second.headers.age).toBe('0')
+    // A gateway replay must not become a browser-cacheable response.
+    expect(String(second.headers['cache-control'])).toContain('no-store')
+    expect(second.body).toBe(first.body)
+    // A cached repeat never reaches DSH.
+    expect(inner.observations.filter(entry => entry.url === '/plugins/cached.js')).toHaveLength(1)
+
+    // A range read needs the upstream's own bytes and length metadata.
+    const ranged = await request(instance.address().port, '/plugins/cached.js', {
+      headers: { ...headers, range: 'bytes=0-9' },
+    })
+    expect(ranged.headers['x-dsh-mobile-cache']).toBeUndefined()
+    // A client asking for freshness is never answered from the store.
+    const bypassed = await request(instance.address().port, '/plugins/cached.js', {
+      headers: { ...headers, 'cache-control': 'no-cache' },
+    })
+    expect(bypassed.headers['x-dsh-mobile-cache']).toBeUndefined()
+    expect(inner.observations.filter(entry => entry.url === '/plugins/cached.js')).toHaveLength(3)
+  })
+
+  it('serves only the allowlisted prefixes, never an unrelated route', async () => {
+    const { inner, instance, headers } = await cachedGateway()
+    // `/sidebar/` is proxied for the GUI but is not a static prefix.
+    for (const path of ['/sidebar/html/preview.html']) {
+      await request(instance.address().port, path, { headers })
+      const repeat = await request(instance.address().port, path, { headers })
+      expect(repeat.headers['x-dsh-mobile-cache']).toBeUndefined()
+      expect(inner.observations.filter(entry => entry.url === path)).toHaveLength(2)
+    }
+  })
+
+  it('never caches a gateway-owned /mobile-access route, even when configured', async () => {
+    // The prefix has no hit path: custom CSS/JS, layout, compat and boot batches are
+    // answered locally and never reach proxyHttp, so listing it adds nothing.
+    const { inner, instance, headers } = await cachedGateway({
+      contentCacheAssetTtlMs: 600_000,
+      contentCacheAssetPaths: ['/plugins', '/assets', '/mobile-access'],
+    })
+    for (const path of ['/mobile-access/custom.css', '/mobile-access/custom.js']) {
+      const first = await request(instance.address().port, path, { headers })
+      expect(first.status).toBe(200)
+      expect(first.headers['x-dsh-mobile-cache']).toBeUndefined()
+      const repeat = await request(instance.address().port, path, { headers })
+      expect(repeat.headers['x-dsh-mobile-cache']).toBeUndefined()
+    }
+    // Nothing under /mobile-access was proxied at all.
+    expect(inner.observations.filter(entry => entry.url.startsWith('/mobile-access/'))).toHaveLength(0)
+  })
+
+  it('keeps a write from clearing the group and never replays the write itself', async () => {
+    const { inner, instance, paired, headers } = await cachedGateway()
+    await request(instance.address().port, '/plugins/cached.js', { headers })
+    expect((await request(instance.address().port, '/plugins/cached.js', { headers })).headers['x-dsh-mobile-cache']).toBe('hit')
+
+    const mutation = await request(instance.address().port, '/api/sessions/write', {
+      method: 'POST',
+      headers: { ...headers, [CSRF_HEADER]: paired.csrf, 'content-type': 'application/json' },
+      body: '{}',
+    })
+    expect(mutation.status).toBe(200)
+    expect(mutation.headers['x-dsh-mobile-cache']).toBeUndefined()
+    // A non-GET is forwarded every time: nothing about a write is replayed.
+    await request(instance.address().port, '/api/sessions/write', {
+      method: 'POST',
+      headers: { ...headers, [CSRF_HEADER]: paired.csrf, 'content-type': 'application/json' },
+      body: '{}',
+    })
+    expect(inner.observations.filter(entry => entry.url === '/api/sessions/write')).toHaveLength(2)
+
+    // The static group is unrelated to list or Session state, so it survives the write.
+    const afterWrite = await request(instance.address().port, '/plugins/cached.js', { headers })
+    expect(afterWrite.headers['x-dsh-mobile-cache']).toBe('hit')
+    expect(inner.observations.filter(entry => entry.url === '/plugins/cached.js')).toHaveLength(1)
+  })
+
+  it('revalidates a stored etag with If-None-Match instead of re-downloading the body', async () => {
+    const { inner, instance, headers } = await cachedGateway({ contentCacheAssetTtlMs: 40 })
+    const first = await request(instance.address().port, '/plugins/etag-fixture.js', { headers })
+    expect(first.status).toBe(200)
+
+    await new Promise(resolve => { setTimeout(resolve, 60) })
+    const revalidated = await request(instance.address().port, '/plugins/etag-fixture.js', { headers })
+    expect(revalidated.status).toBe(200)
+    expect(revalidated.headers['x-dsh-mobile-cache']).toBe('revalidated')
+    expect(revalidated.body).toBe(first.body)
+    const etagChecks = inner.observations.filter(entry => entry.url === '/plugins/etag-fixture.js' && entry.headers['if-none-match'] === '"plugin-v1"')
+    expect(etagChecks).toHaveLength(1)
+  })
+
+  it('evicts the oldest asset when the entry cap is reached', async () => {
+    const { inner, instance, headers } = await cachedGateway({
+      contentCacheAssetTtlMs: 600_000,
+      contentCacheMaxEntries: 1,
+    })
+    const first = await request(instance.address().port, '/plugins/cached.js', { headers })
+    expect(first.status).toBe(200)
+    expect(first.headers['x-dsh-mobile-cache']).toBeUndefined()
+    // The only count slot is taken, so the plugin body is evicted by the stylesheet.
+    await request(instance.address().port, '/assets/cached.css', { headers })
+    const repeat = await request(instance.address().port, '/plugins/cached.js', { headers })
+    expect(repeat.headers['x-dsh-mobile-cache']).toBeUndefined()
+    expect(inner.observations.filter(entry => entry.url === '/plugins/cached.js')).toHaveLength(2)
+    // That refetch took the only slot back, so the newest body replays.
+    const live = await request(instance.address().port, '/plugins/cached.js', { headers })
+    expect(live.headers['x-dsh-mobile-cache']).toBe('hit')
+  })
+
+  it('refuses a response that sets a cookie', async () => {
+    const { inner, instance, headers } = await cachedGateway()
+    await request(instance.address().port, '/plugins/cookie-set.js', { headers })
+    const repeat = await request(instance.address().port, '/plugins/cookie-set.js', { headers })
+    expect(repeat.headers['x-dsh-mobile-cache']).toBeUndefined()
+    expect(inner.observations.filter(entry => entry.url === '/plugins/cookie-set.js')).toHaveLength(2)
+  })
+
+  it('does not cache an event stream served from an allowlisted prefix', async () => {
+    const { inner, instance, headers } = await cachedGateway()
+    await request(instance.address().port, '/plugins/sse-fixture', { headers })
+    const repeat = await request(instance.address().port, '/plugins/sse-fixture', { headers })
+    expect(repeat.headers['x-dsh-mobile-cache']).toBeUndefined()
+    expect(inner.observations.filter(entry => entry.url === '/plugins/sse-fixture')).toHaveLength(2)
+  })
+
+  it('does not retain a body above the per-entry limit', async () => {
+    const { inner, instance, headers } = await cachedGateway()
+    const first = await request(instance.address().port, '/plugins/large.js', { headers })
+    expect(first.status).toBe(200)
+    expect(first.rawBody.byteLength).toBeGreaterThan(2 * 1024 * 1024)
+    const repeat = await request(instance.address().port, '/plugins/large.js', { headers })
+    expect(repeat.headers['x-dsh-mobile-cache']).toBeUndefined()
+    expect(repeat.body).toBe(first.body)
+    expect(inner.observations.filter(entry => entry.url === '/plugins/large.js')).toHaveLength(2)
+  })
+
+  it('replays a compressed client request from the identity copy', async () => {
+    const { inner, instance, headers } = await cachedGateway()
+    const compressedHeaders = { ...headers, 'accept-encoding': 'gzip' }
+    const first = await request(instance.address().port, '/plugins/cached.js', { headers: compressedHeaders })
+    expect(first.headers['content-encoding']).toBe('gzip')
+    const firstBody = gunzipSync(first.rawBody).toString('utf8')
+
+    const second = await request(instance.address().port, '/plugins/cached.js', { headers: compressedHeaders })
+    expect(second.headers['x-dsh-mobile-cache']).toBe('hit')
+    expect(second.headers['content-encoding']).toBe('gzip')
+    expect(gunzipSync(second.rawBody).toString('utf8')).toBe(firstBody)
+    expect(inner.observations.filter(entry => entry.url === '/plugins/cached.js')).toHaveLength(1)
+  })
+
+  it('keeps one device from reading another device\'s body', async () => {
+    const { inner, instance, headers } = await cachedGateway()
+    const other = await pair(instance)
+    const otherHeaders = { ...browserHeaders(instance), cookie: `${SESSION_COOKIE}=${other.session}` }
+
+    await request(instance.address().port, '/plugins/cached.js', { headers })
+    expect((await request(instance.address().port, '/plugins/cached.js', { headers })).headers['x-dsh-mobile-cache']).toBe('hit')
+    const otherRead = await request(instance.address().port, '/plugins/cached.js', { headers: otherHeaders })
+    expect(otherRead.headers['x-dsh-mobile-cache']).toBeUndefined()
+    expect(inner.observations.filter(entry => entry.url === '/plugins/cached.js')).toHaveLength(2)
+  })
+})
+describe('static-asset cache configuration', () => {
+  function parse(overrides: Record<string, unknown> = {}) {
+    return parseGatewayConfig({
+      listenHost: '127.0.0.1',
+      listenPort: 0,
+      upstreamOrigin: 'http://127.0.0.1:1',
+      publicAuthorities: ['127.0.0.1'],
+      allowedCidrs: ['127.0.0.0/8'],
+      stateFile: join(tmpdir(), `dsh-mobile-access-${crypto.randomUUID()}.json`),
+      tls: { mode: 'disabled' },
+      ...overrides,
+    })
+  }
+
+  it('is off by default, over the proxied plugin and asset prefixes only', () => {
+    const resolved = parse()
+    expect(resolved.contentCacheAssetTtlMs).toBe(0)
+    // `/mobile-access` is intentionally absent: those routes are answered by the
+    // gateway itself and never reach the proxy that consults this cache.
+    expect(resolved.contentCacheAssetPaths).toEqual(['/plugins', '/assets'])
+    expect(resolved.contentCacheMaxBytes).toBe(8 * 1024 * 1024)
+    expect(resolved.contentCacheMaxEntries).toBe(256)
+  })
+
+  it('accepts a bounded static window and rejects one beyond the ceiling', () => {
+    const resolved = parse({ contentCacheAssetTtlMs: 600_000 })
+    expect(resolved.contentCacheAssetTtlMs).toBe(600_000)
+    expect(() => parse({ contentCacheAssetTtlMs: 3_600_001 })).toThrow(/contentCacheAssetTtlMs/u)
+  })
+
+  it('bounds the byte budget and the entry count', () => {
+    expect(parse().contentCacheMaxEntries).toBe(256)
+    expect(parse({ contentCacheMaxEntries: 16 }).contentCacheMaxEntries).toBe(16)
+    expect(() => parse({ contentCacheMaxEntries: 0 })).toThrow(/contentCacheMaxEntries/u)
+    expect(() => parse({ contentCacheMaxEntries: 65_537 })).toThrow(/contentCacheMaxEntries/u)
+    expect(() => parse({ contentCacheMaxBytes: 1024 })).toThrow(/contentCacheMaxBytes/u)
+    expect(() => parse({ contentCacheMaxBytes: 64 * 1024 * 1024 + 1 })).toThrow(/contentCacheMaxBytes/u)
+  })
+
+  it('keeps custom prefixes and rejects unusable ones', () => {
+    const resolved = parse({ contentCacheAssetTtlMs: 60_000, contentCacheAssetPaths: ['/plugins/', '/assets/ui'] })
+    expect(resolved.contentCacheAssetPaths).toEqual(['/plugins', '/assets/ui'])
+    expect(() => parse({ contentCacheAssetPaths: ['relative/x'] })).toThrow(/absolute/u)
+    expect(() => parse({ contentCacheAssetPaths: ['/plugins/../etc'] })).toThrow(/plain paths/u)
+  })
+
+  it('lets an operator disable every prefix while keeping the window configured', () => {
+    const resolved = parse({ contentCacheAssetTtlMs: 60_000, contentCacheAssetPaths: [] })
+    expect(resolved.contentCacheAssetPaths).toEqual([])
+  })
+
+  it('keeps the static group off while an unrelated key is configured', () => {
+    // Nothing but the static group's own window turns caching on.
+    const resolved = parse({ contentCacheAssetPaths: ['/plugins'] })
+    expect(resolved.contentCacheAssetTtlMs).toBe(0)
+    expect(resolved.contentCacheAssetPaths).toEqual(['/plugins'])
   })
 })

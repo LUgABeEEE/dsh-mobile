@@ -124,8 +124,7 @@ Owned static assets of at least 1 KiB use gzip when the client accepts it, maint
 
 Since 0.8.0, the start document names the compatibility bundle by content hash (`/mobile-access/compat-<sha256>.js`) with `private, max-age=31536000, immutable`. A browser retaining its cache can reuse the same revision; changed bytes get a new URL, and a digest that no longer matches returns `404`. The older `/mobile-access/compat.js` retains conditional revalidation. Requests reaching the server still require authorization; a locally cached script contains no credentials and grants no API access.
 
-The Mobile start HTML includes a page identifier bound to the current authenticated Session and remains `no-store`; it does not reuse another page's or Session's start document. Pairing pages and API responses also remain `no-store`. When the gateway applies streaming gzip to an upstream static resource, a valid upstream ETag can remain usable as a weak validator with `Vary: Accept-Encoding`. Identity lengths and range metadata are not reused as compressed-representation metadata. Failed responses are not cached, and API requests receive no new caching policy.
-
+The Mobile start HTML includes a page identifier bound to the current authenticated Session and remains `no-store`; it does not reuse another page's or Session's start document. Pairing pages and API responses also remain `no-store`. When the gateway applies streaming gzip to an upstream static resource, a valid upstream ETag can remain usable as a weak validator with `Vary: Accept-Encoding`. Identity lengths and range metadata are not reused as compressed-representation metadata. Failed responses are not cached. API responses receive no new caching policy; the local static-asset cache below is the single, explicit exception, and it covers static resources only.
 Every compressible text response uses that streaming pipeline: static assets, HTML documents and `/api/` JSON are gzipped when the phone advertises `Accept-Encoding: gzip`, with `Vary` maintained. Static assets under `/plugins/` and `/assets/` **keep their existing decision unchanged**, including paths the upstream already compressed. Outside static assets, `text/event-stream` stays identity so gzip blocks cannot buffer event frames, and a response that declares fewer than 1KB or no length at all stays identity because compressing it costs more than it saves or may be consumed incrementally. Range requests, already encoded responses and 304s keep their previous behavior, and a client that sends no `Accept-Encoding` receives the same bytes as before.
 
 The Mobile start document is assembled by the gateway rather than the proxy compression pipeline. Bodies of at least 1KiB are gzipped when the request accepts gzip; both identity and gzip responses maintain `Vary: Accept-Encoding`. The document retains `no-store` because it contains boot information for the current session and module selection.
@@ -133,6 +132,38 @@ The Mobile start document is assembled by the gateway rather than the proxy comp
 The gateway groups upstream application modules into start batches (`/mobile-access/mobile-boot/<hash>.js`), targeting 3MiB of source per batch. It retains at most 16 merged batches, always including the Mobile layout replacement; overflow modules use their original individual resource URLs instead of rejecting the entire boot graph. A module larger than the target remains whole, and existing per-module and assembly limits still apply. Smaller responses and cache reuse reduce repeated transfers but do not guarantee total startup time or repair every cause of reconnection. Merged batches carry a quoted ETag and `private, max-age=30, must-revalidate`: a quick reload can reuse its local copy. After a layout-file edit, an already cached batch can remain fresh for up to 30 seconds before revalidation. The ETag identifies the body, so changed content produces a new body rather than a 304.
 
 Resources without upstream validators do not automatically acquire a reliable one. Compare the same complete resource URL during ordinary navigation, reload and app cold start: inspect `200`/`304`, cache hits, `If-None-Match`, encoding and actual transfer volume. Do not clear site data first and treat the result as normal cache behavior. Improved HTTP validation does not guarantee cache reuse in every WebView, and these headers alone do not establish a complete fix for [#107](https://github.com/saya-ch/dsh-mobile/issues/107).
+
+## Local patch: static-asset cache
+
+This is a **local patch**, not part of upstream 0.8.1 / 0.8.2. It keeps a single gateway-side static-asset cache group, **off by default** (`contentCacheAssetTtlMs: 0`): while it is off the gateway caches nothing and behavior is identical to an unpatched build. On a slow link an operator can enable it and accept one explicit staleness window. The setting is read when the gateway is constructed, so **saved changes take effect only after DSH restarts (or the plugin is reloaded)**.
+
+- **Covered paths**: `contentCacheAssetPaths` defaults to `["/plugins", "/assets"]` — plugin bundles (`/plugins/*.js` and module scripts) and the interface assets under `/assets/`. A prefix matches itself and its subpaths, never a sibling such as `/plugins-archive`.
+- **`/mobile-access` is not a default**: boot batches (`/mobile-access/mobile-boot/<hash>.js`), `compat*.js`, `mobile-layout.js` and `custom.css` / `custom.js` are assembled or answered locally by the gateway, so their requests never reach this proxy cache — listing the prefix in `contentCacheAssetPaths` produces no hit either (these paths never carry `X-DSH-Mobile-Cache`). `/api/` is likewise absent: lists, Session history and live frames travel over `/api/remote.mux`, which has no eligible standalone HTTP route, so this patch neither caches them nor counts them as hits.
+- **Replay-safe content only**: status 200, a complete uncompressed (identity) body, a media type of `text/*`, JavaScript, JSON (including `+json`) or SVG, and no upstream `no-store`/`private`; at most 2 MB per entry.
+- **Expiry requires a conditional check**: a repeat GET inside the window replays directly (`X-DSH-Mobile-Cache: hit`). Once an entry expires it is never replayed as fresh — the gateway asks the upstream with the stored entry's `If-None-Match: <ETag>`, and only a `304` refreshes the window and replays it (`revalidated`); otherwise the new body is fetched. An entry whose upstream sent no ETag is dropped at expiry.
+- **Writes and uploads never touch this group**: static resources change only with their own bytes, not with list or Session state, so no non-GET/HEAD request clears the group. Conversely, a write request or upload is never cached or replayed.
+- **Browser policy is unchanged**: a replay adds no browser cacheability — responses stay `Cache-Control: no-store` by default, while content-addressed or `rev`-suffixed assets keep the existing `private, max-age=…, immutable` policy. `X-DSH-Mobile-Cache` and `Age` are gateway diagnostics only.
+- **Never cached**: non-200 statuses, `Set-Cookie` responses, upstream `no-store`/`private`, already encoded bodies, `text/event-stream`, binary bodies, range requests (`Range`), client `Cache-Control: no-cache`/`no-store`, bodies above the per-entry limit, and every non-GET request.
+- **Byte and entry bounds**: `contentCacheMaxBytes` (8 MB default) bounds retained body bytes and `contentCacheMaxEntries` (256 default) bounds the entry count — empty and tiny bodies barely move the byte budget, so only the count cap stops them from piling up. When either bound is exceeded, expired entries go first and least-recently-used entries next.
+- **Per-device isolation**: the cache key includes the device id and the complete request path (query included), so one device's replay is never served to another.
+
+Configuration fragment for the existing `mobile-access` entry:
+
+```yaml
+contentCacheAssetTtlMs: 600000           # static resources: 10 minutes; 0 disables it
+# contentCacheAssetPaths: ["/plugins", "/assets"]
+# contentCacheMaxBytes: 8388608
+# contentCacheMaxEntries: 256
+```
+
+**Measuring the gain**: count only real HTTP GETs the gateway proxies. `/api/remote.mux` frames, Session history and every other `/api/` response never pass through this cache and cannot be counted as hits.
+
+- Hit rate: among repeats of the same path, the share carrying `X-DSH-Mobile-Cache: hit` (replayed inside the window) or `revalidated` (replayed after a conditional check).
+- Bytes saved: compare the complete response bytes of a resource with the replayed body (compressed for the caller's `Accept-Encoding`) and multiply by the number of replays inside the window.
+- Hit latency: compare a hit with the upstream fetch; a hit does not wait for the upstream, while `revalidated` still pays one conditional round trip.
+- Cold-start comparison: count requests and actual transferred bytes for `/plugins/*` and `/assets/*` during an app cold start and a page reload, against the same run with the patch off. Boot batches and `compat`/layout assets bypass this cache and serve only as context for total startup time.
+
+**Rollback**: set `contentCacheAssetTtlMs` to `0` to return to unpatched behavior — **saved changes take effect only after DSH restarts (or the plugin is reloaded)**, because the window is read when the gateway is constructed; retained entries disappear with the process. To remove it entirely, revert the local patch on `local/cache-patch`. Upstream 0.8.1 / 0.8.2 does not contain this feature, so upgrading upstream cannot bring it back.
 
 ## Manual compaction and long-running API requests (0.6.0)
 

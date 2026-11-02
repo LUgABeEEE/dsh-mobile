@@ -2,6 +2,10 @@
 
 Notable changes are recorded here. GitHub Releases provide the downloadable packages and generated commit notes.
 
+## Unreleased (local patch)
+
+- Add an opt-in **static-asset cache** as a local patch; upstream 0.8.1 / 0.8.2 does not contain it, and it is off by default (`contentCacheAssetTtlMs: 0`). It covers plugin bundles and interface assets under `contentCacheAssetPaths` (`/plugins`, `/assets`); gateway-owned `/mobile-access` routes are answered locally and never reach this cache. Saved changes take effect after DSH restarts or the plugin is reloaded. A repeat GET inside the window replays with `Age` and `X-DSH-Mobile-Cache: hit`; an expired entry is never replayed as fresh — it is revalidated with `If-None-Match`, and only a `304` refreshes and replays it (`revalidated`). A write never clears the group, and uploads, writes, event streams, range requests, `Set-Cookie` responses and oversized bodies are never cached. It is bounded by both `contentCacheMaxBytes` and an entry count (`contentCacheMaxEntries`, default 256), so empty or tiny responses cannot fill it, and a replay adds no browser cacheability (`Cache-Control: no-store` stays the default policy). See [slow connections](docs/SLOW_CONNECTIONS.md#可选的静态资源缓存本地补丁).
+
 ## 0.8.1 - 2026-11-01
 
 - Recognize the four-seat settings grid introduced in DSH 0.2.2-alpha.2. Preserve upstream navigation and grid placement while retaining Mobile's accessible close-button target; older two-column settings keep their existing mobile layout.
