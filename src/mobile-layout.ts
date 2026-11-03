@@ -1,5 +1,6 @@
 import { createElement, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
 import type { ReactNode } from 'react'
+import { WIDE_LAYOUT_ATTRIBUTE } from './mobile-layout-attributes.js'
 import { MOBILE_LAYOUT_MESSAGES, type MobileLayoutLanguage } from './mobile-layout-messages.js'
 
 export { MOBILE_LAYOUT_MESSAGES } from './mobile-layout-messages.js'
@@ -100,13 +101,8 @@ export const WIDE_LAYOUT_MIN_WIDTH_PX = 900
  * docked tablet into the drawer layout mid-sentence.
  */
 export const WIDE_LAYOUT_MIN_SHORTER_SIDE_PX = 600
-/**
- * Root marker the JS decision publishes for the stylesheet. Media queries cannot
- * read `screen`, so the wide/narrow band is an attribute the shell carries from
- * its first render: `"1"` docks the sidebar and anything else — `"0"`, or no
- * marker in a static fixture — keeps the overlay drawer.
- */
-export const WIDE_LAYOUT_ATTRIBUTE = 'data-dshm-wide'
+/** Re-exported so the layout's own tests and callers keep one import site. */
+export { WIDE_LAYOUT_ATTRIBUTE }
 /**
  * Narrow band that still has room for a folded 56px rail beside the
  * conversation: the pre-existing 721-899px phone rule plus any narrow viewport

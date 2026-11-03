@@ -649,8 +649,27 @@ describe('dedicated mobile layout boot', () => {
     // docked tablet when its keyboard opened.
     expect(MOBILE_LAYOUT_STYLES).not.toContain('min-height:600px')
     expect(MOBILE_LAYOUT_STYLES).not.toContain('@media(min-width:900px)')
+    // One source of truth: no media query may mention either band constant, so CSS
+    // can never re-decide the band from a viewport metric that the JS read
+    // (`innerWidth` plus `screen`) might disagree with. The queries that remain
+    // are width-only rules with no JS counterpart.
+    const preludes = [...MOBILE_LAYOUT_STYLES.matchAll(/@media([^{]+)\{/gu)].map(match => (match[1] ?? '').trim())
+    expect(preludes).toEqual(['(min-width:721px)', '(max-width:420px)', '(max-width:600px)',
+      '(prefers-reduced-motion:reduce)', '(pointer:coarse)'])
+    for (const prelude of preludes) {
+      expect(prelude).not.toContain(`${WIDE_LAYOUT_MIN_WIDTH_PX}px`)
+      // A height feature is how the falsified viewport-height rule looked, and the
+      // question-card `max-width:600px` band is a width rule for its own surfaces.
+      expect(prelude).not.toContain('min-height:')
+      expect(prelude).not.toContain('max-height:')
+    }
     const source = readFileSync(new URL('../src/mobile-layout.ts', import.meta.url), 'utf8')
     expect(source).toContain("[WIDE_LAYOUT_ATTRIBUTE]: wideViewport ? '1' : '0'")
+    // The width half of the decision reads the layout viewport, deliberately: the
+    // shell owns scrolling (html,body,#root overflow hidden), so no document
+    // scrollbar can shrink it, and `visualViewport` would shrink with the keyboard.
+    expect(source).toContain('const width = window.innerWidth')
+    expect(source).not.toContain('visualViewport')
     expect(source).toContain('const wideViewport = isWideViewportLayout(viewport.width, viewport.shortSide)')
     // The panel return bar is the JS-side consequence: a landscape phone keeps it.
     expect(source).toContain('state.panelInfo.activePanelId !== null && !wideViewport ? createElement')

@@ -201,6 +201,43 @@ async function geometry(page) {
   })
 }
 
+// The band is one JS decision published as a shell attribute; CSS must never
+// re-decide it from a viewport metric. This check sits exactly on the 900px
+// boundary, forces a document scrollbar, and proves the rendering follows the
+// marker even when the CSS viewport metrics could disagree with the JS read.
+async function checkBandSource(styles) {
+  for (const band of ['1', '0']) {
+    await withContext({ viewport: { width: 900, height: 700 }, hasTouch: true }, async context => {
+      const page = await context.newPage()
+      await page.setContent(`<!doctype html><html><head></head><body><div class="dshm-shell" data-dshm-wide="${band}">
+<main class="dshm-main"><div class="dshm-mainContent"><p style="height:4000px">tall owned content</p></div></main>
+<aside class="dshm-drawer" data-pane="sidebar" data-open="false" data-sidebar-collapsed=""></aside>
+</div></body></html>`)
+      await page.addStyleTag({ content: styles.stylesheet })
+      // Force a classic document scrollbar if this engine draws one.
+      await page.addStyleTag({ content: 'html{overflow-y:scroll!important}' })
+      const measured = await page.evaluate(() => ({
+        innerWidth: window.innerWidth,
+        clientWidth: document.documentElement.clientWidth,
+        visualWidth: window.visualViewport?.width ?? null,
+        mediaWidth: matchMedia('(min-width:900px)').matches,
+        drawer: getComputedStyle(document.querySelector('.dshm-drawer')).position,
+        tracks: getComputedStyle(document.querySelector('.dshm-shell')).gridTemplateColumns.trim().split(/\s+/u).length,
+      }))
+      cases++
+      const at = `band=${band}/900x700`
+      // The three viewport metrics may differ on an engine with space-taking
+      // scrollbars; the band must still be exactly what the marker says.
+      assert(measured.innerWidth === 900, `${at}: innerWidth ${measured.innerWidth}`)
+      assert(measured.clientWidth <= measured.innerWidth, `${at}: clientWidth exceeded innerWidth`)
+      assert.equal(measured.drawer, band === '1' ? 'static' : 'fixed', `${at}: drawer followed a viewport metric instead of the marker`)
+      // A docked shell is a two-track grid; an overlay shell is one track plus a
+      // fixed rail, so the track count is the second, geometry-free witness.
+      assert.equal(measured.tracks, band === '1' ? 2 : 1, `${at}: shell grid followed a viewport metric instead of the marker`)
+    })
+  }
+}
+
 async function checkPanelTouch(styles) {
   for (const hasTouch of [false, true]) for (const optOut of [false, true]) {
     await withContext({ viewport: views[1], hasTouch }, async context => {
@@ -278,6 +315,7 @@ try {
     })
   } else {
     await checkPanelTouch(styles)
+    await checkBandSource(styles)
     for (const view of views) for (const open of [false, true]) for (const [theme, tokens] of Object.entries(themes)) for (const order of ['before', 'after']) {
       await withContext({ viewport: view, ...(view.screen === undefined ? {} : { screen: view.screen }), hasTouch: true }, async context => {
         const page = await context.newPage()
@@ -366,4 +404,4 @@ try {
   try { await browser?.close() } catch (error) { recordSmokeFailure(failures, error) }
 }
 completeSmoke(failures, negative ? marker : undefined, observedNegative)
-console.log(`Built mobile shell geometry passed ${cases} owned browser-fixture cases: populated virtual trace height/scroll/clicks, light/dark, viewport/sidebar states, stylesheet order, body-portal layering over the open drawer (with its negative control) and stock-desktop isolation. This is not full DSH/skin or physical-device acceptance.`)
+console.log(`Built mobile shell geometry passed ${cases} owned browser-fixture cases: populated virtual trace height/scroll/clicks, light/dark, viewport/sidebar states, the wide band following its shell marker on the 900px boundary instead of a viewport metric, stylesheet order, body-portal layering over the open drawer (with its negative control) and stock-desktop isolation. This is not full DSH/skin or physical-device acceptance.`)
