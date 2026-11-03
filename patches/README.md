@@ -31,6 +31,7 @@
 | 2 | `0002-feat-android-reuse-revalidated-boot-batches-with-own.patch` | `apps/mobile/android/**`（3 个实现类 + `BootAssetMetrics` + 5 个测试类 + `MainActivity`/`SecureWebViewClient` 挂接 + `BOOT_CACHE_PATCH.md`） |
 | 3 | `0003-fix-android-proceed-pinned-WebSocket-certificate-err.patch` | `GatewayUrlPolicy.isPinnedAuthority` + `SecureWebViewClient` + `GatewayUrlPolicyWebSocketTest`（**前置修复**：`wss:` 证书错误不再取消文档） |
 | 4 | `0004-docs-android-record-the-device-verification-of-the-b.patch` | 本 README 与 `BOOT_CACHE_PATCH.md` 的真机结果回填 |
+| 5 | `0005-docs-android-record-the-first-paint-and-fallback-measurements.patch` | `BOOT_CACHE_PATCH.md` 补首屏无收益与慢链路回落现状 |
 
 ## 应用 / 回滚
 

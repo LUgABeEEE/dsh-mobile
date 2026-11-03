@@ -1,0 +1,46 @@
+From e8e164ecab3697b0cbeaf9cdb95d753aa9ccfa92 Mon Sep 17 00:00:00 2001
+From: LUgABeEEE <LUgABeEEE@users.noreply.github.com>
+Date: Wed, 4 Nov 2026 00:01:15 +0800
+Subject: [PATCH] docs(android): record the first-paint and fallback
+ measurements
+
+The device lane now also answers two open questions:
+
+- no first-paint benefit: three cold/warm pairs with the cache on and three
+  with a cache-disabled build land in the same FCP/load noise band on this LAN,
+  so the claim is the 3.93 MB transfer saving, not a faster first paint;
+- the cache's timeout/cancel fallback is still unit-tested only: a delaying
+  proxy cannot target boot batches over TLS, and a slow start that the cache
+  did complete reported misses=4 / failed=0 with the page booting in 17 s.
+---
+ apps/mobile/android/BOOT_CACHE_PATCH.md | 14 +++++++++++---
+ 1 file changed, 11 insertions(+), 3 deletions(-)
+
+diff --git a/apps/mobile/android/BOOT_CACHE_PATCH.md b/apps/mobile/android/BOOT_CACHE_PATCH.md
+index 0af6ff1..7a795e6 100644
+--- a/apps/mobile/android/BOOT_CACHE_PATCH.md
++++ b/apps/mobile/android/BOOT_CACHE_PATCH.md
+@@ -337,9 +337,17 @@ fails 3/3 (`pinned=false`, dialog), with the fix boots 3/3 (`pinned=true`).
+ 
+ ### Still not verified
+ 
+-- **Cancellation on hardware is not demonstrated.** The LAN window (80–123 ms) is too short to
+-  interrupt by hand; the deadline, navigation and disposal paths remain unit-tested only. A slow-link
+-  or proxied run is the way to close this.
++- **Cancellation and timeout fallback on hardware are not demonstrated.** The LAN window (80–123 ms)
++  is too short to interrupt by hand, and a delaying proxy cannot target boot batches only (HTTPS
++  hides the URL; delaying every connection instead hits the App's 15 s page budget). Under a
++  slow start (first connections delayed 7 s) the page still booted in 17 s and the cache reported
++  `misses=4 failed=0 cancelled=0`, i.e. no new failure mode at the page level, but the cache's own
++  deadline/connect-timeout path stays unit-tested only (`BootAssetCacheTest`,
++  `HttpBootAssetFetcherTest`, `BootAssetCachingWiringTest`).
++- **No first-paint benefit was measured.** Three cold/warm pairs with the cache on (FCP 236–260 ms
++  cold, 240–472 ms warm, load 1.22–1.45 s) and three with a cache-disabled build (FCP 256–340 ms
++  cold, 264 ms warm, load 1.25–1.32 s) land in the same noise band on this LAN. Claim the 3.93 MB
++  transfer saving, not a faster first paint.
+ - **Site-data clear on hardware is not demonstrated** (it also clears the pairing credential).
+ - **iroh native lane** (`-PirohNative=true`, Rust + NDK) and the remote/cpolar path were not
+   exercised; this patch is orthogonal to them, but the full-fidelity build remains to be checked.
+-- 
+2.43.0
+
