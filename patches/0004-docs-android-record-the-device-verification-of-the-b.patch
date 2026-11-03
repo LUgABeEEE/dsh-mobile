@@ -1,0 +1,149 @@
+From 662d7716d4fa61b9541a19108c4b491809a853b0 Mon Sep 17 00:00:00 2001
+From: LUgABeEEE <LUgABeEEE@users.noreply.github.com>
+Date: Tue, 3 Nov 2026 13:27:21 +0800
+Subject: [PATCH] docs(android): record the device verification of the
+ boot-batch cache
+
+Fill the deferred device lane with the 2026-11-03 run on a Xiaomi Pad 9 Pro
+Max (Android 17, WebView 150.0.7871.181, LAN-paired gateway): cold 0 % / warm
+100 % hits over five pairs, 3,930,340 wire bytes saved per warm start (the
+9,163,737 B counter is decoded bytes, not bandwidth), tampered and truncated
+cache bodies dropped and re-fetched, and the `wss:` certificate defect this
+patch made reproducible, together with its separate fix.
+
+State plainly what remains unmeasured: cancelling a download by navigating on
+hardware (the LAN window is 80-123 ms), the site-data clear (it also drops the
+pairing credential), the iroh lane and the remote/cpolar path.
+---
+ apps/mobile/android/BOOT_CACHE_PATCH.md | 93 +++++++++++++++++++++----
+ 1 file changed, 78 insertions(+), 15 deletions(-)
+
+diff --git a/apps/mobile/android/BOOT_CACHE_PATCH.md b/apps/mobile/android/BOOT_CACHE_PATCH.md
+index d11fb52..0af6ff1 100644
+--- a/apps/mobile/android/BOOT_CACHE_PATCH.md
++++ b/apps/mobile/android/BOOT_CACHE_PATCH.md
+@@ -1,8 +1,12 @@
+ # Android boot-batch cache patch (restores #314 under the four 0.8.1 defer conditions)
+ 
+-Status: **local patch. The JVM unit suite compiles and passes (2026-11-02, 74 suites / 503 tests, 0
+-failures); device behaviour and benefit measurement are still unverified.** See
+-[Verification](#verification).
++Status: **local patch, verified on the JVM and on one Android device (2026-11-03).** 75 suites /
++509 tests pass with lint clean, and a Xiaomi Pad 9 Pro Max (Android 17, WebView 150.0.7871.181)
++measured the four defer conditions with a LAN-paired gateway: cold start 0 % / warm start 100 % hits,
++3.93 MB of wire bytes saved per warm start, and tampered cache bodies dropped instead of served. See
++[Verification](#verification) and
++[the device receipt](https://github.com/LUgABeEEE/dsh-mobile/blob/local/cache-patch/真机测量-20261102/t2-t3-真机验证-20261103.md)
++(the evidence file lives outside the repository; the tables are reproduced below).
+ 
+ 0.8.1 withdrew the native boot-batch cache with this release note:
+ 
+@@ -273,15 +277,73 @@ Note on `--rerun-tasks`: that flag produced a build that reported `testDebugUnit
+ wrote no result XML (a Gradle/AGP task-graph quirk with the global flag). Use the per-task `--rerun`
+ or a `:app:clean` build instead; neither affects the numbers above.
+ 
++### Device receipt (2026-11-03, Xiaomi Pad 9 Pro Max)
++
++Hardware: `M367FC`, Android 17 / SDK 37, HyperOS OS4.0, WebView **150.0.7871.181**; gateway
++`https://192.168.1.11:3443` (LAN pairing, CA pin `0fa789bb…`); adb over Wi-Fi. Build: this tree
++(`36ce7ad`) plus the WebSocket certificate fix below, `assembleDebug -PirohNative=false`, debug signer
++`40dd20fc…`.
++
++Benefit (5 cold/warm pairs; two independent sources: the app's `DSHMobile: boot-cache …` summary and
++Chromium `performance` resource timing):
++
++| Phase | requests | hits | misses | revalidated | fetched | saved | hit % | saved % | avgMs | maxMs |
++| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
++| cold | 4 | 0 | 4 | 0 | 9,163,737 B | 0 B | 0 | 0 | 81 | 123 |
++| warm | 4 | 4 | 0 | 4 | 0 B | 9,163,737 B | 100 | 100 | 27–35 | 28–41 |
++
++All five pairs reported identical counters, and `served == fetched + saved` held every time
++(`9,163,737 = 0 + 9,163,737`); `cancelled`, `contended`, `rejected` and `failed` stayed 0. The same
++5.5 MB-of-page experiment with `BOOT_ASSET_CACHE_ENABLED = false` transferred **3,930,340 wire bytes
++on every start, cold and warm** (Chromium's own HTTP cache does not survive a process restart), so the
++cache is what removes the transfer.
++
++**Wire versus decoded bytes:** the gateway gzips boot batches, so the 9,163,737 B above are decoded
++bytes served from disk while the transfer that did not happen is **3,929,140 B compressed**
++(3,930,340 B including headers). `bytesSaved`/`savedPercent` are decoded-byte counters: they describe
++what the page received, not the network saving. Quote the compressed figure when claiming bandwidth.
++
++Body consistency on the device: after a warm start the bodies of two cached batches were damaged
++(16 random bytes written into one, the other truncated to 100,000 B) and the app restarted. The run
++reported `hits=2 misses=2`, `fetched=2,562,826 B` (exactly the two damaged batches:
++455,686 + 2,107,140), `saved=6,600,911 B`, and the page booted normally — the damaged bodies were
++discarded and re-fetched, never served.
++
++Not exercised on hardware: interrupting a download by navigating away (a LAN batch completes in
++80–123 ms, too short to hit by hand; the cancellation, deadline and `.part` paths stay covered by
++`BootAssetCacheTest`, `HttpBootAssetFetcherTest` and `BootAssetCachingWiringTest`), the site-data
++clear (it also drops the pairing credential, so it needs a re-pair), the iroh lane and the
++remote/cpolar path.
++
++### Prerequisite: a `wss:` certificate error used to cancel the page
++
++The device run surfaced an upstream defect that this patch makes reliably reproducible rather than
++causes: `onReceivedSslError` decides with `GatewayUrlPolicy.isSameOrigin`, which only accepts
++`https:`, while Chromium reports a WebSocket handshake's certificate error with a `wss:` URL. The
++paired page's own `/api/remote.mux` channel was therefore treated as a foreign identity, cancelled,
++and the document failed with the "安全连接失败" surface:
++
++```
++sslError url=wss://192.168.1.11:3443/api/remote.mux primary=SSL_UNTRUSTED sameOrigin=false pinned=false
++  (every other pin check true: CA validity, leaf validity, issuer, signature, SAN)
++```
++
++Serving boot batches from the cache boots the page fast enough that the handshake hits this window
++on every start; upstream's network download delays it past the window. The fix is a **separate
++patch** (accept `https:`/`wss:` for certificate decisions while keeping host, port and the leaf pin
++exact — `GatewayUrlPolicy.isPinnedAuthority` plus `GatewayUrlPolicyWebSocketTest`), applied before
++this one is measured. A/B on the same pairing: stock 0.8.1 boots 3/3, this patch without the fix
++fails 3/3 (`pinned=false`, dialog), with the fix boots 3/3 (`pinned=true`).
++
+ ### Still not verified
+ 
+-- **No device or emulator was used.** `adb`/logcat measurements, real WebView interception, gzip
+-  validator behaviour on a real gateway, cancellation when a page navigates on a physical phone and
+-  the actual bytes saved are all unmeasured. The fourth defer condition stays open until the
+-  [measurement procedure](#measuring-on-a-real-device) has been run on hardware.
+-- `:app:lintDebug` and `:app:assembleDebug` were not run here; only the JVM unit lane was.
+-- The iroh native lane (`-PirohNative=true`, Rust + NDK) was not exercised; this patch is orthogonal
+-  to it, but the full-fidelity build remains to be checked.
++- **Cancellation on hardware is not demonstrated.** The LAN window (80–123 ms) is too short to
++  interrupt by hand; the deadline, navigation and disposal paths remain unit-tested only. A slow-link
++  or proxied run is the way to close this.
++- **Site-data clear on hardware is not demonstrated** (it also clears the pairing credential).
++- **iroh native lane** (`-PirohNative=true`, Rust + NDK) and the remote/cpolar path were not
++  exercised; this patch is orthogonal to them, but the full-fidelity build remains to be checked.
++- **One device, one WebView build, one network.** The numbers are a LAN sample, not a distribution.
+ 
+ ### Commands for a machine with JDK 17 and Android SDK 36
+ 
+@@ -309,7 +371,8 @@ and Android SDK 36 as the README describes (or let Android Studio provision them
+ ## Measuring on a real device
+ 
+ The point of the exercise is the fourth defer condition: prove the cache actually helps on a phone.
+-**This has not been done yet** — the numbers below are the procedure to run on hardware, not results.
++**Run on 2026-11-03; the receipt is [above](#device-receipt-2026-11-03-xiaomi-pad-9-pro-max).**
++The steps below stay as the reproducible procedure.
+ 
+ 1. Build and install the Debug package (it installs beside the official App):
+    ```sh
+@@ -370,10 +433,10 @@ patch is owned by a separate change), and the Android App version/manifest (a su
+ - **The 6 s wait ceiling is a judgement call.** It is short enough to protect the page and above the
+   connect budget, but no device data exists yet for the slowest real batch; the measurement procedure
+   should record `maxMs` and any `cancelled` growth so the number can be re-tuned with evidence.
+-- **Verified on the JVM only.** The unit suite compiles and passes (see
+-  [Verification](#verification)), but no device, emulator, lint run or APK build was exercised here.
+-  What only hardware can settle — WebView interception, cancellation on real navigation, gzip
+-  validator handling and the measured saving — is still an open measurement.
++- **Verified on the JVM and one device.** The unit suite, `lintDebug` and `assembleDebug` pass, and
++  the device receipt above settles WebView interception, gzip validator handling and the measured
++  saving. Cancellation on real navigation is still only unit-tested (the LAN window is too short to
++  hit by hand).
+ - **Duplicated preload.** The mobile page preloads the batch and then executes it, so two
+   interceptions of one URL can race. The second one reports `CONTENDED` and falls back to the
+   WebView, which serves it from Chromium's own cache — the same total network cost as upstream, not
+-- 
+2.43.0
+

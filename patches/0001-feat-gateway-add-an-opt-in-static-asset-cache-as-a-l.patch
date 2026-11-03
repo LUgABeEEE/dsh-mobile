@@ -1,8 +1,8 @@
 From 722626e6cc0ac80176216d554e8019562d522c72 Mon Sep 17 00:00:00 2001
 From: LUgABeEEE <LUgABeEEE@users.noreply.github.com>
 Date: Mon, 2 Nov 2026 17:06:16 +0800
-Subject: [PATCH 1/2] feat(gateway): add an opt-in static-asset cache as a
- local patch
+Subject: [PATCH] feat(gateway): add an opt-in static-asset cache as a local
+ patch
 
 Upstream withdrew the three-group cache in #267 (reverted by #327) because the
 API and history groups had no reachable HTTP route: session lists and history

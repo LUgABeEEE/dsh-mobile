@@ -15,5 +15,8 @@ git rev-parse --verify "$base" >/dev/null || {
   exit 1
 }
 git checkout -B local/cache-patch "$base" 2>/dev/null || git checkout "$base"
-git am "$here"/0*.patch
+# 本机没有全局 git 身份（作者约定：不改 git config），这里显式给出，可用环境变量覆盖。
+git -c user.name="${GIT_AUTHOR_NAME:-LUgABeEEE}" \
+    -c user.email="${GIT_AUTHOR_EMAIL:-LUgABeEEE@users.noreply.github.com}" \
+    am "$here"/0*.patch
 echo "applied: $(git log --oneline "$base"..HEAD | wc -l) commits on top of $base"

@@ -1,7 +1,7 @@
 From 07e1a330501cf4816a124c10ec722a421fda3d57 Mon Sep 17 00:00:00 2001
 From: LUgABeEEE <LUgABeEEE@users.noreply.github.com>
 Date: Mon, 2 Nov 2026 17:06:16 +0800
-Subject: [PATCH 2/2] feat(android): reuse revalidated boot batches with
+Subject: [PATCH] feat(android): reuse revalidated boot batches with
  ownership-safe cancellation
 
 Restores #314's device-side boot-batch cache, which upstream deferred in 0.8.1,

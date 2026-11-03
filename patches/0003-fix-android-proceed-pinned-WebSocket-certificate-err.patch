@@ -1,0 +1,181 @@
+From a38e44d93083914d53d3529c04d4a60a1ead2ec1 Mon Sep 17 00:00:00 2001
+From: LUgABeEEE <LUgABeEEE@users.noreply.github.com>
+Date: Tue, 3 Nov 2026 13:13:13 +0800
+Subject: [PATCH] fix(android): proceed pinned WebSocket certificate errors
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Chromium reports a WebSocket handshake's certificate error to
+WebViewClient.onReceivedSslError with a `wss:` URL. The pinned check compared
+that URL against the page origin with GatewayUrlPolicy.isSameOrigin, which only
+accepts `https:`, so a paired page's own /api/remote.mux channel was treated as
+a foreign identity: the handler cancelled it, failed the document and
+stopLoading()ed, and the user saw "安全连接失败" over a half-booted page.
+
+Accept the secure scheme family (https/wss) for certificate decisions while
+keeping host, port and the leaf pin exact. A cleartext or userinfo-bearing URL
+still falls through to cancel.
+
+Verified on a Xiaomi Pad 9 Pro Max (Android 17, WebView 150.0.7871.181) against
+a LAN-paired gateway: before, `sslError url=wss://… sameOrigin=false
+pinned=false` cancelled the document; after, the same handshake reports
+`pinned=true` and the page boots. 70 suites / 454 tests pass.
+---
+ CHANGELOG.md                                  |  1 +
+ .../sayach/dshmobile/GatewayUrlPolicy.kt      | 21 ++++++
+ .../sayach/dshmobile/SecureWebViewClient.kt   |  5 +-
+ .../GatewayUrlPolicyWebSocketTest.kt          | 75 +++++++++++++++++++
+ 4 files changed, 101 insertions(+), 1 deletion(-)
+ create mode 100644 apps/mobile/android/app/src/test/java/io/github/sayach/dshmobile/GatewayUrlPolicyWebSocketTest.kt
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 891b971..d82ca5b 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -5,6 +5,7 @@ Notable changes are recorded here. GitHub Releases provide the downloadable pack
+ ## Unreleased (local patch)
+ 
+ - Add an opt-in **static-asset cache** as a local patch; upstream 0.8.1 / 0.8.2 does not contain it, and it is off by default (`contentCacheAssetTtlMs: 0`). It covers plugin bundles and interface assets under `contentCacheAssetPaths` (`/plugins`, `/assets`); gateway-owned `/mobile-access` routes are answered locally and never reach this cache. Saved changes take effect after DSH restarts or the plugin is reloaded. A repeat GET inside the window replays with `Age` and `X-DSH-Mobile-Cache: hit`; an expired entry is never replayed as fresh — it is revalidated with `If-None-Match`, and only a `304` refreshes and replays it (`revalidated`). A write never clears the group, and uploads, writes, event streams, range requests, `Set-Cookie` responses and oversized bodies are never cached. It is bounded by both `contentCacheMaxBytes` and an entry count (`contentCacheMaxEntries`, default 256), so empty or tiny responses cannot fill it, and a replay adds no browser cacheability (`Cache-Control: no-store` stays the default policy). See [slow connections](docs/SLOW_CONNECTIONS.md#可选的静态资源缓存本地补丁).
++- Android: answer a pinned gateway's **WebSocket certificate error** instead of cancelling the page. Chromium reports a `wss:` handshake's certificate error to `WebViewClient.onReceivedSslError`, while the pinned check compared it against the `https:` page origin, so a paired page's own `/api/remote.mux` channel was treated as a foreign identity: the handler cancelled it, failed the document and showed the "安全连接失败 / secure connection failed" surface over a half-booted page. Certificate decisions now accept the secure scheme family (`https`/`wss`) while keeping host, port and the leaf pin exact; cleartext, another port or a URL carrying credentials still cancel. Verified on a Xiaomi Pad 9 Pro Max (Android 17, WebView 150.0.7871.181) with a LAN-paired gateway: before, `sslError url=wss://… sameOrigin=false pinned=false` cancelled the document on every start; after, the same handshake reports `pinned=true` and the page boots.
+ 
+ ## 0.8.1 - 2026-11-01
+ 
+diff --git a/apps/mobile/android/app/src/main/java/io/github/sayach/dshmobile/GatewayUrlPolicy.kt b/apps/mobile/android/app/src/main/java/io/github/sayach/dshmobile/GatewayUrlPolicy.kt
+index d818c18..ffb9a0e 100644
+--- a/apps/mobile/android/app/src/main/java/io/github/sayach/dshmobile/GatewayUrlPolicy.kt
++++ b/apps/mobile/android/app/src/main/java/io/github/sayach/dshmobile/GatewayUrlPolicy.kt
+@@ -110,6 +110,24 @@ internal object GatewayUrlPolicy {
+         return GatewayOrigin.fromCandidate(candidate) == origin
+     }
+ 
++    /**
++     * Returns whether a URL addresses the configured gateway over a secure scheme.
++     *
++     * Chromium reports WebSocket certificate errors to `onReceivedSslError` with a `wss:` URL while
++     * the pinned origin is canonicalized as `https:`, so [isSameOrigin] rejects the very channel a
++     * paired page needs and cancels its document. Only the secure scheme family may differ — host
++     * and port still have to match exactly.
++     */
++    fun isPinnedAuthority(origin: GatewayOrigin, rawCandidate: String): Boolean {
++        val candidate = parseCandidate(rawCandidate) ?: return false
++        if (candidate.scheme?.lowercase() !in PINNED_SCHEMES) return false
++        if (candidate.rawUserInfo != null) return false
++        val port = if (candidate.port == -1) DEFAULT_HTTPS_PORT else candidate.port
++        if (port != origin.port) return false
++        val host = candidate.host?.lowercase()?.removePrefix("[")?.removeSuffix("]") ?: return false
++        return host == origin.host
++    }
++
+     /** Returns whether a URL may be handed to a system browser. */
+     fun isExternalHttps(rawCandidate: String): Boolean {
+         val candidate = parseCandidate(rawCandidate) ?: return false
+@@ -142,4 +160,7 @@ internal object GatewayUrlPolicy {
+     }
+ 
+     private fun parseCandidate(rawValue: String): URI? = runCatching { URI(rawValue) }.getOrNull()
++
++    private val PINNED_SCHEMES = setOf("https", "wss")
++    private const val DEFAULT_HTTPS_PORT = 443
+ }
+diff --git a/apps/mobile/android/app/src/main/java/io/github/sayach/dshmobile/SecureWebViewClient.kt b/apps/mobile/android/app/src/main/java/io/github/sayach/dshmobile/SecureWebViewClient.kt
+index 5a57490..fdcae89 100644
+--- a/apps/mobile/android/app/src/main/java/io/github/sayach/dshmobile/SecureWebViewClient.kt
++++ b/apps/mobile/android/app/src/main/java/io/github/sayach/dshmobile/SecureWebViewClient.kt
+@@ -161,8 +161,11 @@ internal class SecureWebViewClient(
+     }
+ 
+     override fun onReceivedSslError(view: WebView, handler: SslErrorHandler, error: SslError) {
++        // A WebSocket handshake reaches this callback with a `wss:` URL, so an exact `https:`
++        // origin check rejects the page's own stream channel and cancels the document it belongs
++        // to. Host and port must still match exactly, and the leaf must pin.
+         val pinned = caCertificate != null && error.primaryError == SslError.SSL_UNTRUSTED
+-            && GatewayUrlPolicy.isSameOrigin(origin, error.url)
++            && GatewayUrlPolicy.isPinnedAuthority(origin, error.url)
+             && PinnedTls.acceptsWebViewLeaf(origin, caCertificate, error.certificate.x509Certificate)
+         if (pinned) {
+             handler.proceed()
+diff --git a/apps/mobile/android/app/src/test/java/io/github/sayach/dshmobile/GatewayUrlPolicyWebSocketTest.kt b/apps/mobile/android/app/src/test/java/io/github/sayach/dshmobile/GatewayUrlPolicyWebSocketTest.kt
+new file mode 100644
+index 0000000..5ef5470
+--- /dev/null
++++ b/apps/mobile/android/app/src/test/java/io/github/sayach/dshmobile/GatewayUrlPolicyWebSocketTest.kt
+@@ -0,0 +1,75 @@
++package io.github.sayach.dshmobile
++
++import org.junit.Assert.assertFalse
++import org.junit.Assert.assertNotNull
++import org.junit.Assert.assertTrue
++import org.junit.Test
++
++/**
++ * `onReceivedSslError` answers certificate errors for `wss:` handshakes as well as `https:`
++ * subresources, so the pinned-authority check must accept the secure WebSocket scheme without
++ * widening host or port.
++ */
++class GatewayUrlPolicyWebSocketTest {
++    private val origin = requireNotNull(GatewayOrigin.parse("https://192.168.1.11:3443"))
++
++    @Test
++    fun acceptsTheSameSecureAuthority() {
++        assertTrue(GatewayUrlPolicy.isPinnedAuthority(origin, "https://192.168.1.11:3443/"))
++        assertTrue(
++            GatewayUrlPolicy.isPinnedAuthority(
++                origin,
++                "wss://192.168.1.11:3443/api/remote.mux",
++            ),
++        )
++    }
++
++    @Test
++    fun acceptsAnExplicitDefaultPortForAnImplicitOriginPort() {
++        val implicit = requireNotNull(GatewayOrigin.parse("https://gateway.example"))
++        assertTrue(GatewayUrlPolicy.isPinnedAuthority(implicit, "wss://gateway.example:443/sidebar/ws"))
++        assertTrue(GatewayUrlPolicy.isPinnedAuthority(implicit, "https://gateway.example/"))
++    }
++
++    @Test
++    fun rejectsAnotherPortOrHost() {
++        assertFalse(
++            GatewayUrlPolicy.isPinnedAuthority(
++                origin,
++                "wss://192.168.1.11:4443/api/remote.mux",
++            ),
++        )
++        assertFalse(
++            GatewayUrlPolicy.isPinnedAuthority(
++                origin,
++                "wss://192.168.1.12:3443/api/remote.mux",
++            ),
++        )
++    }
++
++    @Test
++    fun rejectsCleartextAndUnsupportedSchemes() {
++        assertFalse(GatewayUrlPolicy.isPinnedAuthority(origin, "ws://192.168.1.11:3443/api/remote.mux"))
++        assertFalse(GatewayUrlPolicy.isPinnedAuthority(origin, "http://192.168.1.11:3443/"))
++        assertFalse(GatewayUrlPolicy.isPinnedAuthority(origin, "file:///data/local/tmp/x"))
++        assertFalse(GatewayUrlPolicy.isPinnedAuthority(origin, "not a url"))
++    }
++
++    @Test
++    fun rejectsCredentialsInTheUrl() {
++        assertFalse(
++            GatewayUrlPolicy.isPinnedAuthority(
++                origin,
++                "wss://user:secret@192.168.1.11:3443/api/remote.mux",
++            ),
++        )
++    }
++
++    @Test
++    fun rejectsIpv6LoopbackForAnIpv4Origin() {
++        assertFalse(GatewayUrlPolicy.isPinnedAuthority(origin, "wss://[::1]:3443/api/remote.mux"))
++        val loopback = requireNotNull(GatewayOrigin.parse("https://[::1]:3443"))
++        assertTrue(GatewayUrlPolicy.isPinnedAuthority(loopback, "wss://[::1]:3443/api/remote.mux"))
++        assertNotNull(loopback)
++    }
++}
+-- 
+2.43.0
+
