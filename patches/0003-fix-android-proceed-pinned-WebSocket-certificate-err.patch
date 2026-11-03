@@ -1,10 +1,7 @@
-From 4c061406fc75fe55362dcc01edb1ec3c2632d8e7 Mon Sep 17 00:00:00 2001
+From a38e44d93083914d53d3529c04d4a60a1ead2ec1 Mon Sep 17 00:00:00 2001
 From: LUgABeEEE <LUgABeEEE@users.noreply.github.com>
 Date: Tue, 3 Nov 2026 13:13:13 +0800
 Subject: [PATCH] fix(android): proceed pinned WebSocket certificate errors
-MIME-Version: 1.0
-Content-Type: text/plain; charset=UTF-8
-Content-Transfer-Encoding: 8bit
 
 Chromium reports a WebSocket handshake's certificate error to
 WebViewClient.onReceivedSslError with a `wss:` URL. The pinned check compared
@@ -42,29 +39,27 @@ page's own wss:// stream with every certificate check true. Making the document
 boot fast (a local boot-batch cache experiment, not part of this change) turned
 it into a 3/3 reproduction; on the stock network path on the same device the
 handshake lands later and the failure was not observed.
+
 ---
- CHANGELOG.md                                  |  4 +
+ CHANGELOG.md                                  |  1 +
  .../sayach/dshmobile/GatewayUrlPolicy.kt      | 21 ++++++
  .../sayach/dshmobile/SecureWebViewClient.kt   |  5 +-
  .../GatewayUrlPolicyWebSocketTest.kt          | 75 +++++++++++++++++++
- 4 files changed, 104 insertions(+), 1 deletion(-)
+ 4 files changed, 101 insertions(+), 1 deletion(-)
  create mode 100644 apps/mobile/android/app/src/test/java/io/github/sayach/dshmobile/GatewayUrlPolicyWebSocketTest.kt
 
 diff --git a/CHANGELOG.md b/CHANGELOG.md
-index c64714b..fef68c5 100644
+index 891b971..d82ca5b 100644
 --- a/CHANGELOG.md
 +++ b/CHANGELOG.md
-@@ -2,6 +2,10 @@
+@@ -5,6 +5,7 @@ Notable changes are recorded here. GitHub Releases provide the downloadable pack
+ ## Unreleased (local patch)
  
- Notable changes are recorded here. GitHub Releases provide the downloadable packages and generated commit notes.
- 
-+## Unreleased
-+
+ - Add an opt-in **static-asset cache** as a local patch; upstream 0.8.1 / 0.8.2 does not contain it, and it is off by default (`contentCacheAssetTtlMs: 0`). It covers plugin bundles and interface assets under `contentCacheAssetPaths` (`/plugins`, `/assets`); gateway-owned `/mobile-access` routes are answered locally and never reach this cache. Saved changes take effect after DSH restarts or the plugin is reloaded. A repeat GET inside the window replays with `Age` and `X-DSH-Mobile-Cache: hit`; an expired entry is never replayed as fresh — it is revalidated with `If-None-Match`, and only a `304` refreshes and replays it (`revalidated`). A write never clears the group, and uploads, writes, event streams, range requests, `Set-Cookie` responses and oversized bodies are never cached. It is bounded by both `contentCacheMaxBytes` and an entry count (`contentCacheMaxEntries`, default 256), so empty or tiny responses cannot fill it, and a replay adds no browser cacheability (`Cache-Control: no-store` stays the default policy). See [slow connections](docs/SLOW_CONNECTIONS.md#可选的静态资源缓存本地补丁).
 +- Android: answer a pinned gateway's **WebSocket certificate error** instead of cancelling the page. Chromium reports a `wss:` handshake's certificate error to `WebViewClient.onReceivedSslError`, while the pinned check compared it against the `https:` page origin, so a paired page's own `/api/remote.mux` channel was treated as a foreign identity: the handler cancelled it, failed the document and showed the "安全连接失败 / secure connection failed" surface over a half-booted page. Certificate decisions now accept the secure scheme family (`https`/`wss`) while keeping host, port and the leaf pin exact; cleartext, another port or a URL carrying credentials still cancel. Verified on a Xiaomi Pad 9 Pro Max (Android 17, WebView 150.0.7871.181) with a LAN-paired gateway: before, `sslError url=wss://… sameOrigin=false pinned=false` cancelled the document on every start; after, the same handshake reports `pinned=true` and the page boots.
-+
+ 
  ## 0.8.1 - 2026-11-01
  
- - Recognize the four-seat settings grid introduced in DSH 0.2.2-alpha.2. Preserve upstream navigation and grid placement while retaining Mobile's accessible close-button target; older two-column settings keep their existing mobile layout.
 diff --git a/apps/mobile/android/app/src/main/java/io/github/sayach/dshmobile/GatewayUrlPolicy.kt b/apps/mobile/android/app/src/main/java/io/github/sayach/dshmobile/GatewayUrlPolicy.kt
 index d818c18..ffb9a0e 100644
 --- a/apps/mobile/android/app/src/main/java/io/github/sayach/dshmobile/GatewayUrlPolicy.kt
@@ -103,10 +98,10 @@ index d818c18..ffb9a0e 100644
 +    private const val DEFAULT_HTTPS_PORT = 443
  }
 diff --git a/apps/mobile/android/app/src/main/java/io/github/sayach/dshmobile/SecureWebViewClient.kt b/apps/mobile/android/app/src/main/java/io/github/sayach/dshmobile/SecureWebViewClient.kt
-index 56b9e66..e459bae 100644
+index 5a57490..fdcae89 100644
 --- a/apps/mobile/android/app/src/main/java/io/github/sayach/dshmobile/SecureWebViewClient.kt
 +++ b/apps/mobile/android/app/src/main/java/io/github/sayach/dshmobile/SecureWebViewClient.kt
-@@ -130,8 +130,11 @@ internal class SecureWebViewClient(
+@@ -161,8 +161,11 @@ internal class SecureWebViewClient(
      }
  
      override fun onReceivedSslError(view: WebView, handler: SslErrorHandler, error: SslError) {
