@@ -337,9 +337,17 @@ fails 3/3 (`pinned=false`, dialog), with the fix boots 3/3 (`pinned=true`).
 
 ### Still not verified
 
-- **Cancellation on hardware is not demonstrated.** The LAN window (80–123 ms) is too short to
-  interrupt by hand; the deadline, navigation and disposal paths remain unit-tested only. A slow-link
-  or proxied run is the way to close this.
+- **Cancellation and timeout fallback on hardware are not demonstrated.** The LAN window (80–123 ms)
+  is too short to interrupt by hand, and a delaying proxy cannot target boot batches only (HTTPS
+  hides the URL; delaying every connection instead hits the App's 15 s page budget). Under a
+  slow start (first connections delayed 7 s) the page still booted in 17 s and the cache reported
+  `misses=4 failed=0 cancelled=0`, i.e. no new failure mode at the page level, but the cache's own
+  deadline/connect-timeout path stays unit-tested only (`BootAssetCacheTest`,
+  `HttpBootAssetFetcherTest`, `BootAssetCachingWiringTest`).
+- **No first-paint benefit was measured.** Three cold/warm pairs with the cache on (FCP 236–260 ms
+  cold, 240–472 ms warm, load 1.22–1.45 s) and three with a cache-disabled build (FCP 256–340 ms
+  cold, 264 ms warm, load 1.25–1.32 s) land in the same noise band on this LAN. Claim the 3.93 MB
+  transfer saving, not a faster first paint.
 - **Site-data clear on hardware is not demonstrated** (it also clears the pairing credential).
 - **iroh native lane** (`-PirohNative=true`, Rust + NDK) and the remote/cpolar path were not
   exercised; this patch is orthogonal to them, but the full-fidelity build remains to be checked.
