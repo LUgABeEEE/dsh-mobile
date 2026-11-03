@@ -58,8 +58,16 @@ const views = [
   { width: 899, height: 844 },
   { width: 900, height: 844 },
   { width: 901, height: 844 },
+  // A landscape phone is wider than the 900px threshold but its shorter side is
+  // a phone's, so it keeps the overlay drawer instead of a permanent rail.
+  { width: 932, height: 430 },
+  // The same rule in the other direction: both tablet orientations stay docked.
+  { width: 909, height: 1314 },
+  { width: 1363, height: 860 },
   { width: 1100, height: 844 },
 ]
+// Mirrors the layout's own rule: dock only when both viewport sides are large.
+const docks = view => view.width >= 900 && Math.min(view.width, view.height) >= 600
 const themes = {
   light: { '--dsw-alias-label-primary': '#171a21', '--dsw-alias-bg-base': '#ffffff' },
   dark: { '--dsw-alias-label-primary': '#f4f5f7', '--dsw-alias-bg-base': '#171a21' },
@@ -128,7 +136,7 @@ async function captureStyles() {
 }
 
 async function setup(page, styles, open, view, tokens, order) {
-  await page.setContent(fixture(open, view.width >= 900))
+  await page.setContent(fixture(open, docks(view)))
   await page.addStyleTag({ content: fixtureStyles })
   await page.evaluate(theme => { for (const [key, value] of Object.entries(theme)) document.body.style.setProperty(key, value) }, tokens)
   if (order === 'before') await page.addStyleTag({ content: foreignStyles })
@@ -274,7 +282,7 @@ try {
         assert.deepEqual(await page.locator('body').evaluate((node, names) => Object.fromEntries(names.map(name =>
           [name, getComputedStyle(node).getPropertyValue(name).trim()])), Object.keys(tokens)), tokens,
         `${key}: geometry ownership changed the theme tokens`)
-        if (view.width >= 900) {
+        if (docks(view)) {
           const sidebarWidth = open ? 340 : 56
           assert.equal(boxes['.dshm-drawer'].height, view.height, `${key}: wide sidebar became a horizontal row`)
           assert.equal(boxes['.dshm-drawer'].width, sidebarWidth, `${key}: wide sidebar width`)

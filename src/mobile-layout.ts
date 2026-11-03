@@ -87,6 +87,30 @@ export function isSidebarRightControl(value: unknown): value is SidebarRightCont
  * keep the overlay behavior byte-for-byte.
  */
 export const WIDE_LAYOUT_MIN_WIDTH_PX = 900
+/**
+ * Shorter-side floor for the persistent sidebar. A landscape phone is wider
+ * than the width threshold while its height — the shorter side — is a phone's.
+ * Docking a 932x430 phone hid the conversation behind a permanent rail and
+ * removed the panel return bar, so width alone is not enough evidence of a
+ * tablet-sized viewport: both sides have to be at least 600 px.
+ */
+export const WIDE_LAYOUT_MIN_SHORTER_SIDE_PX = 600
+/**
+ * The wide-layout condition as a media query, built from the same constants as
+ * the JS predicate so the stylesheet and the React state cannot drift. With a
+ * width of at least {@link WIDE_LAYOUT_MIN_WIDTH_PX} the height *is* the
+ * shorter side, so `min-height` here means "the shorter side is at least 600px".
+ */
+export const WIDE_LAYOUT_QUERY = `(min-width:${WIDE_LAYOUT_MIN_WIDTH_PX}px) and (min-height:${WIDE_LAYOUT_MIN_SHORTER_SIDE_PX}px)`
+/** The complement of {@link WIDE_LAYOUT_QUERY}: the overlay-drawer band. */
+const NARROW_LAYOUT_QUERY = `(max-width:${WIDE_LAYOUT_MIN_WIDTH_PX - 1}px),(max-height:${WIDE_LAYOUT_MIN_SHORTER_SIDE_PX - 1}px)`
+/**
+ * The narrow band that still has room for a folded 56px rail beside the
+ * conversation. The phone-width part keeps the pre-existing 721-899px rule;
+ * the short part covers a landscape phone, where the rail is a fixed overlay
+ * over a viewport that is otherwise wide.
+ */
+const FOLDED_RAIL_OFFSET_QUERY = `(min-width:721px) and (max-width:${WIDE_LAYOUT_MIN_WIDTH_PX - 1}px),(min-width:721px) and (max-height:${WIDE_LAYOUT_MIN_SHORTER_SIDE_PX - 1}px)`
 const RIGHTBAR_MIN_WIDTH_PX = 300
 const RIGHTBAR_MAX_WIDTH_PX = 460
 const RIGHTBAR_CENTER_MIN_WIDTH_PX = 400
@@ -94,8 +118,16 @@ const RIGHTBAR_DEFAULT_RATIO = 0.45
 const SIDEBAR_EXPANDED_WIDTH_PX = 340
 const SIDEBAR_COLLAPSED_WIDTH_PX = 56
 
-export function isWideViewportLayout(viewportWidth: number): boolean {
+/**
+ * Whether the dedicated layout should dock the sidebar as a persistent column.
+ * @param viewportWidth - the viewport width in CSS pixels.
+ * @param viewportHeight - the viewport height in CSS pixels, which is the
+ * shorter side whenever the width threshold is met.
+ * @returns whether the viewport is large enough in both directions.
+ */
+export function isWideViewportLayout(viewportWidth: number, viewportHeight: number): boolean {
   return viewportWidth >= WIDE_LAYOUT_MIN_WIDTH_PX
+    && Math.min(viewportWidth, viewportHeight) >= WIDE_LAYOUT_MIN_SHORTER_SIDE_PX
 }
 
 /** Resolved right-panel presentation for the dedicated responsive layout. */
@@ -107,17 +139,19 @@ export interface MobileRightbarLayout {
 /** Preserve a readable conversation width before turning a requested right track into a docked column. */
 export function resolveMobileRightbarLayout(
   viewportWidth: number,
+  viewportHeight: number,
   sidebarOpen: boolean,
   track: boolean,
   fullscreen: boolean,
 ): MobileRightbarLayout {
-  const overlayWidth = isWideViewportLayout(viewportWidth)
+  const wide = isWideViewportLayout(viewportWidth, viewportHeight)
+  const overlayWidth = wide
     ? Math.min(viewportWidth * 0.94, RIGHTBAR_MAX_WIDTH_PX)
     : viewportWidth
-  if (!track || fullscreen || (!isWideViewportLayout(viewportWidth) && sidebarOpen)) {
+  if (!track || fullscreen || (!wide && sidebarOpen)) {
     return Object.freeze({ docked: false, width: overlayWidth })
   }
-  const sidebarWidth = isWideViewportLayout(viewportWidth) && sidebarOpen
+  const sidebarWidth = wide && sidebarOpen
     ? SIDEBAR_EXPANDED_WIDTH_PX
     : SIDEBAR_COLLAPSED_WIDTH_PX
   const available = Math.floor(viewportWidth - sidebarWidth - RIGHTBAR_CENTER_MIN_WIDTH_PX)
@@ -337,7 +371,7 @@ export function closeDetailsFromScrim(sidebarRight: unknown, closeDetails: () =>
 /** Reads the live viewport; unknown environments (SSR, tests) stay narrow. */
 function viewportIsWide(): boolean {
   if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false
-  return window.matchMedia(`(min-width: ${WIDE_LAYOUT_MIN_WIDTH_PX}px)`).matches
+  return window.matchMedia(WIDE_LAYOUT_QUERY).matches
 }
 
 /** Resolve the supported language used by the dedicated mobile layout. */
@@ -524,7 +558,7 @@ html,body,#root{width:100%;height:100%;overflow:hidden}
    unlayered skin rules from collapsing virtualized views to the header height. */
 @layer dsh-mobile-layout{
 .dshm-shell{display:grid!important;grid-template-rows:minmax(0,1fr)!important;grid-template-columns:minmax(0,1fr)!important}
-@media(min-width:900px){.dshm-shell{grid-template-columns:auto minmax(0,1fr)!important}}
+@media${WIDE_LAYOUT_QUERY}{.dshm-shell{grid-template-columns:auto minmax(0,1fr)!important}}
 }
 .dshm-main{grid-area:1/1;position:relative;display:flex;flex-direction:column;min-width:0;min-height:0;margin-right:0;overflow:hidden;transition:margin-right var(--ds-transition-duration-slow,190ms) var(--ds-ease-in-out,ease)}
 .dshm-mainContent{position:relative;flex:1;min-width:0;min-height:0;overflow:hidden}
@@ -546,14 +580,15 @@ html,body,#root{width:100%;height:100%;overflow:hidden}
 .dshm-drawer[data-open=true]>*{transform:translateX(0);opacity:1}
 .dshm-drawer[data-open=false]>*{width:56px!important}
 /* Folded icon rail: on narrow viewports the drawer is fixed, so give the main
-   content the same 56px offset the wide grid breakpoint already provides. */
-@media(min-width:721px) and (max-width:899px){.dshm-shell:has(.dshm-drawer[data-sidebar-collapsed]:not([data-right-modal=true])) .dshm-main{margin-left:56px}}
+   content the same 56px offset the wide grid breakpoint already provides. A
+   landscape phone is wide but short, so it needs that offset too. */
+@media${FOLDED_RAIL_OFFSET_QUERY}{.dshm-shell:has(.dshm-drawer[data-sidebar-collapsed]:not([data-right-modal=true])) .dshm-main{margin-left:56px}}
 /* display:none also suppresses fixed descendants installed by the phone adapter. */
 .dshm-drawer[data-right-modal=true]{display:none!important}
 .dshm-details{position:fixed;z-index:80;inset:0 0 0 auto;box-sizing:border-box;width:min(94vw,460px);max-width:100%;padding-top:env(safe-area-inset-top);overflow:hidden;background-color:Canvas;background-image:linear-gradient(var(--dsw-alias-bg-layer-1,#fff),var(--dsw-alias-bg-layer-1,#fff));box-shadow:-18px 0 46px rgb(15 23 42 / 18%);transform:translateX(104%);transition:transform 190ms cubic-bezier(.22,1,.36,1)}
 .dshm-details[data-open=true]{transform:translateX(0)}
 .dshm-details[data-open=false]{pointer-events:none;visibility:hidden;transition:transform 190ms cubic-bezier(.22,1,.36,1),visibility 0s linear 190ms}
-@media(max-width:899px){.dshm-details{width:100%;max-width:100%;box-shadow:none}.dshm-details [data-sidebar-right-toggle],.dshm-details [data-sidebar-right-mode]{min-width:48px;min-height:48px}}
+@media${NARROW_LAYOUT_QUERY}{.dshm-details{width:100%;max-width:100%;box-shadow:none}.dshm-details [data-sidebar-right-toggle],.dshm-details [data-sidebar-right-mode]{min-width:48px;min-height:48px}}
 .dshm-scrim{position:fixed;z-index:65;inset:0;border:0;background:rgb(15 23 42 / 40%);opacity:0;pointer-events:none;transition:opacity 180ms ease-out}
 .dshm-scrim[data-open=true]{opacity:1;pointer-events:auto}
 .dshm-overlay{position:fixed;z-index:90;inset:0;pointer-events:none}.dshm-overlay>*{pointer-events:auto}
@@ -594,7 +629,7 @@ body:has(.dshm-shell) :is(input,textarea,[contenteditable=true],[contenteditable
 .dshm-shell [data-plan-review-key]>section>div:last-child>div:last-child>button:first-child{grid-column:1/-1}
 .dshm-shell [data-plan-review-key]>section>div:last-child button{width:100%;min-height:44px}
 }
-@media(min-width:900px){
+@media${WIDE_LAYOUT_QUERY}{
 .dshm-shell{grid-template-columns:auto minmax(0,1fr)}
 /* The wide drawer is a static grid column, not an overlay: it occupies its own
    track and never overlaps the conversation. Keeping a z-index here made it
@@ -650,14 +685,19 @@ function MobileAppFrame(props: MobileRootProps & {
     const active = document.activeElement
     if (active instanceof HTMLElement && active.matches(COMPOSER_EDITOR_SELECTOR)) active.blur()
   }, [state.panelInfo.activePanelId])
-  const [viewportWidth, setViewportWidth] = useState(window.innerWidth)
+  // Both viewport axes decide the layout: width alone would dock the sidebar on
+  // a landscape phone. `resize` fires on rotation and window resizing, so the
+  // short side is re-read with the same frame-coalesced measurement.
+  const [viewport, setViewport] = useState(() => ({
+    width: window.innerWidth, height: window.innerHeight,
+  }))
   useEffect(() => {
     let frame: number | undefined
     const resize = (): void => {
       if (frame !== undefined) return
       frame = window.requestAnimationFrame(() => {
         frame = undefined
-        setViewportWidth(window.innerWidth)
+        setViewport({ width: window.innerWidth, height: window.innerHeight })
       })
     }
     window.addEventListener('resize', resize)
@@ -666,9 +706,11 @@ function MobileAppFrame(props: MobileRootProps & {
       if (frame !== undefined) window.cancelAnimationFrame(frame)
     }
   }, [])
-  const wideViewport = isWideViewportLayout(viewportWidth)
+  const viewportWidth = viewport.width
+  const wideViewport = isWideViewportLayout(viewport.width, viewport.height)
   const rightbar = resolveMobileRightbarLayout(
-    viewportWidth,
+    viewport.width,
+    viewport.height,
     state.sidebarOpen,
     state.rightbarTrack,
     state.rightbarFullscreen,
