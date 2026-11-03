@@ -7,9 +7,9 @@ import {
   MOBILE_LAYOUT_MESSAGES,
   MOBILE_LAYOUT_STYLES,
   TOUCH_PRIMARY_QUERY,
+  WIDE_LAYOUT_ATTRIBUTE,
   WIDE_LAYOUT_MIN_SHORTER_SIDE_PX,
   WIDE_LAYOUT_MIN_WIDTH_PX,
-  WIDE_LAYOUT_QUERY,
   apply as applyMobileLayout,
   closeDetailsFromScrim,
   isComposerActionTap,
@@ -19,6 +19,7 @@ import {
   isSidebarRightControl,
   isWideViewportLayout,
   resolveComposerImePolicy,
+  resolveDeviceShortSide,
   resolveMobileLayoutLanguage,
   resolveMobileRightbarLayout,
 } from '../src/mobile-layout.js'
@@ -55,7 +56,11 @@ function stubClientGlobals(viewport = { wide: false }): () => void {
     title: '',
   })
   define('window', {
-    innerWidth: 390,
+    // A wide stub stands for a tablet: the width floor, the device short side and
+    // the pointer query all follow `viewport.wide`, so a test can flip it mid-run.
+    get innerWidth() { return viewport.wide ? 1024 : 390 },
+    get innerHeight() { return viewport.wide ? 800 : 844 },
+    get screen() { return viewport.wide ? { width: 1024, height: 800 } : { width: 390, height: 844 } },
     matchMedia: () => ({ matches: viewport.wide, addEventListener() {}, removeEventListener() {} }),
     addEventListener: events.addEventListener.bind(events),
     removeEventListener: events.removeEventListener.bind(events),
@@ -582,7 +587,7 @@ describe('dedicated mobile layout boot', () => {
 
   it('adapts stable DSH question surfaces for touch screens', () => {
     const narrowStart = MOBILE_LAYOUT_STYLES.indexOf('@media(max-width:600px){')
-    const wideStart = MOBILE_LAYOUT_STYLES.indexOf(`@media${WIDE_LAYOUT_QUERY}{\n.dshm-shell{grid-template-columns:`)
+    const wideStart = MOBILE_LAYOUT_STYLES.indexOf(`.dshm-shell[${WIDE_LAYOUT_ATTRIBUTE}="1"]{grid-template-columns:auto minmax(0,1fr)}`)
     expect(narrowStart).toBeGreaterThan(0)
     expect(wideStart).toBeGreaterThan(narrowStart)
     const shared = MOBILE_LAYOUT_STYLES.slice(0, narrowStart)
@@ -599,36 +604,56 @@ describe('dedicated mobile layout boot', () => {
     expect(narrow).toContain('min-height:44px')
   })
 
-  it('docks the sidebar only when both viewport sides are large enough', () => {
+  it('docks the sidebar by the device short side, not the viewport height', () => {
     expect(WIDE_LAYOUT_MIN_WIDTH_PX).toBe(900)
     expect(WIDE_LAYOUT_MIN_SHORTER_SIDE_PX).toBe(600)
-    expect(WIDE_LAYOUT_QUERY).toBe('(min-width:900px) and (min-height:600px)')
-    // A landscape phone is wider than the width threshold but its shorter side
-    // is a phone's: docking it hid the conversation behind a permanent rail and
-    // removed the panel return bar.
-    expect(isWideViewportLayout(932, 430)).toBe(false)
-    expect(isWideViewportLayout(909, 1314)).toBe(true)
-    expect(isWideViewportLayout(1363, 860)).toBe(true)
-    // Both boundaries stay exact, and the pre-existing narrow band is unchanged.
-    expect(isWideViewportLayout(899, 1314)).toBe(false)
-    expect(isWideViewportLayout(900, 599)).toBe(false)
+    // A landscape phone is wider than the width threshold but its screen's short
+    // side is a phone's: docking it hid the conversation behind a permanent rail
+    // and removed the panel return bar.
+    expect(isWideViewportLayout(932, resolveDeviceShortSide(932, 430, 932, 430))).toBe(false)
+    // Tablets dock in both orientations.
+    expect(isWideViewportLayout(909, resolveDeviceShortSide(909, 1314, 909, 1314))).toBe(true)
+    expect(isWideViewportLayout(1363, resolveDeviceShortSide(1364, 909, 1363, 860))).toBe(true)
+    // Pad 9 Pro Max landscape with the soft keyboard open: the viewport is
+    // 1363x441, the screen is 1364x909. A viewport-height floor would undock a
+    // docked tablet mid-sentence, so the height must not reach the decision.
+    const padLandscape = resolveDeviceShortSide(1364, 909, 1363, 441)
+    expect(padLandscape).toBe(909)
+    expect(isWideViewportLayout(1363, padLandscape)).toBe(true)
+    expect(isWideViewportLayout(1363, resolveDeviceShortSide(909, 1364, 909, 841))).toBe(true)
+    // A short desktop window keeps the upstream decision: the screen behind it is
+    // large, and the width floor still rejects a narrow window.
+    expect(isWideViewportLayout(1400, resolveDeviceShortSide(1920, 1080, 1400, 500))).toBe(true)
+    expect(isWideViewportLayout(899, resolveDeviceShortSide(1920, 1080, 899, 1080))).toBe(false)
+    // Without usable screen metrics the viewport is the only evidence available.
+    expect(resolveDeviceShortSide(0, 0, 1363, 441)).toBe(441)
+    expect(resolveDeviceShortSide(undefined, undefined, 932, 430)).toBe(430)
+    // Rotation does not change the short side, and the boundary stays exact.
+    expect(resolveDeviceShortSide(909, 1364, 1364, 841)).toBe(909)
     expect(isWideViewportLayout(900, 600)).toBe(true)
-    expect(isWideViewportLayout(1920, 1080)).toBe(true)
+    expect(isWideViewportLayout(900, 599)).toBe(false)
   })
 
-  it('keeps the stylesheet wide band identical to the JS predicate', () => {
-    // The media query is generated from the same constants, so the stylesheet
-    // cannot dock a viewport the JS treats as narrow (or the reverse).
-    expect(MOBILE_LAYOUT_STYLES).toContain(`@media${WIDE_LAYOUT_QUERY}{.dshm-shell{grid-template-columns:auto minmax(0,1fr)!important}}`)
-    expect(MOBILE_LAYOUT_STYLES).toContain(`@media${WIDE_LAYOUT_QUERY}{\n.dshm-shell{grid-template-columns:auto minmax(0,1fr)}`)
-    // The overlay band is the complement: narrower than the width floor, or
-    // shorter than the shorter-side floor.
-    expect(MOBILE_LAYOUT_STYLES).toContain('@media(max-width:899px),(max-height:599px){.dshm-details{width:100%')
-    expect(MOBILE_LAYOUT_STYLES).toContain('@media(min-width:721px) and (max-width:899px),(min-width:721px) and (max-height:599px){.dshm-shell:has(.dshm-drawer[data-sidebar-collapsed]')
-    // The panel return bar is the JS-side consequence: a landscape phone keeps it.
+  it('publishes the wide band as a shell attribute instead of a media query', () => {
+    // Media queries cannot read `screen`, so the stylesheet follows the marker
+    // the JS decision writes on the shell. An absent marker is the narrow default.
+    expect(WIDE_LAYOUT_ATTRIBUTE).toBe('data-dshm-wide')
+    expect(MOBILE_LAYOUT_STYLES).toContain(`.dshm-shell[${WIDE_LAYOUT_ATTRIBUTE}="1"]{grid-template-columns:auto minmax(0,1fr)!important}`)
+    expect(MOBILE_LAYOUT_STYLES).toContain(`.dshm-shell[${WIDE_LAYOUT_ATTRIBUTE}="1"] .dshm-drawer{position:static;grid-area:1/1;box-shadow:none;z-index:auto}`)
+    // An absent marker is the narrow default, so a static fixture or the pre-mount
+    // paint cannot render a half-docked shell.
+    expect(MOBILE_LAYOUT_STYLES).toContain(`.dshm-shell:not([${WIDE_LAYOUT_ATTRIBUTE}="1"]) .dshm-details{width:100%;max-width:100%;box-shadow:none}`)
+    // The folded-rail offset is the narrow band plus its pre-existing width floor.
+    expect(MOBILE_LAYOUT_STYLES).toContain(`@media(min-width:721px){.dshm-shell:not([${WIDE_LAYOUT_ATTRIBUTE}="1"]):has(.dshm-drawer[data-sidebar-collapsed]`)
+    // No viewport-height media query may decide the band: that is what flipped a
+    // docked tablet when its keyboard opened.
+    expect(MOBILE_LAYOUT_STYLES).not.toContain('min-height:600px')
+    expect(MOBILE_LAYOUT_STYLES).not.toContain('@media(min-width:900px)')
     const source = readFileSync(new URL('../src/mobile-layout.ts', import.meta.url), 'utf8')
+    expect(source).toContain("[WIDE_LAYOUT_ATTRIBUTE]: wideViewport ? '1' : '0'")
+    expect(source).toContain('const wideViewport = isWideViewportLayout(viewport.width, viewport.shortSide)')
+    // The panel return bar is the JS-side consequence: a landscape phone keeps it.
     expect(source).toContain('state.panelInfo.activePanelId !== null && !wideViewport ? createElement')
-    expect(source).toContain('window.matchMedia(WIDE_LAYOUT_QUERY).matches')
   })
 
   it.each([
@@ -682,30 +707,32 @@ describe('dedicated mobile layout boot', () => {
   })
 
   it.each([
-    [375, 812, false, false, false, false, 375],
-    [375, 812, false, true, false, false, 375],
-    [755, 1000, false, true, false, false, 755],
-    [756, 1000, false, true, false, true, 300],
-    [899, 1000, false, true, false, true, 405],
-    [899, 1000, true, true, false, false, 899],
-    [900, 1000, true, true, false, false, 460],
-    [900, 1000, false, true, false, true, 405],
+    [375, false, false, false, false, false, 375],
+    [375, false, false, true, false, false, 375],
+    [755, false, false, true, false, false, 755],
+    [756, false, false, true, false, true, 300],
+    [899, false, false, true, false, true, 405],
+    [899, false, true, true, false, false, 899],
+    [900, true, true, true, false, false, 460],
+    [900, true, false, true, false, true, 405],
     // A landscape phone keeps the full-width overlay even with the sidebar open.
-    [932, 430, true, true, false, false, 932],
+    [932, false, true, true, false, false, 932],
     // Closed drawer + requested track docks exactly like the 899px narrow band.
-    [932, 430, false, true, false, true, 419],
-    [1039, 1000, true, true, false, false, 460],
-    [1040, 1000, true, true, false, true, 300],
-    [1200, 1000, true, true, false, true, 460],
-    [1200, 1000, true, false, false, false, 460],
-    [1200, 1000, true, true, true, false, 460],
+    [932, false, false, true, false, true, 419],
+    [1039, true, true, true, false, false, 460],
+    [1040, true, true, true, false, true, 300],
+    [1200, true, true, true, false, true, 460],
+    [1200, true, true, false, false, false, 460],
+    [1200, true, true, true, true, false, 460],
     // Tablets dock in either orientation.
-    [909, 1314, true, true, false, false, 460],
-    [1363, 860, true, true, false, true, 460],
+    [909, true, true, true, false, false, 460],
+    [1363, true, true, true, false, true, 460],
+    // Pad 9 Pro Max landscape with the keyboard open is still a wide viewport.
+    [1363, true, true, true, false, true, 460],
   ] as const)(
-    'resolves rightbar viewport=%ix%i sidebar=%s track=%s fullscreen=%s as docked=%s width=%i',
-    (viewportWidth, viewportHeight, sidebarOpen, track, fullscreen, docked, width) => {
-      expect(resolveMobileRightbarLayout(viewportWidth, viewportHeight, sidebarOpen, track, fullscreen))
+    'resolves rightbar viewport=%i wide=%s sidebar=%s track=%s fullscreen=%s as docked=%s width=%i',
+    (viewportWidth, wideViewport, sidebarOpen, track, fullscreen, docked, width) => {
+      expect(resolveMobileRightbarLayout(viewportWidth, wideViewport, sidebarOpen, track, fullscreen))
         .toEqual({ docked, width })
     },
   )
@@ -730,13 +757,13 @@ describe('dedicated mobile layout boot', () => {
     const ownership = MOBILE_LAYOUT_STYLES.slice(MOBILE_LAYOUT_STYLES.indexOf('@layer dsh-mobile-layout{'),
       MOBILE_LAYOUT_STYLES.indexOf('.dshm-main{'))
     expect(ownership).toContain('.dshm-shell{display:grid!important;grid-template-rows:minmax(0,1fr)!important;grid-template-columns:minmax(0,1fr)!important}')
-    expect(ownership).toContain(`@media${WIDE_LAYOUT_QUERY}{.dshm-shell{grid-template-columns:auto minmax(0,1fr)!important}}`)
+    expect(ownership).toContain(`.dshm-shell[${WIDE_LAYOUT_ATTRIBUTE}="1"]{grid-template-columns:auto minmax(0,1fr)!important}`)
     expect(ownership).not.toMatch(/color|background|shadow|sidebar-collapsed|centerCol/u)
   })
 
   it('uses the full phone viewport for the right panel without changing wide docking', () => {
-    expect(MOBILE_LAYOUT_STYLES).toContain('@media(max-width:899px),(max-height:599px){.dshm-details{width:100%;max-width:100%;box-shadow:none}')
-    expect(MOBILE_LAYOUT_STYLES).toContain('.dshm-details [data-sidebar-right-toggle],.dshm-details [data-sidebar-right-mode]{min-width:48px;min-height:48px}')
+    expect(MOBILE_LAYOUT_STYLES).toContain(`.dshm-shell:not([${WIDE_LAYOUT_ATTRIBUTE}="1"]) .dshm-details{width:100%;max-width:100%;box-shadow:none}`)
+    expect(MOBILE_LAYOUT_STYLES).toContain(`.dshm-shell:not([${WIDE_LAYOUT_ATTRIBUTE}="1"]) .dshm-details [data-sidebar-right-toggle],.dshm-shell:not([${WIDE_LAYOUT_ATTRIBUTE}="1"]) .dshm-details [data-sidebar-right-mode]{min-width:48px;min-height:48px}`)
     expect(MOBILE_LAYOUT_STYLES).toContain('.dshm-shell[data-rightbar-docked=true] .dshm-details{position:absolute;width:var(--dshm-rightbar-width)')
     const source = readFileSync(new URL('../src/mobile-layout.ts', import.meta.url), 'utf8')
     expect(source).toContain('const scrimOpen = !rightbarFullWidth && isMobileScrimOpen(')
@@ -768,11 +795,10 @@ describe('dedicated mobile layout boot', () => {
 
   it('keeps the narrow overlay drawer CSS untouched while docking the wide sidebar', () => {
     expect(MOBILE_LAYOUT_STYLES).toContain('.dshm-drawer{position:fixed')
-    expect(MOBILE_LAYOUT_STYLES).toContain(`@media${WIDE_LAYOUT_QUERY}`)
-    expect(MOBILE_LAYOUT_STYLES).toContain('.dshm-shell{grid-template-columns:auto minmax(0,1fr)}')
-    expect(MOBILE_LAYOUT_STYLES).toContain('.dshm-main{grid-area:1/2;z-index:1}')
-    expect(MOBILE_LAYOUT_STYLES).toContain('.dshm-drawer{position:static')
-    expect(MOBILE_LAYOUT_STYLES).toContain('.dshm-drawer[data-open=true]{width:340px')
+    expect(MOBILE_LAYOUT_STYLES).toContain(`.dshm-shell[${WIDE_LAYOUT_ATTRIBUTE}="1"]{grid-template-columns:auto minmax(0,1fr)}`)
+    expect(MOBILE_LAYOUT_STYLES).toContain(`.dshm-shell[${WIDE_LAYOUT_ATTRIBUTE}="1"] .dshm-main{grid-area:1/2;z-index:1}`)
+    expect(MOBILE_LAYOUT_STYLES).toContain(`.dshm-shell[${WIDE_LAYOUT_ATTRIBUTE}="1"] .dshm-drawer{position:static`)
+    expect(MOBILE_LAYOUT_STYLES).toContain(`.dshm-shell[${WIDE_LAYOUT_ATTRIBUTE}="1"] .dshm-drawer[data-open=true]{width:340px`)
   })
 
   it('lets the wide conversation column outrank the static rail without passing the scrim', () => {
@@ -781,10 +807,10 @@ describe('dedicated mobile layout boot', () => {
     // not outrank the conversation column and clip that dialog's left edge
     // (issue #309). The column still has to stay below the scrim so a modal shell
     // surface keeps dimming it, and the phone overlay drawer keeps its own layer.
-    const wide = MOBILE_LAYOUT_STYLES.slice(MOBILE_LAYOUT_STYLES.indexOf(`@media${WIDE_LAYOUT_QUERY}{`),
+    const wide = MOBILE_LAYOUT_STYLES.slice(MOBILE_LAYOUT_STYLES.indexOf(`.dshm-shell[${WIDE_LAYOUT_ATTRIBUTE}="1"]{grid-template-columns:auto minmax(0,1fr)}`),
       MOBILE_LAYOUT_STYLES.indexOf('@media(prefers-reduced-motion'))
-    expect(wide).toContain('.dshm-drawer{position:static;grid-area:1/1;box-shadow:none;z-index:auto}')
-    expect(wide).toContain('.dshm-main{grid-area:1/2;z-index:1}')
+    expect(wide).toContain(`.dshm-drawer{position:static;grid-area:1/1;box-shadow:none;z-index:auto}`)
+    expect(wide).toContain(`.dshm-main{grid-area:1/2;z-index:1}`)
     const zOf = (selector: string): number => {
       const start = MOBILE_LAYOUT_STYLES.indexOf(selector)
       expect(start).toBeGreaterThan(-1)

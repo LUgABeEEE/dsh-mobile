@@ -58,16 +58,25 @@ const views = [
   { width: 899, height: 844 },
   { width: 900, height: 844 },
   { width: 901, height: 844 },
-  // A landscape phone is wider than the 900px threshold but its shorter side is
-  // a phone's, so it keeps the overlay drawer instead of a permanent rail.
+  // A landscape phone is wider than the 900px threshold but its screen's short
+  // side is a phone's, so it keeps the overlay drawer instead of a permanent rail.
   { width: 932, height: 430 },
   // The same rule in the other direction: both tablet orientations stay docked.
   { width: 909, height: 1314 },
   { width: 1363, height: 860 },
+  // Pad 9 Pro Max landscape with the soft keyboard open: the viewport height
+  // collapses to 441 while the screen is still 1364x909, so the docked layout
+  // must survive the keyboard. A viewport-height rule undocked it here.
+  { width: 1363, height: 441, screen: { width: 1364, height: 909 } },
   { width: 1100, height: 844 },
 ]
-// Mirrors the layout's own rule: dock only when both viewport sides are large.
-const docks = view => view.width >= 900 && Math.min(view.width, view.height) >= 600
+// Mirrors the layout's own rule: the window must be wide enough and the device's
+// shorter side (screen, not viewport) must be tablet-sized.
+const deviceShortSide = view => {
+  const screen = view.screen ?? view
+  return Math.min(screen.width, screen.height)
+}
+const docks = view => view.width >= 900 && deviceShortSide(view) >= 600
 const themes = {
   light: { '--dsw-alias-label-primary': '#171a21', '--dsw-alias-bg-base': '#ffffff' },
   dark: { '--dsw-alias-label-primary': '#f4f5f7', '--dsw-alias-bg-base': '#171a21' },
@@ -76,7 +85,7 @@ const rows = Array.from({ length: 64 }, (_, index) =>
   `<div class="Trajectory_fixture_row">${index === 0 ? '<button id="trace-action" type="button">Owned trace action</button>' : `Owned synthetic trace row ${index}`}</div>`).join('')
 
 function fixture(open, wide) {
-  return `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"></head><body data-foreign-layout-fixture><div id="root"><div data-slot="root"><div class="dshm-shell">
+  return `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"></head><body data-foreign-layout-fixture><div id="root"><div data-slot="root"><div class="dshm-shell" data-dshm-wide="${wide ? '1' : '0'}">
 <main class="dshm-main" data-pane="conversation"><div class="dshm-mainContent"><div data-slot="main"><div data-slot="main.conversation"><div class="Conversation_fixture_root" data-phase="active">
 <header class="Conversation_fixture_header"><span>Owned populated session</span><div role="tablist"><button role="tab" aria-selected="false">Conversation</button><button role="tab" aria-selected="true">Trajectory</button></div></header>
 <div class="Conversation_fixture_body"><div class="Conversation_fixture_scrollBody"><div data-slot="conversation.session"><div class="Conversation_fixture_viewArea"><div data-slot="conversation.view"><div class="Trajectory_fixture_root"><div class="Trajectory_fixture_ledger"><div class="Trajectory_fixture_viewport">${rows}</div></div></div></div></div></div></div></div>
@@ -270,7 +279,7 @@ try {
   } else {
     await checkPanelTouch(styles)
     for (const view of views) for (const open of [false, true]) for (const [theme, tokens] of Object.entries(themes)) for (const order of ['before', 'after']) {
-      await withContext({ viewport: view, hasTouch: true }, async context => {
+      await withContext({ viewport: view, ...(view.screen === undefined ? {} : { screen: view.screen }), hasTouch: true }, async context => {
         const page = await context.newPage()
         await setup(page, styles, open, view, tokens, order)
         const key = `${view.width}x${view.height}/${open ? 'open' : 'closed'}/${theme}/${order}`
