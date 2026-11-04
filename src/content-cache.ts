@@ -161,6 +161,9 @@ export class ContentCache {
 
   /** After a `304`, the stored copy is current: restart its window and replay it. */
   refresh(key: string, now: number): ContentCacheReplay | undefined {
+    // A cache created disabled may still be asked to refresh a revalidated entry; it never
+    // stored one, so this is a no-op rather than a lookup that could only ever miss.
+    if (!this.enabled) return undefined
     const entry = this.entries.get(key)
     if (entry === undefined) return undefined
     const refreshed: ContentCacheEntry = { ...entry, storedAt: now, expiresAt: now + this.ttlMs }
