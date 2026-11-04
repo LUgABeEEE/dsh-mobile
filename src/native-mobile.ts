@@ -9,6 +9,7 @@ import { installTaskCompletionWatcher, type TaskNotifyKind } from './task-notify
 import { MOBILE_COMPOSER_TOOLBAR_STYLES } from './mobile-composer-toolbar.js'
 import { pickBrowserFiles } from './browser-file-picker.js'
 import { installMobileSidebarScrollMemory } from './mobile-sidebar-scroll.js'
+import { installKeyboardBridge } from './keyboard-bridge.js'
 
 export const NATIVE_MOBILE_OVERLAY_QUERY = '(max-width:720px)'
 
@@ -1800,6 +1801,12 @@ export function installNativeMobileSurface(backServices: NativeMobileBackService
     })
   }
   document.addEventListener('click', animateNavigation)
+  // 实体键盘桥接：把桌面键位（Ctrl+Enter 插话 / Esc / PageUp·PageDown / Home·End / Tab）补到移动端。
+  // 原生层可用 window.__DSH_KEYBOARD_BRIDGE__ 注入 steer（见 src/keyboard-bridge.ts 注释）。
+  const disposeKeyboardBridge = installKeyboardBridge({
+    softKeyboardVisible: () => window.__DSH_MOBILE_NATIVE__ !== undefined
+      && window.__DSH_MOBILE_KEYBOARD_STATE__?.imeVisible === true,
+  })
   const syncComposerEnterNewline = (composerCard: HTMLElement | null): void => {
     const editor = composerCard?.querySelector<HTMLElement>('[data-composer-input][contenteditable="true"]') ?? null
     if (editor === boundEnterEditor && composerCard === boundEnterCard) return
@@ -2063,6 +2070,7 @@ export function installNativeMobileSurface(backServices: NativeMobileBackService
     document.removeEventListener('visibilitychange', onToggleVisibilityChange)
     switchComputerHold.dispose()
     document.removeEventListener('click', animateNavigation)
+    disposeKeyboardBridge()
     backdrop.remove()
     document.documentElement.classList.remove('dsh-native-mobile-active')
     delete document.documentElement.dataset.dshMobileInput
